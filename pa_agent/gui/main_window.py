@@ -1,4 +1,4 @@
-﻿"""Main application window for PA Agent."""
+"""Main application window for PA Agent."""
 from __future__ import annotations
 
 import logging
@@ -74,6 +74,7 @@ class _AnalysisWorker(QThread):
         cancel_token: Any,
         previous_record: Any = None,
         incremental_new_bar_count: int | None = None,
+        active_position: Any = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -82,6 +83,7 @@ class _AnalysisWorker(QThread):
         self._cancel_token = cancel_token
         self._previous_record = previous_record
         self._incremental_new_bar_count = incremental_new_bar_count
+        self._active_position = active_position
 
     def run(self) -> None:
         from pa_agent.util.threading import OrchestratorEvent
@@ -132,6 +134,7 @@ class _AnalysisWorker(QThread):
                 on_stage2_files=on_stage2_files,
                 previous_record=self._previous_record,
                 incremental_new_bar_count=self._incremental_new_bar_count,
+                active_position=self._active_position,
             )
             decision = record.stage2_decision or {}
         except Exception as exc:  # noqa: BLE001
@@ -1015,7 +1018,11 @@ class MainWindow(QMainWindow):
             symbol = self._symbol_combo.currentText().strip()
             timeframe = self._tf_combo.currentText()
 
-            new_source = create_data_source(kind)
+            ctx_settings = getattr(self._ctx, "settings", None)
+            mt5_path = ""
+            if ctx_settings is not None:
+                mt5_path = getattr(ctx_settings.general, "mt5_terminal_path", "") or ""
+            new_source = create_data_source(kind, mt5_terminal_path=mt5_path)
             # Wire auto-probe status callback for TV
             from pa_agent.data.tradingview import TradingViewSource
             if isinstance(new_source, TradingViewSource):
@@ -1500,6 +1507,9 @@ class MainWindow(QMainWindow):
         # Update submit button label after each successful data tick.
         self._refresh_incremental_label()
 
+        # 持仓跟踪：用最新K线高低价检测计划单成交 / 持仓出场
+        self._check_position_on_tick(bars)
+
         # 保持分析：检测是否有新K线收盘，若有则自动触发分析
         self._check_keep_analysis(bars)
 
@@ -1609,6 +1619,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_chart_widget"):
                 self._chart_widget.reset()
                 self._chart_widget.request_fit_on_next_render()
+                # Restore any persisted position for the newly-selected market.
+                self._sync_chart_active_position(new_symbol, new_tf)
 
             # ── Step 5: Destroy FreeChatSession, disable Tab2 input ───────────
             self._free_chat_session = None
@@ -2637,6 +2649,15 @@ class MainWindow(QMainWindow):
 
         self._cancel_token = CancelToken()
 
+        # Load any active position so Stage 2 manages it instead of re-entering.
+        active_position = None
+        tracker = getattr(self._ctx, "position_tracker", None)
+        if tracker is not None and not getattr(self, "_demo_mode", False):
+            try:
+                active_position = tracker.get_active(symbol, timeframe)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Active position lookup failed: %s", exc)
+
         # Start worker in its own QThread (worker IS a QThread subclass)
         self._worker = _AnalysisWorker(
             orchestrator=orchestrator,
@@ -2644,6 +2665,7 @@ class MainWindow(QMainWindow):
             cancel_token=self._cancel_token,
             previous_record=previous_record,
             incremental_new_bar_count=incremental_new_bar_count,
+            active_position=active_position,
             parent=None,
         )
         self._worker.finished.connect(self._on_analysis_finished)
@@ -3024,9 +3046,84 @@ class MainWindow(QMainWindow):
             })
         self._prompt_debug_report_for_bug_fix("分析过程发生程序异常", message)
 
+    def _dispatch_decision_notification(self, record: Any) -> None:
+        """Send a decision/error notification for *record* (best-effort)."""
+        notifier = getattr(self._ctx, "notifier", None)
+        if notifier is None:
+            return
+        if getattr(self, "_demo_mode", False):
+            return
+        try:
+            notifier.notify_record(record)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Decision notification dispatch failed: %s", exc)
+
+    def _update_position_from_record(self, record: Any) -> None:
+        """Reconcile the analysis decision with the tracked position and chart."""
+        tracker = getattr(self._ctx, "position_tracker", None)
+        if tracker is None or getattr(self, "_demo_mode", False):
+            return
+        try:
+            meta = getattr(record, "meta", None)
+            symbol = getattr(meta, "symbol", "") if meta else ""
+            timeframe = getattr(meta, "timeframe", "") if meta else ""
+            if not symbol or not timeframe:
+                return
+            decision = getattr(record, "stage2_decision", None)
+            exc_info = getattr(record, "exception", None)
+            if decision and not exc_info:
+                record_id = getattr(meta, "timestamp_local_iso", None)
+                tracker.apply_decision(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    decision=decision,
+                    record_id=record_id,
+                )
+            self._sync_chart_active_position(symbol, timeframe)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Position update from record failed: %s", exc)
+
+    def _sync_chart_active_position(self, symbol: str, timeframe: str) -> None:
+        """Push the current active position (if any) onto the chart overlay."""
+        tracker = getattr(self._ctx, "position_tracker", None)
+        chart = getattr(self, "_chart_widget", None)
+        if tracker is None or chart is None:
+            return
+        position = tracker.get_active(symbol, timeframe)
+        if position is None:
+            chart.set_active_position(None)
+        else:
+            chart.set_active_position(position.model_dump(mode="json"))
+
+    def _check_position_on_tick(self, bars: Any) -> None:
+        """Detect planned-order fill / position exit from the latest bar."""
+        tracker = getattr(self._ctx, "position_tracker", None)
+        if tracker is None or getattr(self, "_demo_mode", False) or not bars:
+            return
+        symbol = self._symbol_combo.currentText().strip()
+        timeframe = self._tf_combo.currentText()
+        if tracker.get_active(symbol, timeframe) is None:
+            return
+        newest = bars[0]
+        high = getattr(newest, "high", None)
+        low = getattr(newest, "low", None)
+        if high is None and isinstance(newest, dict):
+            high = newest.get("high")
+            low = newest.get("low")
+        if high is None or low is None:
+            return
+        try:
+            tracker.on_tick(symbol, timeframe, high=high, low=low)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Position tick check failed: %s", exc)
+        self._sync_chart_active_position(symbol, timeframe)
+
     def _on_record_ready(self, record: Any) -> None:
         """Push the full AnalysisRecord to the conversation and debug tabs."""
         import json as _json
+
+        self._update_position_from_record(record)
+        self._dispatch_decision_notification(record)
 
         exc_info = getattr(record, "exception", None)
         exc_json = (

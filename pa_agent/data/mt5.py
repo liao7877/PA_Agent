@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pa_agent.data.base import (
     DataSource,
@@ -45,6 +46,26 @@ _TF_MAP: dict[str, str] = {
 }
 
 
+def resolve_mt5_terminal_executable(path: str) -> str | None:
+    """Resolve user config to ``terminal64.exe`` path for ``mt5.initialize(path=...)``."""
+    raw = (path or "").strip().strip('"').strip("'")
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_file():
+        return str(p.resolve())
+    if p.is_dir():
+        for name in ("terminal64.exe", "terminal.exe"):
+            candidate = p / name
+            if candidate.is_file():
+                return str(candidate.resolve())
+        candidate = p / "terminal64.exe"
+        return str(candidate)
+    if raw.lower().endswith(".exe"):
+        return raw
+    return str(Path(raw) / "terminal64.exe")
+
+
 class MT5Source(DataSource):
     """Live K-line data from MetaTrader 5 terminal.
 
@@ -52,10 +73,11 @@ class MT5Source(DataSource):
     MT5 terminal must be open and logged in before calling connect().
     """
 
-    def __init__(self) -> None:
+    def __init__(self, terminal_path: str = "") -> None:
         self._symbol: str = ""
         self._timeframe: str = ""
         self._connected: bool = False
+        self._terminal_path = terminal_path
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -68,18 +90,27 @@ class MT5Source(DataSource):
                 "MetaTrader5 package not installed — run: pip install MetaTrader5"
             ) from exc
 
-        if not mt5.initialize():
+        exe = resolve_mt5_terminal_executable(self._terminal_path)
+        init_kwargs: dict[str, str] = {}
+        if exe:
+            init_kwargs["path"] = exe
+            logger.info("MT5 initialize with terminal path: %s", exe)
+
+        if not mt5.initialize(**init_kwargs):
             error = mt5.last_error()
-            raise DataSourceTransientError(
+            hint = (
                 f"MT5 initialize() failed: {error}. "
                 "Make sure MetaTrader 5 terminal is open and logged in."
             )
+            if exe:
+                hint += f" Configured path: {exe}"
+            raise DataSourceTransientError(hint)
 
         info = mt5.terminal_info()
         if info is not None:
             logger.info(
-                "MT5 connected: terminal=%s, build=%s, connected=%s",
-                info.name, info.build, info.connected,
+                "MT5 connected: terminal=%s, build=%s, connected=%s, path=%s",
+                info.name, info.build, info.connected, info.path,
             )
         else:
             logger.info("MT5 connected (terminal info unavailable)")

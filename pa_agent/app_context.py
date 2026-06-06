@@ -26,6 +26,12 @@ class AppContext:
     exp_reader: Any = None        # ExperienceReader
     ledger: Any = None            # SessionTokenLedger
 
+    # Notification layer
+    notifier: Any = None          # NotificationService
+
+    # Position tracking layer
+    position_tracker: Any = None  # PositionTracker
+
     @classmethod
     def bootstrap(cls) -> "AppContext":
         """Wire all real components and return a fully initialised AppContext."""
@@ -47,6 +53,9 @@ class AppContext:
         from pa_agent.ai.session_ledger import SessionTokenLedger
         from pa_agent.records.pending_writer import PendingWriter
         from pa_agent.records.experience_reader import ExperienceReader
+        from pa_agent.notification.service import NotificationService
+        from pa_agent.positions.store import PositionStore
+        from pa_agent.positions.tracker import PositionTracker
 
         # ── Settings ──────────────────────────────────────────────────────────
         settings = load_settings(SETTINGS_JSON_PATH)
@@ -63,7 +72,8 @@ class AppContext:
         ds_kind = normalize_data_source_kind(
             getattr(settings.general, "last_data_source", "mt5")
         )
-        data_source = create_data_source(ds_kind)
+        mt5_path = getattr(settings.general, "mt5_terminal_path", "") or ""
+        data_source = create_data_source(ds_kind, mt5_terminal_path=mt5_path)
 
         # Subscribe to the last-used symbol/timeframe from settings
         try:
@@ -116,6 +126,12 @@ class AppContext:
             warn_pct=settings.general.context_warning_threshold_pct,
         )
 
+        # ── Notification service ──────────────────────────────────────────────
+        notifier = NotificationService(settings=settings, logger=app_logger)
+
+        # ── Position tracker ──────────────────────────────────────────────────
+        position_tracker = PositionTracker(store=PositionStore(), notifier=notifier)
+
         return cls(
             settings=settings,
             logger=app_logger,
@@ -128,4 +144,6 @@ class AppContext:
             pending_writer=pending_writer,
             exp_reader=exp_reader,
             ledger=ledger,
+            notifier=notifier,
+            position_tracker=position_tracker,
         )

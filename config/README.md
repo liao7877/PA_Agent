@@ -32,6 +32,7 @@
 | `general.last_timeframe` | 默认周期，如 `5m`、`15m`、`1h` |
 | `general.decision_stance` | 阶段二倾向：`conservative` / `balanced` / `aggressive` / `extreme_aggressive` |
 | `general.auto_resume_chart_after_analysis` | 分析结束后是否自动恢复「图表实时更新」（默认 `true`） |
+| `general.mt5_terminal_path` | MT5 安装目录或 `terminal64.exe` 完整路径；空=自动连接 |
 
 ## 安全提醒
 

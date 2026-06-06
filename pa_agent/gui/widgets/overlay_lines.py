@@ -43,10 +43,24 @@ class OverlayLines:
         entry: float,
         tp: float,
         sl: float,
+        *,
+        solid: bool = False,
+        label_prefix: str = "",
+        width: int = 1,
     ) -> None:
         """Draw (or redraw) the three horizontal price lines.
 
         Clears any previously drawn lines first.
+
+        Parameters
+        ----------
+        solid:
+            Use a solid pen (used for *held* positions) instead of dashed
+            (used for *planned* order previews).
+        label_prefix:
+            Prepended to each line label, e.g. ``"持仓"``.
+        width:
+            Pen width in px.
         """
         self.clear_lines(plot_widget)
 
@@ -56,15 +70,20 @@ class OverlayLines:
             (sl, _COLOR_SL, "SL"),
         ]
 
+        style = pg.QtCore.Qt.PenStyle.SolidLine if solid else pg.QtCore.Qt.PenStyle.DashLine
+
         for price, color, label_text in specs:
+            if price is None:
+                continue
             line = pg.InfiniteLine(
                 pos=price,
                 angle=0,
-                pen=pg.mkPen(color=color, width=1, style=pg.QtCore.Qt.PenStyle.DashLine),
+                pen=pg.mkPen(color=color, width=width, style=style),
                 movable=False,
             )
+            prefix = f"{label_prefix} " if label_prefix else ""
             label = pg.TextItem(
-                text=f"{label_text}: {price:.5g}",
+                text=f"{prefix}{label_text}: {price:.5g}",
                 color=color,
                 anchor=(0.0, 1.0),
             )

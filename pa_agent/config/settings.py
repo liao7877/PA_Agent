@@ -72,6 +72,8 @@ class GeneralSettings(BaseModel):
     auto_resume_chart_after_analysis: bool = False
     #: 持续跟踪分析：有新K线收盘时自动触发新一轮分析
     keep_analysis: bool = False
+    #: MT5 安装目录或 terminal64.exe 完整路径；空=自动连接已运行/默认实例
+    mt5_terminal_path: str = ""
 
     @field_validator("last_data_source", mode="before")
     @classmethod
@@ -90,6 +92,44 @@ class GeneralSettings(BaseModel):
         return v
 
 
+class NotificationSettings(BaseModel):
+    """Outbound notification (DingTalk / WeChat-via-Bark) settings.
+
+    Each scene toggle is independent; a message is dispatched only when both
+    the master switch and the matching scene toggle are enabled and at least
+    one channel target is configured.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    #: Master switch. When False, no notification is ever sent.
+    enabled: bool = False
+
+    # ── Channel targets ───────────────────────────────────────────────────
+    #: DingTalk group-robot webhook URL (https://oapi.dingtalk.com/robot/send?...).
+    dingtalk_webhook: str = ""
+    #: Optional DingTalk "加签" secret; empty = keyword/IP security only.
+    dingtalk_secret: str = ""
+    #: WeChat push URL (Server酱 / Bark / 企业微信群机器人 webhook 等)。
+    wechat_webhook: str = ""
+
+    # ── Per-scene toggles ─────────────────────────────────────────────────
+    #: 产生新的下单决策（入场/止盈/止损）。
+    notify_new_order: bool = True
+    #: 计划单被市场触及、确认入场成交。
+    notify_entry_filled: bool = True
+    #: 持仓出场（触及止盈/止损或 AI 建议平仓）。
+    notify_exit: bool = True
+    #: 持仓管理调整（移动止损/止盈等）。
+    notify_manage: bool = True
+    #: 观望/不下单的结论也通知。
+    notify_no_trade: bool = False
+    #: 分析失败/异常时通知。
+    notify_error: bool = False
+
+    #: HTTP 请求超时（秒）。
+    request_timeout_s: int = Field(default=10, ge=1, le=120)
+
+
 class Settings(BaseModel):
     """Root settings object persisted to config/settings.json."""
     model_config = ConfigDict(extra="ignore")
@@ -98,6 +138,7 @@ class Settings(BaseModel):
     general: GeneralSettings = Field(default_factory=GeneralSettings)
     prompt: PromptSettings = Field(default_factory=PromptSettings)
     validation: ValidationSettings = Field(default_factory=ValidationSettings)
+    notification: NotificationSettings = Field(default_factory=NotificationSettings)
 
 
 def provider_api_key_configured(settings: Settings | None) -> bool:

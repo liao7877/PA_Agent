@@ -114,6 +114,19 @@ class SettingsDialog(QDialog):
         self._refresh_interval_spin.setSuffix(" ms")
         general_form.addRow("刷新间隔:", self._refresh_interval_spin)
 
+        self._mt5_terminal_path_edit = QLineEdit()
+        self._mt5_terminal_path_edit.setPlaceholderText(
+            "留空=自动；或填 MT5 目录 / terminal64.exe 完整路径"
+        )
+        self._mt5_terminal_path_edit.setToolTip(
+            "本机装有多套 MT5 时，指定要连接的那一套。\n"
+            "可填安装目录（程序会自动找 terminal64.exe），\n"
+            "或填完整路径，例如：\n"
+            "D:\\BrokerA\\MetaTrader 5\\terminal64.exe\n"
+            "修改后请重启程序，或切换一次数据来源以重新连接。"
+        )
+        general_form.addRow("MT5 终端路径:", self._mt5_terminal_path_edit)
+
         self._auto_resume_chart_check = QCheckBox("分析完成后自动恢复「图表实时更新」")
         self._auto_resume_chart_check.setToolTip(
             "提交分析时图表会暂停刷新并冻结为已收盘 K 线；"
@@ -205,6 +218,84 @@ class SettingsDialog(QDialog):
 
         form_layout.addWidget(general_group)
 
+        # ── Notification group ────────────────────────────────────────────
+        notification_group = QGroupBox("通知")
+        notification_form = QFormLayout(notification_group)
+
+        self._notify_enabled_check = QCheckBox("启用通知（总开关）")
+        self._notify_enabled_check.setToolTip(
+            "勾选后，满足下方对应场景开关且配置了渠道时，将决策消息推送到钉钉/微信。"
+        )
+        notification_form.addRow("启用:", self._notify_enabled_check)
+
+        self._dingtalk_webhook_edit = QLineEdit()
+        self._dingtalk_webhook_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._dingtalk_webhook_edit.setPlaceholderText(
+            "https://oapi.dingtalk.com/robot/send?access_token=..."
+        )
+        ding_row = QHBoxLayout()
+        ding_row.addWidget(self._dingtalk_webhook_edit)
+        self._show_ding_btn = QPushButton("显示")
+        self._show_ding_btn.setCheckable(True)
+        self._show_ding_btn.setFixedWidth(52)
+        self._show_ding_btn.toggled.connect(self._toggle_dingtalk_visibility)
+        ding_row.addWidget(self._show_ding_btn)
+        notification_form.addRow("钉钉 Webhook:", ding_row)
+
+        self._dingtalk_secret_edit = QLineEdit()
+        self._dingtalk_secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._dingtalk_secret_edit.setPlaceholderText("可选：加签 Secret（SEC 开头）")
+        self._dingtalk_secret_edit.setToolTip(
+            "钉钉机器人若使用「加签」安全设置，填此 Secret；仅用关键词/IP 限制可留空。"
+        )
+        notification_form.addRow("钉钉加签 Secret:", self._dingtalk_secret_edit)
+
+        self._wechat_webhook_edit = QLineEdit()
+        self._wechat_webhook_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._wechat_webhook_edit.setPlaceholderText(
+            "微信推送 URL（Bark / Server酱 / 企业微信群机器人）"
+        )
+        wechat_row = QHBoxLayout()
+        wechat_row.addWidget(self._wechat_webhook_edit)
+        self._show_wechat_btn = QPushButton("显示")
+        self._show_wechat_btn.setCheckable(True)
+        self._show_wechat_btn.setFixedWidth(52)
+        self._show_wechat_btn.toggled.connect(self._toggle_wechat_visibility)
+        wechat_row.addWidget(self._show_wechat_btn)
+        notification_form.addRow("微信 Webhook:", wechat_row)
+
+        self._notify_new_order_check = QCheckBox("产生新的下单决策（入场/止盈/止损）")
+        notification_form.addRow("场景 · 新下单:", self._notify_new_order_check)
+
+        self._notify_entry_filled_check = QCheckBox("计划单被触及、确认入场成交")
+        notification_form.addRow("场景 · 入场成交:", self._notify_entry_filled_check)
+
+        self._notify_exit_check = QCheckBox("持仓出场（止盈/止损/AI 平仓）")
+        notification_form.addRow("场景 · 出场:", self._notify_exit_check)
+
+        self._notify_manage_check = QCheckBox("持仓管理调整（移动止损/止盈）")
+        notification_form.addRow("场景 · 持仓调整:", self._notify_manage_check)
+
+        self._notify_no_trade_check = QCheckBox("观望/不下单结论也通知")
+        notification_form.addRow("场景 · 观望:", self._notify_no_trade_check)
+
+        self._notify_error_check = QCheckBox("分析失败/异常时通知")
+        notification_form.addRow("场景 · 异常:", self._notify_error_check)
+
+        self._notify_timeout_spin = QSpinBox()
+        self._notify_timeout_spin.setRange(1, 120)
+        self._notify_timeout_spin.setSuffix(" s")
+        notification_form.addRow("请求超时:", self._notify_timeout_spin)
+
+        self._notify_test_btn = QPushButton("发送测试通知")
+        self._notify_test_btn.setToolTip(
+            "使用当前填写的渠道发送一条测试消息（无需先保存）。"
+        )
+        self._notify_test_btn.clicked.connect(self._on_send_test_notification)
+        notification_form.addRow("", self._notify_test_btn)
+
+        form_layout.addWidget(notification_group)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -229,6 +320,7 @@ class SettingsDialog(QDialog):
         self._context_window_spin.setValue(p.context_window)
         self._analysis_bar_count_spin.setValue(g.analysis_bar_count)
         self._refresh_interval_spin.setValue(g.refresh_interval_ms)
+        self._mt5_terminal_path_edit.setText(getattr(g, "mt5_terminal_path", "") or "")
         self._auto_resume_chart_check.setChecked(
             bool(getattr(g, "auto_resume_chart_after_analysis", False))
         )
@@ -256,6 +348,20 @@ class SettingsDialog(QDialog):
         self._flow_default_zoom_spin.setValue(
             int(getattr(g, "decision_flow_default_zoom_pct", 500))
         )
+
+        n = getattr(self._settings, "notification", None)
+        if n is not None:
+            self._notify_enabled_check.setChecked(bool(getattr(n, "enabled", False)))
+            self._dingtalk_webhook_edit.setText(getattr(n, "dingtalk_webhook", "") or "")
+            self._dingtalk_secret_edit.setText(getattr(n, "dingtalk_secret", "") or "")
+            self._wechat_webhook_edit.setText(getattr(n, "wechat_webhook", "") or "")
+            self._notify_new_order_check.setChecked(bool(getattr(n, "notify_new_order", True)))
+            self._notify_entry_filled_check.setChecked(bool(getattr(n, "notify_entry_filled", True)))
+            self._notify_exit_check.setChecked(bool(getattr(n, "notify_exit", True)))
+            self._notify_manage_check.setChecked(bool(getattr(n, "notify_manage", True)))
+            self._notify_no_trade_check.setChecked(bool(getattr(n, "notify_no_trade", False)))
+            self._notify_error_check.setChecked(bool(getattr(n, "notify_error", False)))
+            self._notify_timeout_spin.setValue(int(getattr(n, "request_timeout_s", 10)))
 
     @staticmethod
     def _validate_provider_fields(model: str, base_url: str) -> str | None:
@@ -298,6 +404,7 @@ class SettingsDialog(QDialog):
 
         g.analysis_bar_count = self._analysis_bar_count_spin.value()
         g.refresh_interval_ms = self._refresh_interval_spin.value()
+        g.mt5_terminal_path = self._mt5_terminal_path_edit.text().strip()
         g.auto_resume_chart_after_analysis = self._auto_resume_chart_check.isChecked()
         g.keep_analysis = self._keep_analysis_check.isChecked()
         g.context_warning_threshold_pct = float(self._context_warning_spin.value())
@@ -311,8 +418,27 @@ class SettingsDialog(QDialog):
         g.decision_flow_play_seconds = self._flow_play_seconds_spin.value()
         g.decision_flow_default_zoom_pct = self._flow_default_zoom_spin.value()
 
+        self._sync_notification_settings()
+
         save_settings(self._settings, SETTINGS_JSON_PATH)
         self.accept()
+
+    def _sync_notification_settings(self) -> None:
+        """Write notification widgets back into self._settings.notification."""
+        n = getattr(self._settings, "notification", None)
+        if n is None:
+            return
+        n.enabled = self._notify_enabled_check.isChecked()
+        n.dingtalk_webhook = self._dingtalk_webhook_edit.text().strip()
+        n.dingtalk_secret = self._dingtalk_secret_edit.text().strip()
+        n.wechat_webhook = self._wechat_webhook_edit.text().strip()
+        n.notify_new_order = self._notify_new_order_check.isChecked()
+        n.notify_entry_filled = self._notify_entry_filled_check.isChecked()
+        n.notify_exit = self._notify_exit_check.isChecked()
+        n.notify_manage = self._notify_manage_check.isChecked()
+        n.notify_no_trade = self._notify_no_trade_check.isChecked()
+        n.notify_error = self._notify_error_check.isChecked()
+        n.request_timeout_s = self._notify_timeout_spin.value()
 
     def focus_api_key_field(self) -> None:
         """Focus the API Key field (e.g. when prompting on first launch)."""
@@ -347,3 +473,60 @@ class SettingsDialog(QDialog):
         else:
             self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self._show_key_btn.setText("显示")
+
+    def _toggle_dingtalk_visibility(self, checked: bool) -> None:
+        mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        self._dingtalk_webhook_edit.setEchoMode(mode)
+        self._show_ding_btn.setText("隐藏" if checked else "显示")
+
+    def _toggle_wechat_visibility(self, checked: bool) -> None:
+        mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+        self._wechat_webhook_edit.setEchoMode(mode)
+        self._show_wechat_btn.setText("隐藏" if checked else "显示")
+
+    def _on_send_test_notification(self) -> None:
+        """Send a test message using the currently-entered channel fields."""
+        self._sync_notification_settings()
+        n = getattr(self._settings, "notification", None)
+        if n is None:
+            return
+        if not (n.dingtalk_webhook or n.wechat_webhook):
+            QMessageBox.warning(
+                self, "通知", "请先填写至少一个渠道（钉钉或微信 Webhook）。"
+            )
+            return
+
+        from pa_agent.notification.channels import DingTalkChannel, WeChatChannel
+        from pa_agent.notification.events import NotificationEvent, NotificationMessage
+
+        message = NotificationMessage(
+            event=NotificationEvent.NEW_ORDER,
+            title="🔔 PA Agent 测试通知",
+            text="这是一条来自 PA Agent 的测试消息。\n若你收到它，说明通知渠道配置正确。",
+        )
+        timeout = int(n.request_timeout_s or 10)
+        errors: list[str] = []
+        sent = 0
+        if n.dingtalk_webhook:
+            res = DingTalkChannel(
+                webhook=n.dingtalk_webhook, secret=n.dingtalk_secret, timeout_s=timeout
+            ).send(message)
+            if res.ok:
+                sent += 1
+            else:
+                errors.append(f"钉钉: {res.error or res.status}")
+        if n.wechat_webhook:
+            res = WeChatChannel(webhook=n.wechat_webhook, timeout_s=timeout).send(message)
+            if res.ok:
+                sent += 1
+            else:
+                errors.append(f"微信: {res.error or res.status}")
+
+        if errors:
+            QMessageBox.warning(
+                self,
+                "通知测试",
+                f"成功 {sent} 个渠道；失败：\n" + "\n".join(errors),
+            )
+        else:
+            QMessageBox.information(self, "通知测试", f"测试通知已发送（{sent} 个渠道）。")

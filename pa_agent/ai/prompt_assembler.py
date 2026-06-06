@@ -1196,6 +1196,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         decision_stance: str = "conservative",
         previous_record: Any | None = None,
+        active_position: Any | None = None,
     ) -> list[dict]:
         """Build Stage 2 as a true continuation of the Stage 1 conversation.
 
@@ -1230,6 +1231,7 @@ class PromptAssembler:
             include_kline_table=False,
             decision_stance=decision_stance,
             previous_record=previous_record,
+            active_position=active_position,
         )
 
         return [
@@ -1248,6 +1250,7 @@ class PromptAssembler:
         include_kline_table: bool,
         decision_stance: str = "conservative",
         previous_record: Any | None = None,
+        active_position: Any | None = None,
     ) -> str:
         """Build the Stage 2 task turn for standalone or continuation mode."""
         stance_block = build_decision_stance_guidance(normalize_stance(decision_stance))
@@ -1311,6 +1314,7 @@ class PromptAssembler:
         if breakout_tick_hint and include_kline_table:
             kline_block += f"{breakout_tick_hint}\n\n"
         prev_pred_block = self._render_previous_prediction(previous_record)
+        position_block = self._render_active_position(active_position)
         return (
             "## 阶段二任务\n\n"
             "你现在独立执行阶段二：交易决策、风险收益和下单方式评估（基于阶段一诊断结果）。\n"
@@ -1320,12 +1324,74 @@ class PromptAssembler:
             f"## 阶段一诊断结果\n\n```json\n"
             f"{json.dumps(self._compact_stage1_for_stage2(stage1_json), ensure_ascii=False, indent=2)}"
             f"\n```\n\n"
+            f"{position_block}"
             f"{kline_block}"
             f"{prev_pred_block + chr(10) if prev_pred_block else ''}"
             f"请根据以上诊断和K线数据,按《二元决策.txt》§3–§15 输出 JSON 决策结果"
             f"(含 decision_trace 与 terminal)。\n"
             f"注意:如果判断不下单,entry_price、take_profit_price、stop_loss_price、order_direction 必须全部为 null。\n\n"
             f"{_STAGE2_TAIL_REMINDER}"
+        )
+
+    @staticmethod
+    def _render_active_position(active_position: Any | None) -> str:
+        """Render a position-management block when a position is currently held.
+
+        When present, this instructs Stage 2 to MANAGE the existing position
+        (出场 / 移动止盈止损 / 持有) instead of re-deciding a fresh entry.
+        """
+        if not active_position:
+            return ""
+        if hasattr(active_position, "model_dump"):
+            data = active_position.model_dump(mode="json")
+        elif isinstance(active_position, dict):
+            data = dict(active_position)
+        else:
+            return ""
+
+        status = str(data.get("status", ""))
+        if status not in ("planned", "filled"):
+            return ""
+
+        status_zh = {"planned": "计划单（尚未成交）", "filled": "持仓中（已成交）"}.get(
+            status, status
+        )
+        direction = data.get("order_direction") or "—"
+        entry = data.get("fill_price") if status == "filled" else data.get("entry_price")
+        tp = data.get("take_profit_price")
+        sl = data.get("stop_loss_price")
+        compact = {
+            "status": status,
+            "order_direction": direction,
+            "entry_price": entry,
+            "take_profit_price": tp,
+            "stop_loss_price": sl,
+            "invalidation_condition": data.get("invalidation_condition"),
+        }
+
+        if status == "filled":
+            instruction = (
+                "**重要：当前已有持仓，本轮阶段二的任务是『持仓管理』，不是重新判断是否入场。**\n"
+                "请基于最新 K 线，对照该持仓的方向、入场价、止盈、止损，做出以下之一的决策：\n"
+                "1. 继续持有（维持原止盈止损）；\n"
+                "2. 移动止损/止盈（持仓管理，输出新的 take_profit_price / stop_loss_price，order_direction 与持仓一致）；\n"
+                "3. 建议提前平仓出场（order_type=不下单，并在 reasoning 中明确说明『建议平仓现有持仓』及理由）；\n"
+                "4. 若结构反转且应反向，可输出反向的下单决策（程序会先平掉现有持仓再按新方向开仓）。\n"
+                "不要在已持仓时输出与持仓同向的全新入场计划。\n"
+            )
+        else:
+            instruction = (
+                "**注意：当前已有一个尚未成交的计划单（等待价格触及入场价）。**\n"
+                "如本轮判断该计划仍然有效，可维持或微调入场/止盈/止损；"
+                "如判断该计划已失效，请输出 order_type=不下单 并说明理由（程序将撤销该计划单）。\n"
+            )
+
+        return (
+            f"## 当前持仓 / 计划单（{status_zh}）\n\n"
+            f"{instruction}\n"
+            "```json\n"
+            f"{json.dumps(compact, ensure_ascii=False, indent=2)}\n"
+            "```\n\n"
         )
 
     def stage2_system_prompt_only(
