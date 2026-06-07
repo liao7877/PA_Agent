@@ -203,6 +203,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 
 规则：
 - answer 只能是：是 / 否 / 中性 / 等待 / 不适用（**禁止**写「部分」「待确认」「待定」等——部分一致用 **中性**，尚需下一根K线确认用 **等待**）
+- **answer 字段只能是上述 5 个值之一，且不得添加任何括号、补充、方向后缀**（例如 `是（偏多）`、`否(暂时)`、`是-bullish` 均非法）；方向信息一律写在 `branch`，原因写在 `reason`，绝不能混入 answer。
 - 任一闸门导致「等待/unknown」时，gate_result 设为 wait 或 unknown，并在最后一条 trace 写明 reason
 - gate_result=proceed 表示可通过闸门进入阶段二；wait/unknown 表示不应进入策略与下单评估
 - gate_trace 与 cycle_position、direction 不得矛盾
@@ -278,7 +279,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "bar_type": "【必须与阶段一 bar_analysis.bar_type 完全一致，不得重新推断】trend_bull|trend_bear|doji|inside|outside_bull|outside_bear|flat|other",
     "signal_bar": {
       "bar": "K2 或 null（计划型挂单尚无已收盘信号棒时为 null）",
-      "quality": "strong|medium|weak|invalid",
+      "quality": "strong|medium|weak|invalid（**只能四选一**；信号已失效/失败请填 invalid，**禁止**写 failed/none/broken 等枚举外的词；失败原因写在 reason）",
       "pattern": "H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|none",
       "reason": "信号棒质量判断"
     },

@@ -190,6 +190,6 @@ def _channel_files(direction: str) -> list[str]:
     elif direction == "bearish":
         files.extend(_BEARISH_CHANNEL_FILES)
     else:
-        logger.warning("Channel-like state with neutral direction — no directional strategy files loaded")
+        logger.info("Channel-like state with neutral direction — no directional strategy files loaded")
     files.append(_CHANNEL_WIDTH_FILE)
     return files

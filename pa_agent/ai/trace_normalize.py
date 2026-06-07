@@ -297,6 +297,36 @@ def _branch_from_tail(per_node: dict[str, tuple[str, str]], tail: str) -> str | 
     return None
 
 
+def _branch_from_composite_tail(node_id: str, tail: str) -> str | None:
+    """Infer branch from composite-answer suffix (e.g. 是，在下边界 / 是（偏多）)."""
+    per_node = _NODE_ANSWER_BY_ID.get(node_id, {})
+    branch = _branch_from_tail(per_node, tail)
+    if branch:
+        return branch
+    return _normalize_direction_branch(tail) or _infer_direction_from_reason(tail)
+
+
+def _strip_composite_answer_format(
+    node_id: str,
+    answer: str,
+) -> tuple[str, str | None] | None:
+    """Peel 「是（偏多）」「是，在下边界」→ canonical enum (+ optional branch).
+
+    Format-only; safe to apply in strict normalization mode.
+    """
+    ans = answer.strip()
+    if not ans:
+        return None
+
+    for pat in (_COMPOSITE_ANSWER_RE, _COMPOSITE_ANSWER_PAREN_RE):
+        m = pat.match(ans)
+        if m:
+            base, tail = m.group(1), m.group(2).strip()
+            branch = _branch_from_composite_tail(node_id, tail) if tail else None
+            return base, branch
+    return None
+
+
 def _resolve_trace_answer(
     node_id: str,
     answer: str,
@@ -311,17 +341,6 @@ def _resolve_trace_answer(
     mapped = per_node.get(ans) or per_node.get(ans.lower())
     if mapped:
         return mapped
-
-    for pat in (_COMPOSITE_ANSWER_RE, _COMPOSITE_ANSWER_PAREN_RE):
-        m = pat.match(ans)
-        if m:
-            base, tail = m.group(1), m.group(2).strip()
-            branch = _branch_from_tail(per_node, tail)
-            if branch:
-                return base, branch
-            if per_node:
-                return base, None
-            return base, None
 
     for key in sorted(per_node.keys(), key=len, reverse=True):
         if key in ans or key.lower() in ans.lower():
@@ -499,6 +518,22 @@ def normalize_trace_item(
 
     ans = str(item.get("answer", "")).strip()
     if ans:
+        format_resolved = _strip_composite_answer_format(nid, ans)
+        if format_resolved is not None:
+            new_ans, branch = format_resolved
+            if new_ans != ans:
+                logger.debug(
+                    "trace answer format %r -> %r (node %s branch=%s)",
+                    ans,
+                    new_ans,
+                    nid,
+                    branch,
+                )
+            item["answer"] = new_ans
+            if branch:
+                item.setdefault("branch", branch)
+            ans = new_ans
+
         resolved = _resolve_trace_answer(nid, ans)
         if resolved is not None:
             new_ans, branch = resolved

@@ -84,6 +84,47 @@ def test_node_63_composite_boundary_answer() -> None:
     assert item["branch"] == "lower"
 
 
+def test_strict_strips_paren_qualified_answer_node_21() -> None:
+    """Regression: AI wrote 是（偏多） on §2.1; strict mode peels enum suffix only."""
+    item = {
+        "node_id": "2.1",
+        "question": "是否存在明确惯性方向？",
+        "answer": "是（偏多）",
+        "branch": "bullish",
+        "reason": "K1强势突破",
+        "bar_range": "K8-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "是"
+    assert item["branch"] == "bullish"
+
+
+def test_strict_strips_comma_boundary_node_63() -> None:
+    item = {
+        "node_id": "6.3",
+        "question": "当前价格是否在区间边界？",
+        "answer": "是，在下边界",
+        "reason": "x",
+        "bar_range": "K5-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "是"
+    assert item["branch"] == "lower"
+
+
+def test_strict_does_not_map_generic_synonyms() -> None:
+    """Interpretive synonyms stay lenient-only; strict only strips composite format."""
+    item = {
+        "node_id": "2.5",
+        "question": "惯性强度",
+        "answer": "部分",
+        "reason": "x",
+        "bar_range": "K8-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "部分"
+
+
 def test_node_62_trending_tr_answer() -> None:
     item = {
         "node_id": "6.2",
