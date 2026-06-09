@@ -399,11 +399,28 @@ class AIStreamPanel(QWidget):
             self._phase_label.setText("等待分析…")
         self._update_stats()
 
-    def on_analysis_started(self) -> None:
+    def begin_new_round(self) -> None:
+        """Start a new analysis round while keeping prior output visible."""
+        if self._reasoning_edit.toPlainText().strip():
+            self._reasoning_edit.appendPlainText("\n" + "═" * 48 + "\n【新一轮持续跟踪分析】\n")
+        self._stage = ""
+        self._reasoning_chars = 0
+        self._content_chars = 0
+        self._finalized_stages.clear()
+        self._stage_chars.clear()
+        self._stage_headers_written.clear()
+        self._content_headers_written.clear()
+        self._phase_label.setText("等待分析…")
+        self._update_stats()
+
+    def on_analysis_started(self, *, preserve_output: bool = False) -> None:
         self.set_input_enabled(False)
         self._session = None
         self._cancel_token = None
-        self.clear()
+        if preserve_output:
+            self.begin_new_round()
+        else:
+            self.clear()
 
     def on_record_saved(self) -> None:
         self.set_input_enabled(True)
@@ -501,6 +518,21 @@ class AIStreamPanel(QWidget):
             self._append_stream_text_for_stage(stage_id, content, kind="content")
         if stage_id not in self._finalized_stages:
             self.finalize_stage(stage_id)
+
+    def show_error_banner(self, title: str, detail: str = "") -> None:
+        """Show a visible failure / notice block in the live stream pane."""
+        if self._reasoning_edit.toPlainText().strip():
+            self._reasoning_edit.appendPlainText("\n" + "═" * 48 + "\n")
+        self._reasoning_edit.appendPlainText(f"【{title}】\n")
+        if detail:
+            self._reasoning_edit.appendPlainText(detail.strip() + "\n")
+        self._reasoning_edit.moveCursor(QTextCursor.MoveOperation.End)
+        self._reasoning_edit.ensureCursorVisible()
+        self._phase_label.setText(f"✗ {title}")
+
+    def show_status_message(self, text: str) -> None:
+        """Update the phase header without clearing streamed text."""
+        self._phase_label.setText(text)
 
     def _on_send_or_stop(self) -> None:
         if self._sending:

@@ -102,9 +102,10 @@ class SettingsDialog(QDialog):
         general_form = QFormLayout(general_group)
 
         self._analysis_bar_count_spin = QSpinBox()
-        self._analysis_bar_count_spin.setRange(2, 5_000)
+        self._analysis_bar_count_spin.setRange(20, 5_000)
         self._analysis_bar_count_spin.setToolTip(
             "提交 AI 分析时使用的已收盘 K 线根数（不含当前未收盘 K 线）。"
+            "程序要求至少 20 根已收盘 K 线才能分析。"
             "图表实时刷新也会按此数量拉取显示。"
         )
         general_form.addRow("用于分析的 K 线数量:", self._analysis_bar_count_spin)
