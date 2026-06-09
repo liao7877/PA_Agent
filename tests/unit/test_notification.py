@@ -55,6 +55,21 @@ def test_format_decision_new_order_includes_prices():
     assert msg.fields["entry_price"] == 2350.5
 
 
+def test_format_decision_no_trade_includes_watch_points():
+    decision = {
+        "decision": {
+            "order_type": "不下单",
+            "reasoning": "区间震荡观望",
+            "watch_points": [
+                "回撤至 2350 附近出现反转信号再评估做多",
+            ],
+        },
+    }
+    msg = formatter.format_decision(symbol="XAUUSD", timeframe="15m", decision=decision)
+    assert "关注要点" in msg.text
+    assert "2350" in msg.text
+
+
 def test_format_decision_no_trade():
     decision = {
         "decision": {
@@ -148,6 +163,33 @@ def test_no_channel_configured_skips():
     svc = _RecordingService(s)
     svc.notify(NotificationMessage(NotificationEvent.NEW_ORDER, "t", "b"))
     assert svc.dispatched == []
+
+
+def test_notify_record_no_trade_respects_scene_toggle():
+    s = _settings_with(
+        enabled=True, wechat_webhook="https://x",
+        notify_no_trade=False,
+    )
+    svc = _RecordingService(s)
+    rec = SimpleNamespace(
+        meta=SimpleNamespace(symbol="XAUUSD", timeframe="15m"),
+        exception=None,
+        stage2_decision={
+            "decision": {
+                "order_type": "不下单",
+                "reasoning": "等待确认",
+                "watch_points": ["回撤至 2350 评估做多"],
+            }
+        },
+        stage1_diagnosis=None,
+    )
+    svc.notify_record(rec)
+    assert svc.dispatched == []
+
+    s.notification.notify_no_trade = True
+    svc.notify_record(rec)
+    assert svc.dispatched[-1].event is NotificationEvent.NO_TRADE
+    assert "2350" in svc.dispatched[-1].text
 
 
 def test_notify_record_routes_error_and_decision():

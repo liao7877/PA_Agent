@@ -164,11 +164,84 @@ def test_filled_position_ai_close(store, notifier):
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
     pos = tracker.apply_decision(
         symbol="X", timeframe="15m",
-        decision={"decision": {"order_type": "不下单"}},
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "position_action": "平仓",
+                "reasoning": "结构走弱，建议提前出场观望。",
+            }
+        },
+        current_price=105.5,
     )
     assert pos is None
     assert tracker.get_active("X", "15m") is None
-    assert any(m.event.value == "exit" for m in notifier.messages)
+    exits = [m for m in notifier.messages if m.event.value == "exit"]
+    assert exits
+    assert "105.5" in exits[-1].text
+
+
+def test_filled_position_adjust_action_updates_sl_and_notifies(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
+    pos = tracker.apply_decision(
+        symbol="X", timeframe="15m",
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "position_action": "调整",
+                "order_direction": "做多",
+                "take_profit_price": 110.0,
+                "stop_loss_price": 98.0,
+                "reasoning": "上移止损保护利润。",
+            }
+        },
+    )
+    assert pos is not None
+    assert pos.stop_loss_price == 98.0
+    managed = [m for m in notifier.messages if m.event.value == "manage"]
+    assert managed
+    assert "98" in managed[-1].text
+    assert not any(m.event.value == "exit" for m in notifier.messages)
+
+
+def test_filled_position_adjust_action_without_prices_notifies_advisory(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
+    pos = tracker.apply_decision(
+        symbol="X", timeframe="15m",
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "position_action": "调整",
+                "position_advice": "下一根若跌破 K1 低点，将止损下移至 97。",
+            }
+        },
+    )
+    assert pos is not None
+    managed = [m for m in notifier.messages if m.event.value == "manage"]
+    assert managed
+    assert "97" in managed[-1].text
+
+
+def test_filled_position_no_trade_without_close_phrase_does_not_exit(store, notifier):
+    """Bare 不下单 on a filled position must not trigger a false exit notify."""
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
+    pos = tracker.apply_decision(
+        symbol="X", timeframe="15m",
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "reasoning": "继续持有，等待下一根确认。",
+            }
+        },
+    )
+    assert pos is not None
+    assert pos.status is PositionStatus.FILLED
+    assert not any(m.event.value == "exit" for m in notifier.messages)
 
 
 def test_planned_cancelled_by_no_trade(store, notifier):

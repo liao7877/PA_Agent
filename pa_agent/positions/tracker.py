@@ -5,7 +5,10 @@ Responsibilities:
 - Detect fill: price touches ``entry_price`` → ``filled`` (+ ENTRY_FILLED notify).
 - Detect exit: price touches TP/SL → ``closed`` (+ EXIT notify).
 - Apply a new analysis decision against an *existing* active position:
-    * AI 建议平仓 (order_type 不下单 / 反向)  → close (ai_close, EXIT notify)
+    * 方向反转                                → close + open opposite (EXIT notify)
+    * position_action=平仓                    → close (ai_close, EXIT notify)
+    * position_action=调整                    → apply TP/SL + manage (MANAGE notify)
+    * position_action=持有 / 无该字段           → no-op on filled positions
     * TP/SL 改变                              → manage (MANAGE notify)
 
 All price comparisons use bar high/low so intrabar touches are caught.
@@ -17,6 +20,11 @@ import logging
 import time
 from typing import Any, Optional
 
+from pa_agent.positions.decision_fields import (
+    is_position_adjust,
+    is_position_close,
+    position_advice_text,
+)
 from pa_agent.positions.model import PositionState, PositionStatus
 from pa_agent.positions.store import PositionStore
 from pa_agent.util.trade_metrics import is_long_direction
@@ -70,6 +78,7 @@ class PositionTracker:
         timeframe: str,
         decision: dict,
         record_id: str | None = None,
+        current_price: float | None = None,
     ) -> Optional[PositionState]:
         """Reconcile a new stage-2 decision with the current active position.
 
@@ -88,7 +97,9 @@ class PositionTracker:
             return None
 
         # An active position exists → manage it instead of re-deciding entry.
-        return self._manage_existing(existing, inner, order_type)
+        return self._manage_existing(
+            existing, inner, order_type, current_price=current_price
+        )
 
     def _open_planned(
         self, *, symbol: str, timeframe: str, inner: dict, record_id: str | None
@@ -121,9 +132,14 @@ class PositionTracker:
         return position
 
     def _manage_existing(
-        self, existing: PositionState, inner: dict, order_type: str
+        self,
+        existing: PositionState,
+        inner: dict,
+        order_type: str,
+        *,
+        current_price: float | None = None,
     ) -> Optional[PositionState]:
-        # 1) AI 建议平仓：不下单，或方向反转
+        # 1) 方向反转 → 先平再开反向计划单
         new_dir = is_long_direction(inner.get("order_direction"))
         cur_dir = existing.is_long
         reversed_dir = (
@@ -132,18 +148,31 @@ class PositionTracker:
             and cur_dir is not None
             and new_dir != cur_dir
         )
-        suggests_close = order_type == _NO_ORDER_TEXT or reversed_dir
 
-        if existing.status == PositionStatus.FILLED and suggests_close:
-            reason = "ai_close"
-            self._close(existing, exit_price=existing.entry_price, reason=reason,
-                        notify_reason="AI 建议平仓" + ("（方向反转）" if reversed_dir else ""))
-            # If reversed, immediately open the opposite planned order.
-            if reversed_dir:
-                return self._open_planned(
-                    symbol=existing.symbol, timeframe=existing.timeframe,
-                    inner=inner, record_id=existing.opened_at_record_id,
-                )
+        if existing.status == PositionStatus.FILLED and reversed_dir:
+            exit_px = self._resolve_exit_price(existing, current_price)
+            self._close(
+                existing,
+                exit_price=exit_px,
+                reason="ai_close",
+                notify_reason="AI 建议平仓（方向反转）",
+            )
+            return self._open_planned(
+                symbol=existing.symbol,
+                timeframe=existing.timeframe,
+                inner=inner,
+                record_id=existing.opened_at_record_id,
+            )
+
+        # 2) 已持仓 + position_action=平仓（结构化字段，不解析 reasoning 关键词）
+        if existing.status == PositionStatus.FILLED and is_position_close(inner):
+            exit_px = self._resolve_exit_price(existing, current_price)
+            self._close(
+                existing,
+                exit_price=exit_px,
+                reason="ai_close",
+                notify_reason="AI 建议平仓",
+            )
             return None
 
         if existing.status == PositionStatus.PLANNED and order_type == _NO_ORDER_TEXT:
@@ -153,7 +182,7 @@ class PositionTracker:
                         existing.symbol, existing.timeframe)
             return None
 
-        # 2) TP/SL 调整（持仓管理）
+        # 3) TP/SL 调整（持仓管理）；position_action=调整 或同向下单三价变化
         new_tp = _to_float(inner.get("take_profit_price"))
         new_sl = _to_float(inner.get("stop_loss_price"))
         changes: list[str] = []
@@ -166,6 +195,16 @@ class PositionTracker:
         if changes:
             self._store.upsert_active(existing)
             self._notify_manage(existing, "；".join(changes))
+            return existing
+
+        if existing.status == PositionStatus.FILLED and is_position_adjust(inner):
+            advice = position_advice_text(inner)
+            if advice:
+                self._notify_manage(
+                    existing,
+                    f"AI 建议：{advice}",
+                    advisory_only=True,
+                )
         return existing
 
     # ── Tick-based detection ───────────────────────────────────────────────
@@ -208,6 +247,16 @@ class PositionTracker:
         return position
 
     # ── Exit helpers ───────────────────────────────────────────────────────
+    @staticmethod
+    def _resolve_exit_price(
+        position: PositionState, current_price: float | None
+    ) -> float:
+        if current_price is not None:
+            return current_price
+        if position.fill_price is not None:
+            return position.fill_price
+        return position.entry_price
+
     @staticmethod
     def _price_touched(price: float, high: float, low: float) -> bool:
         return low <= price <= high
@@ -272,7 +321,13 @@ class PositionTracker:
             )
         )
 
-    def _notify_manage(self, position: PositionState, change_text: str) -> None:
+    def _notify_manage(
+        self,
+        position: PositionState,
+        change_text: str,
+        *,
+        advisory_only: bool = False,
+    ) -> None:
         if self._notifier is None:
             return
         from pa_agent.notification import formatter
@@ -285,5 +340,6 @@ class PositionTracker:
                 change_text=change_text,
                 take_profit_price=position.take_profit_price,
                 stop_loss_price=position.stop_loss_price,
+                advisory_only=advisory_only,
             )
         )

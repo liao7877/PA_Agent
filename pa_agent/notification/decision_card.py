@@ -267,6 +267,26 @@ def build_decision_card(
             plain_lines.append(f"预估胜率: {win_rate}")
             plain_lines.append("")
 
+    watch_points = inner.get("watch_points") or []
+    watch_lines = [
+        str(item).strip()
+        for item in watch_points
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if watch_lines:
+        md_lines.extend([
+            "### 关注要点 / 调整建议",
+            "",
+        ])
+        plain_lines.extend([
+            "【关注要点 / 调整建议】",
+        ])
+        for item in watch_lines[:5]:
+            md_lines.append(f"- {item}")
+            plain_lines.append(f"- {item}")
+        md_lines.append("")
+        plain_lines.append("")
+
     if reasoning:
         md_lines.extend([
             "### 分析理由",
