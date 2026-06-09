@@ -22,6 +22,17 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("PA Agent starting up")
 
+    from pa_agent.licensing.activation_dialog import ensure_license_or_exit
+    from pa_agent.licensing.validator import LicenseValidator
+
+    license_validator = LicenseValidator()
+    license_info = ensure_license_or_exit(app, license_validator)
+    logger.info(
+        "License ok: expires=%s days_remaining=%s",
+        LicenseValidator.format_expiry(license_info.expires_at),
+        license_info.days_remaining,
+    )
+
     # Bootstrap all components (settings, data source, AI client, etc.)
     from pa_agent.app_context import AppContext
     ctx = AppContext.bootstrap()
@@ -33,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Build and show the main window
     from pa_agent.gui.main_window import MainWindow
-    window = MainWindow(ctx)
+    window = MainWindow(ctx, license_validator=license_validator)
     window.show()
 
     logger.info("Main window shown")

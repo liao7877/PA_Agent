@@ -4,14 +4,33 @@ All runtime directories are rooted at PROJECT_ROOT.
 Import this module everywhere instead of hard-coding paths.
 """
 from __future__ import annotations
+
+import os
+import sys
 from pathlib import Path
 
+
+def _bundle_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _runtime_root() -> Path:
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        root = base / "PA_Agent"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    return Path(__file__).resolve().parent.parent.parent
+
+
 # ── Root ──────────────────────────────────────────────────────────────────────
-# Resolve dynamically: this file is pa_agent/config/paths.py, so go up 3 levels.
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT: Path = _runtime_root()
+BUNDLE_ROOT: Path = _bundle_root()
 
 # ── Prompt engineering assets (read-only at runtime) ─────────────────────────
-PROMPT_DIR: Path = PROJECT_ROOT / "prompt_engineering"
+PROMPT_DIR: Path = (BUNDLE_ROOT if getattr(sys, "frozen", False) else PROJECT_ROOT) / "prompt_engineering"
 
 # Alias kept for backward compat with design doc
 PA_AGENT_DIR: Path = PROJECT_ROOT

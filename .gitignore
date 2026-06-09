@@ -18,10 +18,13 @@ dist/
 .env.*
 config/settings.json
 config/settings.local.json
+config/license_client.json
 config/exception_state.json
 config/secret.key
 *.pem
+!pa_agent/licensing/public_key.pem
 *.key
+tools/.license_keys/
 
 # ── Runtime artifacts ─────────────────────────────────────────────────────────
 logs/*

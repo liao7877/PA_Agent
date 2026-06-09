@@ -49,7 +49,7 @@ class GeneralSettings(BaseModel):
     """UI and data-feed general settings."""
     model_config = ConfigDict(extra="ignore")
 
-    analysis_bar_count: int = Field(default=100, ge=2, le=5000)
+    analysis_bar_count: int = Field(default=100, ge=20, le=5000)
     refresh_interval_ms: int = 1000
     context_warning_threshold_pct: float = 80.0
     last_data_source: DataSourceKind = "mt5"
@@ -166,9 +166,22 @@ def load_settings(path: Path | None = None) -> "Settings":
     path = path or SETTINGS_JSON_PATH
 
     if not path.exists():
-        defaults = Settings()
-        save_settings(defaults, path)
-        return defaults
+        import shutil
+        import sys
+
+        from pa_agent.config.paths import BUNDLE_ROOT
+
+        seeded = False
+        if getattr(sys, "frozen", False):
+            example = BUNDLE_ROOT / "config" / "settings.example.json"
+            if example.is_file():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(example, path)
+                seeded = True
+        if not seeded:
+            defaults = Settings()
+            save_settings(defaults, path)
+            return defaults
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
