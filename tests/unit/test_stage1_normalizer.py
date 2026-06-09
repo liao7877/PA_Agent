@@ -29,6 +29,31 @@ def test_hoists_bar_by_bar_summary_from_bar_analysis() -> None:
     assert "bar_by_bar_summary" not in (out.get("bar_analysis") or {})
 
 
+def test_maps_invented_bar_types() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "bar_analysis": {
+            **VALID_STAGE1.get("bar_analysis", {}),
+            "bar_type": "inside_bear",
+            "last_closed_bar": "K1",
+        },
+        "bar_by_bar_summary": [
+            {
+                "bar": "K3",
+                "role": "structure",
+                "bar_type": "doji_upper_shadow",
+                "context_effect": "neutral",
+                "follow_through": "no",
+                "trapped_side": "none",
+                "reason": "x",
+            }
+        ],
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_analysis"]["bar_type"] == "inside"
+    assert out["bar_by_bar_summary"][0]["bar_type"] == "doji"
+
+
 def test_maps_recommended_strategy_files() -> None:
     raw = {**VALID_STAGE1}
     del raw["strategy_files_needed"]

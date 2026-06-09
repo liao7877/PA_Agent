@@ -67,6 +67,17 @@ def _is_deepseek_native(base_url: str) -> bool:
     return "deepseek.com" in (base_url or "").lower()
 
 
+def _is_opencode_go(base_url: str) -> bool:
+    """OpenCode Zen Go plan — routes to DeepSeek with the same API limits."""
+    url = (base_url or "").lower()
+    return "opencode.ai" in url and "/zen/go" in url
+
+
+def _uses_deepseek_api_limits(base_url: str) -> bool:
+    """Gateways whose upstream enforces DeepSeek max_tokens / thinking rules."""
+    return _is_deepseek_native(base_url) or _is_opencode_go(base_url)
+
+
 def _is_kkai_openai_proxy(base_url: str) -> bool:
     """KKAI (api.kkone.vip) OpenAI-compatible gateway."""
     url = (base_url or "").lower()
@@ -160,7 +171,7 @@ def _provider_max_output_tokens(settings: AIProviderSettings) -> int:
     model = (settings.model or "").lower()
     if _is_packyapi(settings.base_url) and "claude" in model:
         return _PACKY_CLAUDE_MAX_OUTPUT_TOKENS
-    if _is_deepseek_native(settings.base_url):
+    if _uses_deepseek_api_limits(settings.base_url):
         return _DEEPSEEK_MAX_OUTPUT_TOKENS
     return _PRACTICAL_UNLIMITED_MAX_TOKENS
 
@@ -187,7 +198,7 @@ def _resolve_thinking_params(
     _effort = reasoning_effort if reasoning_effort is not None else settings.reasoning_effort
     model = settings.model or ""
 
-    if _is_deepseek_native(settings.base_url):
+    if _uses_deepseek_api_limits(settings.base_url):
         extra_body: dict[str, Any] = {
             "thinking": {"type": "enabled" if _thinking else "disabled"},
         }

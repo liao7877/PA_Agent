@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from pa_agent.ai.trace_normalize import normalize_stage2_traces
+from pa_agent.positions.decision_fields import has_position_management_intent
 from pa_agent.util.price_tick import (
     normalize_breakout_basis_extreme,
     normalize_breakout_entry_price,
@@ -77,6 +78,32 @@ def _section14_violated(trace: Any) -> bool:
 
 def _clear_decision_to_no_order(decision: dict[str, Any]) -> None:
     decision["order_type"] = "不下单"
+    if decision.get("position_action") == "调整":
+        for field in (
+            "entry_price",
+            "entry_basis_bar",
+            "entry_basis_extreme",
+            "entry_rule",
+        ):
+            decision[field] = None
+    else:
+        for field in _NO_ORDER_PRICE_FIELDS:
+            decision[field] = None
+    decision["estimated_win_rate"] = None
+
+
+def _apply_no_order_field_clearing(decision: dict[str, Any]) -> None:
+    """Enforce 不下单 price-field rules while preserving position management."""
+    if decision.get("position_action") == "调整":
+        for field in (
+            "entry_price",
+            "entry_basis_bar",
+            "entry_basis_extreme",
+            "entry_rule",
+        ):
+            decision[field] = None
+        decision["estimated_win_rate"] = None
+        return
     for field in _NO_ORDER_PRICE_FIELDS:
         decision[field] = None
     decision["estimated_win_rate"] = None
@@ -109,6 +136,8 @@ def _coerce_decision_no_order(out: dict[str, Any]) -> bool:
     if not isinstance(decision, dict):
         return False
     if decision.get("order_type") not in _TRADE_ORDER_TYPES:
+        return False
+    if has_position_management_intent(decision):
         return False
 
     trace = out.get("decision_trace")
@@ -185,6 +214,8 @@ def _coerce_decision_when_trade_metrics_fail(
     decision = out.get("decision")
     if not isinstance(decision, dict) or decision.get("order_type") not in _TRADE_ORDER_TYPES:
         return False
+    if has_position_management_intent(decision):
+        return False
     if decision.get("entry_price") is None:
         return False
 
@@ -216,12 +247,25 @@ def _coerce_decision_when_trade_metrics_fail(
     return True
 
 
+def _hoist_probability_alias(prediction: dict[str, Any], *, field: str = "probabilities") -> None:
+    """Models often write singular ``probability`` instead of ``probabilities``."""
+    if prediction.get(field) is not None:
+        return
+    alias = prediction.get("probability")
+    if isinstance(alias, dict):
+        prediction[field] = alias
+        prediction.pop("probability", None)
+        logger.info("Mapped next_*_prediction probability -> %s", field)
+
+
 def _normalize_next_cycle_prediction(prediction: dict[str, Any]) -> None:
     """In-place normalize next_cycle_prediction common model quirks. Idempotent."""
     from pa_agent.ai.cycle_enums import CYCLE_ORDER
 
     if not isinstance(prediction, dict):
         return
+
+    _hoist_probability_alias(prediction)
 
     # 1. unpredictable fallback
     unpredictable = bool(prediction.get("unpredictable", False))
@@ -309,6 +353,8 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
     """In-place normalize next_bar_prediction common model quirks. Idempotent."""
     if not isinstance(prediction, dict):
         return
+
+    _hoist_probability_alias(prediction)
 
     # 1. unpredictable fallback
     unpredictable = bool(prediction.get("unpredictable", False))
@@ -402,6 +448,32 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
     # else: unparseable probabilities with unpredictable=False — leave for validator
 
 
+def _normalize_watch_points(decision: dict[str, Any]) -> None:
+    """Coerce watch_points items to strings when the model outputs objects."""
+    raw = decision.get("watch_points")
+    if not isinstance(raw, list):
+        return
+    normalized: list[str] = []
+    changed = False
+    for item in raw:
+        if isinstance(item, str):
+            normalized.append(item)
+            continue
+        changed = True
+        if isinstance(item, dict):
+            parts: list[str] = []
+            for key in ("trigger", "condition", "action", "note", "text", "reason"):
+                val = item.get(key)
+                if isinstance(val, str) and val.strip():
+                    parts.append(val.strip())
+            normalized.append("；".join(parts) if parts else str(item))
+        else:
+            normalized.append(str(item))
+    if changed:
+        logger.info("Normalized watch_points objects -> strings (%s items)", len(normalized))
+        decision["watch_points"] = normalized
+
+
 def _max_bar_seq_from_frame(kline_frame: Any) -> int | None:
     bars = getattr(kline_frame, "bars", None) if kline_frame is not None else None
     if not bars:
@@ -452,12 +524,10 @@ def normalize_stage2(
         default_max_seq=frame_max,
     )
     decision = out.get("decision")
+    if isinstance(decision, dict):
+        _normalize_watch_points(decision)
     if isinstance(decision, dict) and decision.get("order_type") == "不下单":
-        # A no-order decision must satisfy the schema "then" branch:
-        # all price fields + direction must be null.
-        for field in _NO_ORDER_PRICE_FIELDS:
-            decision[field] = None
-        decision["estimated_win_rate"] = None
+        _apply_no_order_field_clearing(decision)
 
     bar_analysis = out.get("bar_analysis")
     decision = out.get("decision")

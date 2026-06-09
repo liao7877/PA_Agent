@@ -326,13 +326,46 @@ _DECISION_BASE: dict = {
         "watch_points": {"type": "array", "items": {"type": "string"}},
         "risk_assessment": {"type": "string"},
         "invalidation_condition": {"type": ["string", "null"]},
+        # 已有持仓时由 AI 显式填写；无持仓时必须为 null。
+        "position_action": {
+            "type": ["string", "null"],
+            "enum": ["持有", "调整", "平仓", None],
+        },
+        "position_advice": {"type": ["string", "null"]},
     },
     "allOf": [
-        # 不下单 → all price fields and direction must be null
+        # 不下单 + 持仓调整：允许 direction / 止盈止损，但 entry 相关必须为 null
+        {
+            "if": {
+                "properties": {
+                    "order_type": {"const": "不下单"},
+                    "position_action": {"const": "调整"},
+                },
+                "required": ["order_type", "position_action"],
+            },
+            "then": {
+                "properties": {
+                    "entry_price": {"type": "null"},
+                    "entry_basis_bar": {"type": "null"},
+                    "entry_basis_extreme": {"type": "null"},
+                    "entry_rule": {"type": "null"},
+                    "order_direction": {"type": "string", "enum": ["做多", "做空"]},
+                    "take_profit_price": {"type": ["number", "null"]},
+                    "stop_loss_price": {"type": ["number", "null"]},
+                    "estimated_win_rate": {"type": "null"},
+                },
+                "required": ["order_direction"],
+            },
+        },
+        # 不下单（默认 / 持有 / 平仓）→ 三价与方向必须为 null
         {
             "if": {
                 "properties": {"order_type": {"const": "不下单"}},
                 "required": ["order_type"],
+                "not": {
+                    "properties": {"position_action": {"const": "调整"}},
+                    "required": ["position_action"],
+                },
             },
             "then": {
                 "properties": {

@@ -1,10 +1,17 @@
 """Unit tests for Stage 2 normalizer — next_bar_prediction (T4)."""
 from __future__ import annotations
 
+import copy
 import json
 
 from pa_agent.ai.json_validator import Ok
-from pa_agent.ai.stage2_normalizer import normalize_stage2, _normalize_next_bar_prediction
+from pa_agent.ai.stage2_normalizer import (
+    normalize_stage2,
+    _normalize_next_bar_prediction,
+    _normalize_next_cycle_prediction,
+    _normalize_watch_points,
+)
+from tests.integration.conftest import VALID_STAGE2
 from pa_agent.data.base import IndicatorBundle, KlineBar, KlineFrame
 from tests.fixtures.validators import schema_test_validator
 
@@ -418,3 +425,87 @@ def test_normalize_stage2_without_prediction_noop():
     }
     result = normalize_stage2(obj)
     assert "next_bar_prediction" not in result
+
+
+def test_hoist_probability_alias_for_next_predictions() -> None:
+    bar_pred = {
+        "direction": "bearish",
+        "probability": {"bullish": 30, "bearish": 45, "neutral": 25},
+        "reasoning": "x",
+        "unpredictable": False,
+        "features_used": ["stage1_diagnosis"],
+    }
+    _normalize_next_bar_prediction(bar_pred)
+    assert bar_pred["probabilities"] == {"bullish": 30, "bearish": 45, "neutral": 25}
+    assert "probability" not in bar_pred
+
+    cycle_pred = {
+        "cycle": "broad_channel",
+        "direction": "neutral",
+        "probability": {
+            "spike": 2,
+            "micro_channel": 5,
+            "tight_channel": 10,
+            "normal_channel": 20,
+            "broad_channel": 35,
+            "trending_tr": 18,
+            "trading_range": 8,
+            "extreme_tr": 2,
+        },
+        "reasoning": "x",
+        "unpredictable": False,
+        "features_used": ["stage1_diagnosis"],
+    }
+    _normalize_next_cycle_prediction(cycle_pred)
+    assert cycle_pred["probabilities"]["broad_channel"] == 35
+    assert "probability" not in cycle_pred
+
+
+def test_normalize_watch_points_objects_to_strings() -> None:
+    decision = {
+        "watch_points": [
+            {
+                "trigger": "价格回撤至4337-4340",
+                "action": "等待高质量做多信号棒",
+            },
+            "已有字符串项",
+        ]
+    }
+    _normalize_watch_points(decision)
+    assert decision["watch_points"][0].startswith("价格回撤至4337-4340")
+    assert decision["watch_points"][1] == "已有字符串项"
+
+    obj = copy.deepcopy(VALID_STAGE2)
+    obj["decision"]["watch_points"] = [
+        {"trigger": "跌破支撑", "action": "观察反弹力度"},
+    ]
+    out = normalize_stage2(obj)
+    assert all(isinstance(x, str) for x in out["decision"]["watch_points"])
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
+
+
+def test_normalize_preserves_position_adjust_tp_sl_on_no_order() -> None:
+    obj = copy.deepcopy(VALID_STAGE2)
+    obj["decision"].update(
+        {
+            "order_type": "不下单",
+            "position_action": "调整",
+            "order_direction": "做多",
+            "entry_price": 4340.0,
+            "take_profit_price": 4380.0,
+            "stop_loss_price": 4335.0,
+            "estimated_win_rate": 55,
+        }
+    )
+    out = normalize_stage2(obj)
+    decision = out["decision"]
+    assert decision["order_type"] == "不下单"
+    assert decision["position_action"] == "调整"
+    assert decision["take_profit_price"] == 4380.0
+    assert decision["stop_loss_price"] == 4335.0
+    assert decision["order_direction"] == "做多"
+    assert decision["entry_price"] is None
+    assert decision["estimated_win_rate"] is None

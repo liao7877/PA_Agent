@@ -230,9 +230,14 @@ def _bar_range_from_reason(
     return f"K{older}" if older == newer else f"K{older}-K{newer}"
 
 
+def _rewrite_k0_tokens(text: str) -> str:
+    """K0 is the unclosed bar and must not appear in bar_range."""
+    return re.sub(r"\bK0\b", "K1", text, flags=re.IGNORECASE)
+
+
 def fix_bar_range_string(text: str, *, default_max_seq: int | None = None) -> str:
     """Canonicalize bar_range: order, aliases, spacing."""
-    raw = str(text).strip()
+    raw = _rewrite_k0_tokens(str(text).strip())
     if not raw:
         return ""
 
@@ -681,8 +686,122 @@ def _repair_stage2_decision_trace_questions(trace: list[Any]) -> None:
             item["question"] = canonical_q[nid]
 
 
+_TERMINAL_OUTCOME_DEFAULT_LABELS: dict[str, str] = {
+    "wait": "等待",
+    "reject": "放弃入场",
+    "trade": "执行交易",
+    "proceed": "继续评估",
+}
+
+
+def _ensure_stage2_terminal_label(obj: dict[str, Any]) -> None:
+    """Fill missing terminal.label from the cited trace node or outcome defaults."""
+    terminal = obj.get("terminal")
+    if not isinstance(terminal, dict):
+        obj["terminal"] = {
+            "node_id": "AUTO",
+            "outcome": "wait",
+            "label": "模型未提供 terminal，程序自动补全为等待",
+        }
+        terminal = obj["terminal"]
+    label = terminal.get("label")
+    if isinstance(label, str) and label.strip():
+        return
+
+    trace = obj.get("decision_trace")
+    nid = str(terminal.get("node_id", "") or "").strip()
+    outcome = str(terminal.get("outcome", "") or "").strip()
+
+    reason = ""
+    if isinstance(trace, list) and nid:
+        for item in reversed(trace):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("node_id", "") or "").strip() == nid:
+                reason = str(item.get("reason", "") or "").strip()
+                break
+
+    if reason:
+        terminal["label"] = reason[:240]
+        logger.debug(
+            "stage2 terminal.label inferred from decision_trace[%s].reason",
+            nid,
+        )
+        return
+
+    fallback = _TERMINAL_OUTCOME_DEFAULT_LABELS.get(outcome, "决策终止")
+    if nid == "10.3" and outcome == "reject":
+        fallback = "交易者方程不通过，不下单"
+    elif nid == "9.0" and outcome == "wait":
+        fallback = "等待：无可执行信号棒"
+    terminal["label"] = fallback
+    logger.debug(
+        "stage2 terminal.label missing -> default %r (node_id=%s outcome=%s)",
+        fallback,
+        nid,
+        outcome,
+    )
+
+
+_SECTION14_DENIAL_PHRASES = (
+    "未触犯",
+    "未违反",
+    "无触犯",
+    "无违规",
+    "通过扫描",
+    "扫描通过",
+    "无禁止",
+    "未触发",
+)
+
+
+def _trace_node_answer(trace: Any, node_id: str) -> str | None:
+    if not isinstance(trace, list):
+        return None
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("node_id", "")).strip() == node_id:
+            return str(item.get("answer", "") or "").strip()
+    return None
+
+
+def _section14_genuinely_violated(trace: Any) -> bool:
+    if not isinstance(trace, list):
+        return False
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("node_id", "")).strip()
+        if not nid.startswith("14"):
+            continue
+        if str(item.get("answer", "")).strip() != "是":
+            continue
+        reason = str(item.get("reason", "") or "")
+        if any(phrase in reason for phrase in _SECTION14_DENIAL_PHRASES):
+            continue
+        return True
+    return False
+
+
+def _no_entry_plan(trace: Any) -> bool:
+    ans_90 = _trace_node_answer(trace, "9.0")
+    if ans_90 in ("否", "等待"):
+        return True
+    return _trace_node_answer(trace, "10.1") == "否"
+
+
+def _infer_no_order_terminal_outcome(trace: Any) -> str:
+    """Map a mistaken terminal.outcome=trade to wait/reject for 不下单 paths."""
+    if _section14_genuinely_violated(trace):
+        return "reject"
+    if _trace_node_answer(trace, "10.3") == "否":
+        return "reject"
+    return "wait"
+
+
 def _repair_stage2_terminal(obj: dict[str, Any]) -> None:
-    """When 10.3 is 否 on a no-order path, terminal must cite node 10.3."""
+    """Align terminal outcome/node_id with order_type=不下单 decision paths."""
     trace = obj.get("decision_trace")
     terminal = obj.get("terminal")
     decision = obj.get("decision")
@@ -690,7 +809,31 @@ def _repair_stage2_terminal(obj: dict[str, Any]) -> None:
         return
     if not isinstance(decision, dict) or decision.get("order_type") != "不下单":
         return
-    if terminal.get("outcome") not in ("wait", "reject"):
+
+    outcome = str(terminal.get("outcome", "") or "").strip()
+
+    if outcome == "trade":
+        new_outcome = _infer_no_order_terminal_outcome(trace)
+        logger.info(
+            "stage2 terminal.outcome 'trade' -> %r (order_type=不下单)",
+            new_outcome,
+        )
+        terminal["outcome"] = new_outcome
+        outcome = new_outcome
+
+    if (
+        outcome == "reject"
+        and _no_entry_plan(trace)
+        and not _section14_genuinely_violated(trace)
+    ):
+        logger.info(
+            "stage2 terminal.outcome 'reject' -> 'wait' "
+            "(no entry plan: §9.0=否/等待 or §10.1=否)"
+        )
+        terminal["outcome"] = "wait"
+        outcome = "wait"
+
+    if outcome not in ("wait", "reject"):
         return
 
     for item in trace:
@@ -804,3 +947,4 @@ def normalize_stage2_traces(
         )
         _repair_stage2_decision_trace_questions(trace)
     _repair_stage2_terminal(obj)
+    _ensure_stage2_terminal_label(obj)

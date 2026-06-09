@@ -1,6 +1,7 @@
 """Tests for gate/decision trace normalization."""
 from __future__ import annotations
 
+import copy
 import json
 
 from pa_agent.ai.json_validator import Ok
@@ -18,6 +19,7 @@ from tests.integration.conftest import VALID_STAGE2
 def test_fix_reversed_bar_range() -> None:
     assert fix_bar_range_string("K1-K4") == "K4-K1"
     assert fix_bar_range_string("K50-K1") == "K50-K1"
+    assert fix_bar_range_string("K0-K1") == "K1"
 
 
 def test_pending_bar_range_inferred_from_reason() -> None:
@@ -478,6 +480,28 @@ def test_validator_accepts_stage2_with_null_bar_range_and_forbid_phrase() -> Non
     assert node_14 is not None
 
 
+def test_ensure_stage2_terminal_label_from_trace_reason() -> None:
+    """Models often omit terminal.label; infer from cited node's reason."""
+    reason_103 = (
+        "盈亏比 0.9:1 低于均衡底线 1.2:1，交易者方程不通过，放弃本次突破单。"
+    )
+    obj = {
+        "decision": {"order_type": "不下单"},
+        "decision_trace": [
+            {
+                "node_id": "10.3",
+                "question": "交易者方程是否通过？",
+                "answer": "否",
+                "reason": reason_103,
+                "bar_range": "K4-K1",
+            },
+        ],
+        "terminal": {"node_id": "10.3", "outcome": "reject"},
+    }
+    normalize_stage2_traces(obj, normalization_mode="strict")
+    assert obj["terminal"]["label"] == reason_103
+
+
 def test_repair_stage2_terminal_when_103_no() -> None:
     """Regression: model ends at 9.5 but 10.3 answer=否 → terminal must be 10.3."""
     obj = {
@@ -490,6 +514,74 @@ def test_repair_stage2_terminal_when_103_no() -> None:
     }
     normalize_stage2_traces(obj, normalization_mode="strict")
     assert obj["terminal"]["node_id"] == "10.3"
+
+
+def test_repair_stage2_terminal_trade_outcome_when_no_order() -> None:
+    """Regression: model sets outcome=trade while order_type=不下单 → auto-fix."""
+    obj = copy.deepcopy(VALID_STAGE2)
+    obj["decision"]["order_type"] = "不下单"
+    for field in (
+        "order_direction",
+        "entry_price",
+        "take_profit_price",
+        "stop_loss_price",
+        "entry_basis_bar",
+        "entry_basis_extreme",
+        "entry_rule",
+        "estimated_win_rate",
+    ):
+        obj["decision"][field] = None
+    obj["decision_trace"] = [
+        {
+            "node_id": "10.3",
+            "question": "交易者方程是否通过？",
+            "answer": "否",
+            "reason": "盈亏比不足",
+            "bar_range": "K1",
+        },
+    ]
+    obj["terminal"] = {"node_id": "11.2", "outcome": "trade", "label": "突破做空"}
+    out = normalize_stage2(obj)
+    assert out["terminal"]["outcome"] == "reject"
+    assert out["terminal"]["node_id"] == "10.3"
+
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
+
+
+def test_repair_stage2_terminal_reject_to_wait_when_no_entry_plan() -> None:
+    obj = copy.deepcopy(VALID_STAGE2)
+    obj["decision"]["order_type"] = "不下单"
+    for field in (
+        "order_direction",
+        "entry_price",
+        "take_profit_price",
+        "stop_loss_price",
+        "entry_basis_bar",
+        "entry_basis_extreme",
+        "entry_rule",
+        "estimated_win_rate",
+    ):
+        obj["decision"][field] = None
+    obj["decision_trace"] = [
+        {
+            "node_id": "9.0",
+            "question": "是否有可执行信号棒？",
+            "answer": "否",
+            "reason": "无合格信号",
+            "bar_range": "K1",
+        },
+    ]
+    obj["terminal"] = {"node_id": "9.0", "outcome": "reject", "label": "放弃"}
+    out = normalize_stage2(obj)
+    assert out["terminal"]["outcome"] == "wait"
+
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
 
 
 def test_repair_stage2_canonical_question_42() -> None:

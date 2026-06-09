@@ -89,6 +89,34 @@ def test_completion_max_tokens_deepseek_cap():
     assert _completion_max_tokens(settings, extra_body={}, effort="max") == 393_216
 
 
+def test_completion_max_tokens_opencode_go_cap():
+    settings = _make_settings()
+    settings.base_url = "https://opencode.ai/zen/go/v1"
+    settings.model = "deepseek-v4-pro"
+    assert _completion_max_tokens(settings, extra_body={}, effort="max") == 393_216
+
+
+def test_chat_opencode_go_sends_deepseek_max_tokens_and_thinking():
+    settings = _make_settings()
+    settings.base_url = "https://opencode.ai/zen/go/v1"
+    settings.model = "deepseek-v4-pro"
+    settings.thinking = True
+    settings.reasoning_effort = "max"
+    client = DeepSeekClient(settings)
+
+    mock_resp = _make_mock_response()
+    mock_openai = MagicMock()
+    mock_openai.return_value.chat.completions.create.return_value = mock_resp
+
+    with patch("pa_agent.ai.deepseek_client._OpenAI", mock_openai):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["max_tokens"] == 393_216
+    assert kwargs["extra_body"]["thinking"]["type"] == "enabled"
+    assert kwargs["reasoning_effort"] == "max"
+
+
 def test_completion_max_tokens_packy_claude_cap():
     settings = _make_settings()
     settings.base_url = "https://www.packyapi.com/v1"

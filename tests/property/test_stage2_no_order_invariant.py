@@ -102,6 +102,21 @@ def _base_stage2(decision: dict) -> dict:
 
 # ── 不下单 side ────────────────────────────────────────────────────────────────
 
+def test_no_order_adjust_action_allows_tp_sl_with_direction():
+    """不下单 + position_action=调整 may carry new TP/SL for open-position management."""
+    obj = _base_stage2(
+        _base_decision(
+            order_type="不下单",
+            position_action="调整",
+            order_direction="做多",
+            take_profit_price=4380.0,
+            stop_loss_price=4335.0,
+        )
+    )
+    result = validator.validate("stage2", json.dumps(obj))
+    assert isinstance(result, Ok), f"Expected Ok, got {result}"
+
+
 def test_no_order_all_null_accepted():
     """不下单 with all price fields null is accepted.
 

@@ -6,7 +6,9 @@ import json
 import pytest
 
 from pa_agent.ai.coherence_checks import (
+    auto_fix_invalid_bar_labels,
     validate_bar_by_bar_vs_features,
+    validate_duplicate_bar_ranges,
     validate_incremental_stage1_coherence,
     validate_stage1_coherence,
     validate_stage2_coherence,
@@ -135,6 +137,25 @@ def test_stage2_order_direction_conflicts_stage1() -> None:
     assert any("做空 conflicts" in e for e in errs)
 
 
+def test_duplicate_single_bar_range_is_allowed() -> None:
+    """Multiple §9/§10 nodes may legitimately cite the same signal bar (K1)."""
+    trace = [
+        {"node_id": "9.0", "answer": "否", "reason": "r", "bar_range": "K1"},
+        {"node_id": "9.4", "answer": "不适用", "reason": "r", "bar_range": "K1", "skipped": True},
+        {"node_id": "9.6", "answer": "不适用", "reason": "r", "bar_range": "K1", "skipped": True},
+        {"node_id": "10.1", "answer": "否", "reason": "r", "bar_range": "K1"},
+        {"node_id": "10.2", "answer": "不适用", "reason": "r", "bar_range": "K1", "skipped": True},
+        {"node_id": "14", "answer": "否", "reason": "r", "bar_range": "K8-K1"},
+    ]
+    assert validate_duplicate_bar_ranges(trace, path_prefix="decision_trace", min_items=5) == []
+
+
+def test_duplicate_multi_bar_range_still_errors() -> None:
+    trace = [{"node_id": f"9.{i}", "answer": "否", "reason": "r", "bar_range": "K8-K1"} for i in range(6)]
+    errs = validate_duplicate_bar_ranges(trace, path_prefix="decision_trace", min_items=5)
+    assert any("identical bar_range" in e for e in errs)
+
+
 def test_incremental_requires_delta_language() -> None:
     s1 = _stage1_proceed()
     errs = validate_incremental_stage1_coherence(s1, new_bar_count=3)
@@ -182,6 +203,28 @@ def test_bar_type_mismatch_near_threshold_does_not_error_in_strict() -> None:
         "bar_by_bar_summary": [{"bar": "K1", "bar_type": "trend_bull", "reason": "x"}]
     }
     # Program would likely classify as doji (body_ratio <= 0.25) or other; we tolerate mismatch.
+    errs = validate_bar_by_bar_vs_features(stage1, kline_frame=frame, strict=True)
+    assert errs == []
+
+
+def test_duplicate_bar_range_wide_window_allowed() -> None:
+    trace = [
+        {"node_id": f"9.{i}", "answer": "是", "bar_range": "K8-K1", "reason": "x"}
+        for i in range(5)
+    ]
+    assert validate_duplicate_bar_ranges(trace, path_prefix="decision_trace", min_items=5) == []
+
+
+def test_auto_fix_k0_bar_label_to_k1() -> None:
+    frame = _frame(5)
+    stage1 = {
+        "bar_by_bar_summary": [
+            {"bar": "K0", "bar_type": "doji", "reason": "model slip"},
+        ]
+    }
+    msgs = auto_fix_invalid_bar_labels(stage1, kline_frame=frame)
+    assert msgs == ["bar_by_bar_summary[0].bar K0 -> K1"]
+    assert stage1["bar_by_bar_summary"][0]["bar"] == "K1"
     errs = validate_bar_by_bar_vs_features(stage1, kline_frame=frame, strict=True)
     assert errs == []
 

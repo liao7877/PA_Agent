@@ -355,10 +355,12 @@ def test_incremental_stage1_prompt_includes_previous_record_and_new_bars(
 
     messages = assembler.build_incremental_stage1(frame, previous, 2)
 
-    # 4-message continuation structure: system, user(prev S1), assistant(prev S1 reply), user(incremental)
+    # 4-message continuation structure: system, user(current S1), assistant(prev S1 reply), user(incremental)
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
-    # Message [1] is the previous full Stage 1 user prompt (with K-line table)
-    assert messages[1]["content"] == prev_user
+    # Message [1] must use the CURRENT frame (fresh K-line table), not stale previous messages
+    current_user = assembler.build_stage1(frame)[1]["content"]
+    assert messages[1]["content"] == current_user
+    assert messages[1]["content"] == prev_user  # same frame → identical content
     # Message [2] is the previous Stage 1 reply
     assert messages[2]["content"] == prev_assistant
     # Message [3] is the incremental task
@@ -378,6 +380,78 @@ def test_incremental_stage1_prompt_includes_previous_record_and_new_bars(
     # But new K-line data is present
     assert "新增 K线数据" in incremental_user
     assert "完整窗口计算" in incremental_user
+
+
+def test_incremental_stage1_uses_current_kline_numbering_after_new_bars(
+    assembler: PromptAssembler,
+):
+    """Regression: incremental must not reuse stale K1..Kn from the prior run."""
+    from pa_agent.records.schema import AnalysisRecord, RecordMeta
+
+    def _frame_with_ts(timestamps: list[float]) -> KlineFrame:
+        bars = tuple(
+            KlineBar(
+                seq=i + 1,
+                ts_open=ts,
+                open=2600.0 + i,
+                high=2610.0 + i,
+                low=2590.0 + i,
+                close=2605.0 + i,
+                volume=1000.0,
+                closed=True,
+            )
+            for i, ts in enumerate(timestamps)
+        )
+        n = len(bars)
+        return KlineFrame(
+            symbol="XAUUSD",
+            timeframe="1h",
+            bars=bars,
+            indicators=IndicatorBundle(
+                ema20=tuple(2600.0 + i for i in range(n)),
+                atr14=tuple(5.0 for _ in range(n)),
+            ),
+            snapshot_ts_local_ms=1_700_000_000_000,
+        )
+
+    base = 1_700_000_000.0
+    prev_frame = _frame_with_ts([base, base - 3600, base - 7200])
+    current_frame = _frame_with_ts(
+        [base + 7200, base + 3600, base, base - 3600, base - 7200]
+    )
+    stale_user = assembler.build_stage1(prev_frame)[1]["content"]
+    previous = AnalysisRecord(
+        meta=RecordMeta(
+            timestamp_local_iso="2026-01-01T00:00:00.000",
+            timestamp_local_ms=1,
+            symbol="XAUUSD",
+            timeframe="1h",
+            bar_count=3,
+            ai_provider={},
+        ),
+        kline_data=[],
+        htf_text="",
+        stage1_messages=assembler.build_stage1(prev_frame),
+        stage1_response={"content": '{"cycle_position":"normal_channel"}'},
+        stage1_diagnosis={"cycle_position": "normal_channel"},
+        stage2_messages=[],
+        stage2_response=None,
+        stage2_decision={"decision": {"order_type": "不下单"}},
+        strategy_files_used=[],
+        experience_loaded=[],
+        exception=None,
+        usage_total={},
+    )
+
+    messages = assembler.build_incremental_stage1(current_frame, previous, 2)
+    current_user = messages[1]["content"]
+
+    assert current_user != stale_user
+    assert "K线数量:5" in current_user
+    assert "K线数量:3" in stale_user
+    # Prior K1 (seq=1 at base) is now seq=3 in the 5-bar window — stale table still shows it as 1
+    assert f"3    |" in current_user or "| 3    |" in current_user
+    assert f"1    |" in stale_user
 
 
 def test_incremental_stage1_raises_without_previous_messages(

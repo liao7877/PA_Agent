@@ -243,11 +243,53 @@ def validate_duplicate_bar_ranges(
     if len(ranges) < min_items:
         return []
     if len(set(ranges)) == 1:
+        shared = ranges[0]
+        seqs = _parse_bar_range_seqs(shared)
+        # Multiple §9/§10 nodes legitimately cite the same single signal bar (e.g. K1).
+        if len(seqs) == 1:
+            return []
+        # Wide window citations (e.g. K8-K1) are lazy but semantically valid.
+        if len(seqs) >= 4:
+            return []
         return [
-            f"{path_prefix}: {len(ranges)} nodes share identical bar_range {ranges[0]!r}; "
+            f"{path_prefix}: {len(ranges)} nodes share identical bar_range {shared!r}; "
             "each node should cite the K-lines it actually used"
         ]
     return []
+
+
+def auto_fix_invalid_bar_labels(
+    stage1: dict[str, Any],
+    *,
+    kline_frame: Any = None,
+) -> list[str]:
+    """Rewrite K0 (unclosed bar) to K1 in bar_by_bar_summary when the model slips."""
+    if kline_frame is None:
+        return []
+    summary = stage1.get("bar_by_bar_summary")
+    if not isinstance(summary, list):
+        return []
+
+    from pa_agent.ai.kline_features import compute_kline_geometry_features
+
+    features = {f.seq: f for f in compute_kline_geometry_features(kline_frame)}
+    if not features:
+        return []
+
+    corrections: list[str] = []
+    for i, item in enumerate(summary):
+        if not isinstance(item, dict):
+            continue
+        bar_label = str(item.get("bar", "") or "").strip()
+        m = _BAR_FIELD_RE.search(bar_label)
+        if not m:
+            continue
+        seq = int(m.group(1))
+        if seq != 0 or features.get(1) is None:
+            continue
+        item["bar"] = "K1"
+        corrections.append(f"bar_by_bar_summary[{i}].bar K0 -> K1")
+    return corrections
 
 
 def auto_fix_bar_by_bar_types(

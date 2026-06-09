@@ -10,6 +10,7 @@ from pa_agent.ai.json_validator import (
     JsonValidator,
     Ok,
     ValidationError,
+    _finalize_json_repairs,
     _repair_unescaped_quotes,
     _strip_fences,
 )
@@ -35,6 +36,24 @@ def test_strip_fences_includes_repair():
     raw = _SAMPLE.read_text(encoding="utf-8")
     obj = json.loads(_strip_fences(raw))
     assert isinstance(obj["decision_trace"], list)
+
+
+def test_repair_missing_comma_between_object_fields():
+    """Models often omit comma after a long string value before the next key."""
+    broken = (
+        '{"decision": {"reasoning": "等待信号，outcome=wait。"\n'
+        '    "diagnosis_confidence": 75, "order_type": "不下单"}}'
+    )
+    obj = json.loads(_strip_fences(broken))
+    assert obj["decision"]["diagnosis_confidence"] == 75
+
+
+def test_repair_literal_newline_inside_json_string():
+    """Unescaped newlines inside string values must not break parsing."""
+    broken = '{"reasoning": "第一行\n第二行", "ok": true}'
+    obj = json.loads(_finalize_json_repairs(broken))
+    assert "第一行" in obj["reasoning"]
+    assert obj["ok"] is True
 
 
 # ── T2: Schema backward-compatibility tests ──────────────────────────────────

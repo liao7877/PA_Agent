@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from pa_agent.records.experience_reader import ExperienceReader
     from pa_agent.records.pending_writer import PendingWriter
 
-from pa_agent.ai.json_validator import Ok, ValidationError
+from pa_agent.ai.json_validator import Ok, ValidationError, try_extract_parsed_object
 from pa_agent.data.base import KlineFrame
 from pa_agent.records.schema import AnalysisRecord, RecordMeta
 from pa_agent.util.threading import CancelToken, OrchestratorEvent
@@ -87,6 +87,47 @@ def _json_truncation_hint(content: str, err: ValidationError) -> str | None:
             " 常见原因：completion 额度主要在思考区用尽，正文 JSON 只写了一小段。"
         )
     return None
+
+
+def _stage2_decision_from_validation_error(
+    err: ValidationError,
+    *,
+    content: str,
+    kline_frame: KlineFrame,
+    decision_stance: str | None,
+    stage1_json: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Keep stage-2 decision visible when strict validation fails but JSON is usable."""
+    partial = err.partial_obj if isinstance(err.partial_obj, dict) else None
+    if partial is None:
+        partial = try_extract_parsed_object(
+            "stage2",
+            content or err.raw_text,
+            kline_frame=kline_frame,
+            decision_stance=decision_stance,
+            stage1_json=stage1_json,
+        )
+    return partial
+
+
+def _stage1_diagnosis_from_validation_error(
+    err: ValidationError,
+    *,
+    content: str,
+    kline_frame: KlineFrame,
+    incremental_new_bar_count: int,
+    incremental_previous_stage1: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    partial = err.partial_obj if isinstance(err.partial_obj, dict) else None
+    if partial is None:
+        partial = try_extract_parsed_object(
+            "stage1",
+            content or err.raw_text,
+            kline_frame=kline_frame,
+            incremental_new_bar_count=incremental_new_bar_count,
+            incremental_previous_stage1=incremental_previous_stage1,
+        )
+    return partial
 
 
 def _enrich_stage2_validation_message(err: ValidationError, reply: Any) -> str:
@@ -486,15 +527,24 @@ class TwoStageOrchestrator:
         if isinstance(result_s1, ValidationError):
             err = result_s1
             err_message = _enrich_stage1_validation_message(err, reply_s1)
+            preserved_s1 = _stage1_diagnosis_from_validation_error(
+                err,
+                content=reply_s1.content,
+                kline_frame=frame,
+                incremental_new_bar_count=int(incremental_new_bar_count or 0),
+                incremental_previous_stage1=prev_s1,
+            )
             logger.warning(
-                "Stage 1 validation failed: category=%s message=%s",
+                "Stage 1 validation failed: category=%s message=%s preserved=%s",
                 err.category,
                 err_message,
+                preserved_s1 is not None,
             )
             record = record.model_copy(
                 update={
                     "stage1_messages": messages_s1,
                     "stage1_response": reply_s1.raw,
+                    "stage1_diagnosis": preserved_s1,
                     "usage_total": _accumulate_usage(record.usage_total, reply_s1.usage),
                     "exception": {
                         "type": "validation_error",
@@ -505,6 +555,7 @@ class TwoStageOrchestrator:
                         "invalid_fields": err.invalid_fields,
                         "raw_text": err.raw_text,
                         "parse_position": err.parse_position,
+                        "decision_preserved": preserved_s1 is not None,
                     },
                 }
             )
@@ -741,10 +792,18 @@ class TwoStageOrchestrator:
         if isinstance(result_s2, ValidationError):
             err = result_s2
             err_message = _enrich_stage2_validation_message(err, reply_s2)
+            preserved_s2 = _stage2_decision_from_validation_error(
+                err,
+                content=reply_s2.content,
+                kline_frame=frame,
+                decision_stance=record.meta.decision_stance,
+                stage1_json=stage1_json,
+            )
             logger.warning(
-                "Stage 2 validation failed: category=%s message=%s",
+                "Stage 2 validation failed: category=%s message=%s preserved=%s",
                 err.category,
                 err_message,
+                preserved_s2 is not None,
             )
             record = record.model_copy(
                 update={
@@ -753,6 +812,7 @@ class TwoStageOrchestrator:
                     "stage1_diagnosis": stage1_json,
                     "stage2_messages": messages_s2,
                     "stage2_response": reply_s2.raw,
+                    "stage2_decision": preserved_s2,
                     "strategy_files_used": strategy_files,
                     "experience_loaded": [
                         e.model_dump() if hasattr(e, "model_dump") else dict(e)
@@ -771,6 +831,7 @@ class TwoStageOrchestrator:
                         "invalid_fields": err.invalid_fields,
                         "raw_text": err.raw_text,
                         "parse_position": err.parse_position,
+                        "decision_preserved": preserved_s2 is not None,
                     },
                 }
             )

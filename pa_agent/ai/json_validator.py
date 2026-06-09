@@ -51,6 +51,7 @@ class ValidationError:
     invalid_fields: list[str] = field(default_factory=list)
     allowed_values: dict[str, list] = field(default_factory=dict)
     message: str = ""
+    partial_obj: dict[str, Any] | None = None  # parsed+normalized payload when available
 
 
 Result = Ok | ValidationError
@@ -118,7 +119,7 @@ def _strip_fences(text: str) -> str:
     m_embedded = _FENCE_RE.search(t)
     if m_embedded:
         t = m_embedded.group(1).strip()
-        return _repair_unescaped_quotes(_repair_semicolon_separator(_extract_outer_json_object(t)))
+        return _finalize_json_repairs(_extract_outer_json_object(t))
 
     # Fully fenced ```json ... ``` starting at top
     if t.startswith("```"):
@@ -131,7 +132,122 @@ def _strip_fences(text: str) -> str:
     # Common model mistake: raw JSON + trailing ``` only
     t = _TRAILING_FENCE_RE.sub("", t).strip()
 
-    return _repair_unescaped_quotes(_repair_semicolon_separator(_extract_outer_json_object(t)))
+    return _finalize_json_repairs(_extract_outer_json_object(t))
+
+
+def _finalize_json_repairs(text: str) -> str:
+    """Apply ordered JSON typo repairs before ``json.loads``."""
+    t = _repair_missing_commas_between_fields(text)
+    t = _repair_semicolon_separator(t)
+    t = _escape_control_chars_in_json_strings(t)
+    return _repair_unescaped_quotes(t)
+
+
+def _looks_like_next_object_key(text: str, start: int) -> bool:
+    """True when ``start`` points at ``"field_name":`` (missing-comma typo)."""
+    if start >= len(text) or text[start] != '"':
+        return False
+    j = start + 1
+    while j < len(text) and text[j] != '"':
+        if text[j] == "\\":
+            j += 2
+            continue
+        j += 1
+    if j >= len(text):
+        return False
+    k = j + 1
+    while k < len(text) and text[k] in " \t\r\n":
+        k += 1
+    return k < len(text) and text[k] == ":"
+
+
+def _repair_missing_commas_between_fields(text: str) -> str:
+    """Insert commas between object fields when the model omits them.
+
+    Example: ``"reasoning": "…"\\n    "diagnosis_confidence": 75``
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(text)
+
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if escape:
+            escape = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            escape = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and _looks_like_next_object_key(text, j):
+                out.append('"')
+                out.append(",")
+                i += 1
+                continue
+            in_string = False
+            out.append(ch)
+            i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def _escape_control_chars_in_json_strings(text: str) -> str:
+    """Escape raw newlines/tabs inside JSON string values."""
+    out: list[str] = []
+    in_string = False
+    escape = False
+
+    for ch in text:
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            continue
+
+        if escape:
+            escape = False
+            out.append(ch)
+            continue
+        if ch == "\\":
+            escape = True
+            out.append(ch)
+            continue
+        if ch == '"':
+            in_string = False
+            out.append(ch)
+            continue
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch < " ":
+            continue
+        else:
+            out.append(ch)
+
+    return "".join(out)
 
 
 # ── Unescaped quote repair ────────────────────────────────────────────────────
@@ -174,7 +290,11 @@ def _repair_unescaped_quotes(text: str) -> str:
             j = i + 1
             while j < n and text[j] in " \t\r\n":
                 j += 1
-            if j >= n or text[j] in _STRING_END_CHARS:
+            if (
+                j >= n
+                or text[j] in _STRING_END_CHARS
+                or _looks_like_next_object_key(text, j)
+            ):
                 in_string = False
                 out.append(ch)
             else:
@@ -409,15 +529,12 @@ class JsonValidator:
         try:
             obj = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            # Stage 2: fail fast on syntax errors (no silent truncation repair).
             allow_inject = (
                 stage == "stage1"
                 and not getattr(self._validation, "disable_truncation_repair", True)
             )
-            repaired = (
-                _try_repair_json_syntax(stripped, stage, allow_tail_inject=allow_inject)
-                if stage == "stage1"
-                else None
+            repaired = _try_repair_json_syntax(
+                stripped, stage, allow_tail_inject=allow_inject
             )
             if repaired is not None:
                 try:
@@ -501,12 +618,17 @@ class JsonValidator:
             from pa_agent.ai.decision_tree import validate_gate_result_consistency
             from pa_agent.ai.coherence_checks import (
                 auto_fix_bar_by_bar_types,
+                auto_fix_invalid_bar_labels,
                 validate_incremental_stage1_coherence,
                 validate_stage1_coherence,
             )
 
             for msg in validate_gate_result_consistency(obj):
                 invalid.append(f"gate:{msg}")
+            for msg in auto_fix_invalid_bar_labels(obj, kline_frame=kline_frame):
+                import logging as _logging
+
+                _logging.getLogger(__name__).info("stage1 %s", msg)
             # Auto-correct contradicting bar_type values before validation so
             # minor model slips (writing trend_bull when program says trend_bear)
             # don't cause the whole analysis to fail.
@@ -614,6 +736,7 @@ class JsonValidator:
             invalid_fields=invalid,
             allowed_values=allowed,
             message=f"{len(errors)} schema error(s): {first_message}",
+            partial_obj=obj,
         )
 
     @staticmethod
@@ -630,12 +753,25 @@ class JsonValidator:
         price_fields = ["entry_price", "take_profit_price", "stop_loss_price", "order_direction"]
 
         if order_type == "不下单":
-            violated = [f for f in price_fields if decision.get(f) is not None]
-            if violated:
-                return {
-                    "fields": violated,
-                    "allowed": {f: [None] for f in violated},
-                }
+            if decision.get("position_action") == "调整":
+                violated = [
+                    f for f in ("entry_price", "entry_basis_bar", "entry_basis_extreme", "entry_rule")
+                    if decision.get(f) is not None
+                ]
+                if decision.get("order_direction") is None:
+                    violated.append("order_direction")
+                if violated:
+                    allowed = {f: [None] for f in violated if f != "order_direction"}
+                    if "order_direction" in violated:
+                        allowed["order_direction"] = ["做多", "做空"]
+                    return {"fields": violated, "allowed": allowed}
+            else:
+                violated = [f for f in price_fields if decision.get(f) is not None]
+                if violated:
+                    return {
+                        "fields": violated,
+                        "allowed": {f: [None] for f in violated},
+                    }
         elif order_type in ("限价单", "突破单", "市价单"):
             violated = [f for f in price_fields if decision.get(f) is None]
             if violated:
@@ -964,3 +1100,84 @@ def _all_stage2_reasons(obj: dict) -> str:
         if isinstance(item, dict):
             parts.append(str(item.get("reason", "") or ""))
     return "\n".join(parts)
+
+
+def _has_usable_stage1_diagnosis(obj: dict[str, Any]) -> bool:
+    decision = obj.get("decision")
+    if isinstance(decision, dict) and decision.get("order_type"):
+        return False
+    return bool(
+        obj.get("cycle_position")
+        or obj.get("gate_trace")
+        or obj.get("bar_by_bar_summary")
+        or obj.get("direction")
+    )
+
+
+def _has_usable_stage2_decision(obj: dict[str, Any]) -> bool:
+    decision = obj.get("decision")
+    return isinstance(decision, dict) and bool(str(decision.get("order_type", "")).strip())
+
+
+def try_extract_parsed_object(
+    stage: Literal["stage1", "stage2"],
+    raw_text: str,
+    *,
+    kline_frame: Any = None,
+    decision_stance: str | None = None,
+    stage1_json: dict[str, Any] | None = None,
+    incremental_new_bar_count: int = 0,
+    incremental_previous_stage1: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Best-effort parse + lenient normalize for UI display when strict validation fails."""
+    stripped = _strip_fences(raw_text)
+    if not stripped.startswith("{"):
+        return None
+
+    obj: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            obj = parsed
+    except json.JSONDecodeError:
+        for candidate in (
+            _try_repair_json_syntax(stripped, stage, allow_tail_inject=False),
+            _balance_json_brackets(stripped),
+        ):
+            if not candidate:
+                continue
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                obj = parsed
+                break
+
+    if obj is None:
+        return None
+
+    if stage == "stage1":
+        from pa_agent.ai.stage1_normalizer import normalize_stage1
+
+        obj = normalize_stage1(
+            obj,
+            normalization_mode="lenient",
+            kline_frame=kline_frame,
+            incremental_new_bar_count=int(incremental_new_bar_count or 0),
+            incremental_previous_stage1=incremental_previous_stage1
+            if incremental_new_bar_count > 0
+            else None,
+        )
+        return obj if _has_usable_stage1_diagnosis(obj) else None
+
+    from pa_agent.ai.stage2_normalizer import normalize_stage2
+
+    obj = normalize_stage2(
+        obj,
+        normalization_mode="lenient",
+        kline_frame=kline_frame,
+        decision_stance=decision_stance,
+        stage1_json=stage1_json,
+    )
+    return obj if _has_usable_stage2_decision(obj) else None

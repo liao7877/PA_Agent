@@ -55,6 +55,40 @@ _BAR_ROLE_ALIASES: dict[str, str] = {
 }
 
 # Model often omits the trailing "s" on strengthens_* / weakens_*.
+_VALID_BAR_TYPES = frozenset({
+    "trend_bull",
+    "trend_bear",
+    "doji",
+    "inside",
+    "outside_bull",
+    "outside_bear",
+    "flat",
+    "other",
+})
+
+_BAR_TYPE_ALIASES: dict[str, str] = {
+    "inside_bear": "inside",
+    "inside_bull": "inside",
+    "bear_inside": "inside",
+    "bull_inside": "inside",
+    "bearish_inside": "inside",
+    "bullish_inside": "inside",
+    "doji_upper_shadow": "doji",
+    "doji_lower_shadow": "doji",
+    "doji_upper": "doji",
+    "doji_lower": "doji",
+    "upper_shadow_doji": "doji",
+    "lower_shadow_doji": "doji",
+    "long_legged_doji": "doji",
+    "spinning_top": "doji",
+    "hammer": "doji",
+    "shooting_star": "doji",
+    "small_doji": "doji",
+    "trend": "other",
+    "range": "flat",
+    "ranging": "flat",
+}
+
 _CONTEXT_EFFECT_ALIASES: dict[str, str] = {
     "strengthen_bull": "strengthens_bull",
     "strengthen_bear": "strengthens_bear",
@@ -117,6 +151,70 @@ def _normalize_bar_by_bar_roles(out: dict[str, Any]) -> None:
         if normalized:
             item["role"] = normalized
             logger.debug("Mapped bar_by_bar_summary role %r -> %s", role, normalized)
+
+
+def _normalize_bar_type_value(
+    value: object,
+    *,
+    bar_label: object = None,
+    kline_frame: Any = None,
+) -> str | None:
+    """Map invented bar_type tokens to schema enums; fall back to geometry."""
+    if not isinstance(value, str):
+        return None
+    key = value.strip().lower()
+    if not key:
+        return None
+    if key in _VALID_BAR_TYPES:
+        return key
+    mapped = _BAR_TYPE_ALIASES.get(key)
+    if mapped:
+        return mapped
+    if kline_frame is not None and bar_label is not None:
+        seq = _summary_bar_seq(bar_label)
+        if seq is not None:
+            from pa_agent.ai.kline_features import compute_kline_geometry_features
+
+            features = {f.seq: f for f in compute_kline_geometry_features(kline_frame)}
+            feat = features.get(seq)
+            if feat is not None:
+                computed = str(feat.bar_type or "").strip().lower()
+                if computed in _VALID_BAR_TYPES:
+                    return computed
+    return "other"
+
+
+def _normalize_bar_types(out: dict[str, Any], *, kline_frame: Any = None) -> None:
+    summary = out.get("bar_by_bar_summary")
+    if isinstance(summary, list):
+        for item in summary:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("bar_type")
+            if not isinstance(raw, str):
+                continue
+            normalized = _normalize_bar_type_value(
+                raw, bar_label=item.get("bar"), kline_frame=kline_frame
+            )
+            if normalized and normalized != raw.strip().lower():
+                logger.info(
+                    "Mapped bar_by_bar_summary bar_type %r -> %s",
+                    raw,
+                    normalized,
+                )
+                item["bar_type"] = normalized
+
+    ba = out.get("bar_analysis")
+    if isinstance(ba, dict):
+        raw = ba.get("bar_type")
+        if isinstance(raw, str):
+            bar_label = ba.get("last_closed_bar") or "K1"
+            normalized = _normalize_bar_type_value(
+                raw, bar_label=bar_label, kline_frame=kline_frame
+            )
+            if normalized and normalized != raw.strip().lower():
+                logger.info("Mapped bar_analysis.bar_type %r -> %s", raw, normalized)
+                ba["bar_type"] = normalized
 
 
 def _normalize_bar_by_bar_context_effects(out: dict[str, Any]) -> None:
@@ -347,6 +445,7 @@ def normalize_stage1(
     normalize_stage1_traces(out, normalization_mode=normalization_mode)
     _normalize_bar_by_bar_roles(out)
     _normalize_bar_by_bar_context_effects(out)
+    _normalize_bar_types(out, kline_frame=kline_frame)
     _pad_bar_by_bar_summary_to_minimum(out, kline_frame=kline_frame)
     _fill_incremental_delta(
         out,

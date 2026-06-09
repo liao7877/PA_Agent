@@ -84,12 +84,27 @@ _STAGE1_TAIL_REMINDER = (
     "但 gate_trace 与 gate_result 必须写在 JSON 末尾且不可省略。"
 ).strip()
 
+_STAGE2_SUBMIT_CHECKLIST = """
+## 输出前自检（阶段二，逐项确认后再写入 content）
+
+1. assistant 正文 `content` **非空**，且为**裸 JSON 对象**（首尾不要有 ``` 围栏）。
+2. JSON 语法合法：字段之间用逗号分隔；字符串内**禁止**未转义的换行（长句写在一行内）。
+3. **terminal 三字段必填**：`node_id`、`outcome`、**`label`**（`label` 用一句话总结终止原因，**禁止省略**或填 `"..."`）。
+4. `signal_bar.quality` 只能是 `strong|medium|weak|invalid`（**禁止** `failed`/`none`/`broken`）。
+5. 所有 `bar_range` **禁止 K0**；格式 `K{较老}-K{较新}` 或单根 `K1`。
+6. 多个 §9/§10 节点同为 `K1` **允许**，但每条 `reason` 须说明本节点各自看什么，禁止无差别照抄同一段理由。
+7. `answer` 只能是：是 / 否 / 中性 / 等待 / 不适用（**禁止** `是（偏多）` 等括号后缀）。
+8. `order_type`=「不下单」时，`entry_price`/`take_profit_price`/`stop_loss_price`/`order_direction` 必须全为 `null`。
+""".strip()
+
 _STAGE2_TAIL_REMINDER = (
     "【最后一步·必做】思考结束后，立即在 assistant 正文 `content` 输出完整阶段二裸 JSON"
-    "（含 decision、decision_trace、terminal）。思考用简体中文并尽量简洁；`content` 不得为空。"
+    "（含 decision、decision_trace、terminal 且 terminal.label 不可省略）。"
+    "思考用简体中文并尽量简洁；`content` 不得为空。"
     "若 token 紧张，优先保证 `content` 有 JSON，可缩短思考。\n"
     "⚠️ 禁止在 content 中只写思考过程或分隔符（如 ---输出JSON---）而不附 JSON——"
-    "这会导致校验直接失败。哪怕只输出最小骨架 {\"decision\":{\"order_type\":\"不下单\",...}} 也比没有强。"
+    "这会导致校验直接失败。哪怕只输出最小骨架 {\"decision\":{\"order_type\":\"不下单\",...},\"terminal\":{\"node_id\":\"9.0\",\"outcome\":\"wait\",\"label\":\"等待信号\"}} 也比没有强。\n\n"
+    + _STAGE2_SUBMIT_CHECKLIST
 ).strip()
 
 # ── Hardcoded output format reminders ─────────────────────────────────────────
@@ -99,9 +114,9 @@ _STAGE1_OUTPUT_REMINDER = """
 **硬约束：思考结束后，必须在 assistant 正文 `content` 输出下方完整阶段一 JSON；不得仅在思考区分析而让 `content` 为空。**
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
 禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
-JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
+JSON 字符串内不要用英文双引号强调，改用「」或不用引号；**字符串内禁止未转义换行**；字段之间必须有逗号。
 
-```json
+以下为结构示意（**勿照抄占位值，输出时不要加任何围栏**）：
 {
   "cycle_position": "spike|micro_channel|tight_channel|normal_channel|broad_channel|trending_tr|trading_range|extreme_tr|unknown",
   "alternative_cycle_position": null,
@@ -152,7 +167,6 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   ],
   "gate_result": "proceed"
 }
-```
 
 ## 阶段一闸门（二元决策树 §1–§2，必须执行）
 
@@ -183,12 +197,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 
 **node_overrides（可选，默认不输出）：**
 程序已为 §1.1/§2.3/§2.4 填充权威判定，**默认不要输出这些节点**。
-仅当你识别到程序规则**未捕捉到**的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖：
-```json
+仅当你识别到程序规则**未捕捉到**的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖（勿加 markdown 围栏）：
 "node_overrides": [
   {"node_id": "2.3", "answer": "是", "branch": "bearish", "override_reason": "近3根出现强势看跌反转，斜率窗口未捕捉到该结构突变"}
 ]
-```
 约束：§1.1/§9.1 为锁定节点不可覆盖；安全闸门（§10.3/§14）只能朝更保守方向；§2.3 answer/branch 须自洽（bullish/bearish↔是，neutral↔中性）；不输出时请勿包含该字段。
 
 **§2.3 覆盖门槛（三项全部满足才允许提交）：**
@@ -215,7 +227,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - **程序不会替你填写**；你必须根据「本节点实际引用了哪些 K 线」写出序号范围
 - 格式：`K{较老序号}-K{较新序号}` 或单根 `K1`（**序号1=最新已收盘**，序号越大越早）
 - **⚠️ bar_range 禁止出现 K0**：K0 是当前未收盘棒，不在 frame 中。如需讨论"下一根K线"请写在 reason 中，bar_range 只能引用 K1~K{max}
-- **每个节点的 bar_range 应不同**（除非该节点确实与上一节点使用完全相同窗口）；禁止所有节点照抄同一个范围
+- **宽窗口节点**（如 §4/§5 通道）勿与 **§9/§10 单根节点** 照抄同一 `bar_range`；但多个 §9/§10 节点同为 `K1` **允许**（各自 `reason` 须说明本节点看什么）
 - 区间格式必须为 **K{较老}-K{较新}**（如 K4-K1），**禁止** K1-K4；单根写 K1；全图分析可写「全局」（程序会展开）
 - **reason 里写到的每一根 K 线**（如「K4 之后」「对比 K2」）都必须落在该条 **bar_range** 内；勿在 bar_range=K2 的 reason 里单独提 K4——应写 **K4-K2** 或 **K4-K1**，或 reason 只谈 K2
 - 方向/分类类节点（如 4.2 上涨还是下跌）：**answer 只用 是/否/中性**，方向写在 **branch**（bullish/bearish），勿写「上涨」「下跌」作 answer
@@ -242,10 +254,11 @@ _STAGE2_OUTPUT_CONTRACT = """
 **硬约束：思考结束后，必须在 assistant 正文 `content` 输出下方完整阶段二 JSON；不得仅在思考区分析而让 `content` 为空。**
 **思考过程与 JSON 内所有说明性文字必须使用简体中文**（仅 JSON 键名与规定枚举除外）。
 禁止用 markdown 代码围栏（不要写 ```json 或结尾的 ```），只输出裸 JSON 对象。
-JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
+JSON 字符串内不要用英文双引号强调，改用「」或不用引号；**字符串内禁止未转义换行**；字段之间必须有逗号。
 重要规则：当 order_type 为“不下单”时，entry_price、take_profit_price、stop_loss_price、order_direction 必须全部为 null。
+例外：已有持仓且 position_action=“调整”时，order_type 仍为“不下单”，但 order_direction 必须与持仓一致，take_profit_price/stop_loss_price 可填写新值，entry_price 必须为 null。
 
-```json
+以下为结构示意（**勿照抄占位值，输出时不要加任何围栏**）：
 {
   "decision": {
     "order_direction": "做多|做空|null",
@@ -266,7 +279,9 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "key_factors": [],
     "watch_points": [],
     "risk_assessment": "",
-    "invalidation_condition": ""
+    "invalidation_condition": "",
+    "position_action": null,
+    "position_advice": null
   },
   "diagnosis_summary": {
     "cycle_position": "",
@@ -308,13 +323,14 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   "terminal": {
     "node_id": "11.2",
     "outcome": "trade",
-    "label": "..."
+    "label": "限价做多，交易者方程通过，挂单价位于信号棒上方"
   }
 }
-```
 
 说明：decision_trace 需输出完整决策路径（通常多条）；每条 trace 的 **bar_range 必须由你根据该节点实际使用的 K 线填写**，不得照抄示例。
+**⚠️ terminal 必填三字段：`node_id`、`outcome`、`label`**。`label` 用一句话说明最终结论（如「方程不通过，放弃突破做空」），**禁止省略**或填 `"..."`。
 **⚠️ bar_range 禁止出现 K0**（K0 是未收盘棒，不在 frame 中；如需讨论下一根 K 线写在 reason 里）。
+**宽窗口节点与 §9/§10 单根节点**：多个 §9/§10 节点同为 `K1` **允许**，但每条 `reason` 须各自说明依据，禁止无差别照抄。
 **每条 trace 的 answer 只能是以下五选一**：`是`、`否`、`中性`、`等待`、`不适用`。
 禁止写「部分符合」「部分是」「上涨通道」等；模糊或分类细节写在 **reason**（方向类节点可另填 **branch**）。
 
@@ -328,12 +344,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - **同一根 K 线完全可以同时是两种**：例如 K1 几何上是 `trend_bear`（实体 62%）、关系上是 `outside_bear`（外包吞没前棒）——两者不矛盾，是不同维度的描述。不要因为几何表显示 `trend_bear` 就认为关系分类"错误"。
 - `diagnosis_summary.direction` 必须与 `stage1.direction` **保持一致**，除非你在阶段二的 decision_trace 中以 **node_id="2.3"** 明确记录方向变更及原因。
 - **例外（无需 2.3 节点）**：
-  - 阶段一 direction=**neutral** → 阶段二 direction=bullish/bearish：程序判不了方向时 AI 阶段二识别出方向属于正常补充，校验器已尅5豪免。不强制补写 2.3，但建议补（给本人看更清晰）。
+  - 阶段一 direction=**neutral** → 阶段二 direction=bullish/bearish：程序判不了方向时 AI 阶段二识别出方向属于正常补充，校验器已豁免。不强制补写 2.3，但建议补（给本人看更清晰）。
   - 阶段二 将 direction 覆盖为 neutral 且周期属于震荡类（trading_range / extreme_tr / trending_tr）时。
-- 若阶段一 direction=bullish/bearish，而阶段二判断方向反转，**必须**在 decision_trace 中加入：
-  ```json
+- 若阶段一 direction=bullish/bearish，而阶段二判断方向反转，**必须**在 decision_trace 中加入（勿加 markdown 围栏）：
   {"node_id": "2.3", "section": "方向重判", "question": "阶段二是否重新判定市场方向？", "answer": "是", "branch": "bullish", "reason": "说明为何方向改变的具体依据", "skipped": false, "bar_range": "由你填写"}
-  ```
   做空方向则 `"branch": "bearish"`。**`branch` 字段必须填写且值必须与 `diagnosis_summary.direction` 完全一致**（`bullish` 或 `bearish`）。
 - 其他情况若未加 2.3 节点而 direction 不同，校验器**必定报错**。最稳妥的做法：**让 diagnosis_summary.direction 直接沿用阶段一的 direction 值**，只在有充分依据时才覆盖。
 
@@ -356,12 +370,10 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
    - 例：触犯了宽通道追突破 → `{"node_id":"14","answer":"是","reason":"触犯：宽通道中追突破，放弃入场，order_type=不下单"}`
 
 **node_overrides（可选，默认不输出）：**
-仅当你识别到程序规则未捕捉到的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖（如改变 §9.2/§9.3/§11 路由）：
-```json
+仅当你识别到程序规则未捕捉到的明确结构性依据时，在顶层 `node_overrides` 数组中提交覆盖（如改变 §9.2/§9.3/§11 路由；勿加 markdown 围栏）：
 "node_overrides": [
   {"node_id": "9.3", "answer": "否", "override_reason": "信号棒虽ATR比值略超2，但止损结构合理，程序未考虑此场景"}
 ]
-```
 约束：§9.1 为锁定节点不可覆盖；§11 可横向切换（限价/突破/市价），但「不下单」不能改为下单；不输出时请勿包含该字段。
 
 **交易者方程（10.3）规则：**
@@ -409,11 +421,12 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - 不适用分支：skipped:true，answer=不适用
 
 terminal 必须与 order_type 一致（**decision 与 decision_trace 同步**）：
+- **必填三字段**：`node_id`、`outcome`、**`label`**（`label` 一句话总结，与 `terminal.node_id` 的 reason 呼应，**禁止省略**）
 - 有下单 → outcome=trade，10.3 必须为「是」，decision 含有效三价
 - 不下单 → outcome=wait 或 reject，order_type=不下单，三价与 order_direction 均为 null
 - **禁止** decision 写突破单/限价单/市价单，同时 decision_trace 里 10.3=否 或 terminal=reject
 
-**⚠️ terminal.node_id 和 outcome 的语义规则（必须区分以下两种情形）：**
+**⚠️ terminal.node_id、outcome、label 的语义规则（必须区分以下两种情形）：**
 
 情形 A：**有入场计划，但交易者方程不通过**（有具体止损、止盈数字，但盈亏比不达标）
 → `terminal.node_id = "10.3"`，`outcome = "reject"`
@@ -461,9 +474,8 @@ _NEXT_BAR_PREDICTION_INSTRUCTION = """\
 ## 下一根K线预测任务（阶段二附加输出，不影响下单决策）
 
 完成 decision / decision_trace / terminal 后，必须在阶段二 JSON 顶层追加键 `next_bar_prediction`，
-表达对下一根（尚未开始或正在形成）K线收盘后的方向预测：
+表达对下一根（尚未开始或正在形成）K线收盘后的方向预测（顶层键，勿单独加 markdown 围栏）：
 
-```json
 "next_bar_prediction": {
   "direction": "bullish|bearish|neutral",
   "probabilities": {"bullish": 45, "bearish": 35, "neutral": 20},
@@ -471,7 +483,6 @@ _NEXT_BAR_PREDICTION_INSTRUCTION = """\
   "unpredictable": false,
   "features_used": ["stage1_diagnosis", "kline_features"]
 }
-```
 
 硬约束（违反则整体阶段二 JSON 校验失败）：
 
@@ -492,9 +503,8 @@ _NEXT_CYCLE_PREDICTION_INSTRUCTION = """\
 ## 下一个市场周期预测任务（阶段二附加输出，不影响下单决策）
 
 完成 next_bar_prediction 后，必须在阶段二 JSON 顶层追加键 `next_cycle_prediction`，
-表达对当前市场周期结束后、下一个市场周期的预测：
+表达对当前市场周期结束后、下一个市场周期的预测（顶层键，勿单独加 markdown 围栏）：
 
-```json
 "next_cycle_prediction": {
   "cycle": "broad_channel",
   "direction": "bullish",
@@ -512,7 +522,6 @@ _NEXT_CYCLE_PREDICTION_INSTRUCTION = """\
   "unpredictable": false,
   "features_used": ["stage1_diagnosis", "kline_features"]
 }
-```
 
 市场周期枚举（cycle 字段的合法取值，共 8 个，不含 unknown）：
 spike | micro_channel | tight_channel | normal_channel | broad_channel | trending_tr | trading_range | extreme_tr
@@ -817,31 +826,25 @@ class PromptAssembler:
 
         Structure:
           [0] system    — Stage 1 system prompt (same as full Stage 1)
-          [1] user      — Previous full Stage 1 user prompt (with K-line table)
-          [2] assistant — Previous Stage 1 reply
+          [1] user      — **Current** Stage 1 user prompt (fresh K-line table)
+          [2] assistant — Previous Stage 1 reply (K refs may use prior numbering)
           [3] user      — Incremental task (new K-lines only, no full table)
 
-        Benefits vs old 2-message incremental:
-        - [system, user(S1)] prefix is IDENTICAL to full Stage 1 → prefix cache hit
-        - Full K-line table is in [1], not re-sent in [3] → saves ~14.5K tokens
-        - Stage 2 continuation can also cache-hit this prefix chain
+        Message [1] must be rebuilt from *frame*, not reused from
+        ``previous_record.stage1_messages``: after new bars close, K1 shifts and
+        the old table would mislabel every bar (e.g. prior K1 becomes K3).
         """
         prev_s1_messages = getattr(previous_record, "stage1_messages", None) or []
         prev_s1_response = getattr(previous_record, "stage1_response", None) or {}
 
-        # Extract previous Stage 1 user message
-        prev_user_content = ""
-        for msg in prev_s1_messages:
-            if msg.get("role") == "user":
-                prev_user_content = msg["content"]
-                break
+        has_prev_user = any(msg.get("role") == "user" and msg.get("content") for msg in prev_s1_messages)
 
         # Extract previous Stage 1 assistant reply content
         prev_assistant_content = ""
         if isinstance(prev_s1_response, dict):
             prev_assistant_content = prev_s1_response.get("content", "") or ""
 
-        if not prev_user_content:
+        if not has_prev_user:
             raise ValueError(
                 f"build_incremental_stage1: previous_record.stage1_messages "
                 f"contains no user message. "
@@ -859,6 +862,7 @@ class PromptAssembler:
             )
 
         system_content = self._build_stage1_system_prompt()
+        current_user_content = self._build_stage1_user_prompt(frame)
         incremental_user_content = self._build_incremental_stage1_continuation_user_prompt(
             frame,
             previous_record,
@@ -867,7 +871,7 @@ class PromptAssembler:
 
         return [
             {"role": "system",    "content": system_content},
-            {"role": "user",      "content": prev_user_content},
+            {"role": "user",      "content": current_user_content},
             {"role": "assistant", "content": prev_assistant_content},
             {"role": "user",      "content": incremental_user_content},
         ]
@@ -1091,8 +1095,10 @@ class PromptAssembler:
         return (
             "## 阶段一增量更新任务\n\n"
             "上方是你上一轮完成的阶段一诊断。现在基于新增 K 线，更新诊断与闸门判断。\n"
-            "完整 K 线数据已包含在上方阶段一用户消息中（K线序号已重新编号，"
-            "K1=当前最新已收盘K线），你可以回溯查看任何历史 K 线。\n\n"
+            "完整 K 线数据见**紧邻 assistant 回复之前**的用户消息（当前窗口编号："
+            "K1=最新已收盘K线）。该表已按本轮窗口重新编号；"
+            "assistant 回复与下方「上一轮已完成分析」JSON 中的 K 序号属于上一轮，"
+            "仅供对照，**不得**用于本轮 bar_range / bar_by_bar_summary。\n\n"
             "⚠ 反锚定要求——这是增量分析最重要的原则：\n"
             "- 不要因为上一轮已得出结论就倾向于延续它；上一轮结论只是参考起点，不是约束。\n"
             "- 如果新增 K 线改变了市场结构（突破、反转、趋势加速/衰竭），必须果断推翻上一轮结论，而非在旧结论上微调。\n"
@@ -1373,12 +1379,13 @@ class PromptAssembler:
         if status == "filled":
             instruction = (
                 "**重要：当前已有持仓，本轮阶段二的任务是『持仓管理』，不是重新判断是否入场。**\n"
-                "请基于最新 K 线，对照该持仓的方向、入场价、止盈、止损，做出以下之一的决策：\n"
-                "1. 继续持有（维持原止盈止损）；\n"
-                "2. 移动止损/止盈（持仓管理，输出新的 take_profit_price / stop_loss_price，order_direction 与持仓一致）；\n"
-                "3. 建议提前平仓出场（order_type=不下单，并在 reasoning 中明确说明『建议平仓现有持仓』及理由）；\n"
-                "4. 若结构反转且应反向，可输出反向的下单决策（程序会先平掉现有持仓再按新方向开仓）。\n"
-                "不要在已持仓时输出与持仓同向的全新入场计划。\n"
+                "必须在 decision 中填写 position_action（枚举，程序据此执行，不靠正文关键词猜测）：\n"
+                "1. position_action=「持有」：维持原止盈止损，order_type=不下单；\n"
+                "2. position_action=「调整」：移动止盈/止损。order_type=不下单，order_direction 与持仓一致，"
+                "填写新的 take_profit_price / stop_loss_price；若仅有定性说明，可同时填写 position_advice；\n"
+                "3. position_action=「平仓」：建议提前出场，order_type=不下单，三价与 order_direction 均为 null；\n"
+                "4. 若结构反转且应反向：输出反向下单（order_type=限价/突破/市价），程序会先平仓再开新计划单。\n"
+                "无持仓时 position_action 必须为 null。不要在已持仓时输出与持仓同向的全新入场计划。\n"
             )
         else:
             instruction = (
