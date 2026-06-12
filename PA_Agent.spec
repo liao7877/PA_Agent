@@ -16,7 +16,6 @@ datas = [
     (str(root / "config" / "settings.example.json"), "config"),
     (str(_license_client), "config"),
     (str(root / "pa_agent" / "gui" / "theme" / "dark.qss"), "pa_agent/gui/theme"),
-    (str(root / "pa_agent" / "licensing" / "public_key.pem"), "pa_agent/licensing"),
 ]
 
 for _src, _dst in datas:

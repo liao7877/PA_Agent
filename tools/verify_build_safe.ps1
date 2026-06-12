@@ -12,7 +12,8 @@ if (-not (Test-Path $DistDir)) {
 $forbiddenFiles = @(
     "settings.json",
     "license_private.pem",
-    "secret.key"
+    "secret.key",
+    "public_key.pem"
 )
 
 $forbiddenDirs = @(

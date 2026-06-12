@@ -44,8 +44,7 @@ pa-agent = "pa_agent.main:main"
 [tool.setuptools.packages.find]
 include = ["pa_agent*"]
 
-[tool.setuptools.package-data]
-"pa_agent.licensing" = ["public_key.pem"]
+# public_key.pem 不随包分发；正式发布使用 embedded_pubkey.py
 
 [tool.black]
 line-length = 100
