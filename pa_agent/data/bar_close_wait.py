@@ -78,6 +78,19 @@ def seconds_until_bar_closes(
     return int(math.ceil(remaining_ms / 1000))
 
 
+def uses_server_reference_clock(data_source: object | None) -> bool:
+    """True when *data_source* exposes a live broker/server clock (e.g. MT5)."""
+    if data_source is None:
+        return False
+    server_time_ms = getattr(data_source, "server_time_ms", None)
+    if not callable(server_time_ms):
+        return False
+    try:
+        return server_time_ms() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def reference_now_ms(
     *,
     now_ms: int | None = None,
@@ -86,12 +99,11 @@ def reference_now_ms(
     """Wall-clock for forming-bar checks: broker/server time when available, else local."""
     if now_ms is not None:
         return int(now_ms)
-    if data_source is not None:
+    if uses_server_reference_clock(data_source):
         server_time_ms = getattr(data_source, "server_time_ms", None)
-        if callable(server_time_ms):
-            t = server_time_ms()
-            if t is not None:
-                return int(t)
+        t = server_time_ms()
+        if t is not None:
+            return int(t)
     return int(time.time() * 1000)
 
 
@@ -184,3 +196,33 @@ def forming_bar_has_closed(
     ):
         return True
     return int(bars_newest_first[0].ts_open) != int(waited_ts_open)
+
+
+def newest_closed_bar_for_tick(bars_newest_first: list) -> object | None:
+    """Newest **closed** bar for SL/TP checks — never the index-0 forming bar."""
+    if not bars_newest_first:
+        return None
+    head = bars_newest_first[0]
+    closed = getattr(head, "closed", None)
+    if closed is None and isinstance(head, dict):
+        closed = head.get("closed", True)
+    if closed is False:
+        return bars_newest_first[1] if len(bars_newest_first) > 1 else None
+    return head
+
+
+def bar_ts_open_ms(bar: object) -> int | None:
+    """Extract bar open timestamp in ms from KlineBar or snapshot dict."""
+    if bar is None:
+        return None
+    ts = getattr(bar, "ts_open", None)
+    if ts is None and isinstance(bar, dict):
+        ts = bar.get("ts_open")
+    if ts is None:
+        return None
+    try:
+        from pa_agent.data.datetime_ts import ts_open_to_ms
+
+        return int(ts_open_to_ms(ts))
+    except (TypeError, ValueError):
+        return None
