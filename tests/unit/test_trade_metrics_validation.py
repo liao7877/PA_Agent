@@ -343,12 +343,14 @@ def test_stage2_validator_rejects_strong_signal_without_signal_bar() -> None:
     assert any("signal_bar.bar" in f for f in result.invalid_fields)
 
 
-def test_stage2_validator_rejects_pending_market_entry_bar() -> None:
+def test_stage2_validator_grounds_pending_market_entry_bar() -> None:
+    """Market orders auto-ground entry_bar on the latest closed bar (SCS chase)."""
     obj = _stage2_trade_obj(order_type="市价单", entry_basis_bar=None, entry_basis_extreme=None)
+    obj["bar_analysis"]["signal_bar"]["bar"] = "K1"
     obj["bar_analysis"]["entry_bar"] = {
         "bar": None,
         "strength": "not_triggered",
-        "follow_through": "pending",
+        "follow_through": False,
         "still_valid": True,
         "freshness": "pending",
     }
@@ -358,8 +360,12 @@ def test_stage2_validator_rejects_pending_market_entry_bar() -> None:
         decision_stance="aggressive",
         kline_frame=_frame(),
     )
-    assert isinstance(result, ValidationError)
-    assert any("market order requires" in f for f in result.invalid_fields)
+    assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    entry_bar = result.obj["bar_analysis"]["entry_bar"]
+    assert entry_bar["bar"] == "K1"
+    assert entry_bar["strength"] == "strong"
+    assert entry_bar["freshness"] == "fresh"
+    assert result.obj["bar_analysis"]["signal_bar"]["bar"] == "K2"
 
 
 def test_stage2_validator_accepts_grounded_trade() -> None:

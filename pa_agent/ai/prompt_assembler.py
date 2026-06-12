@@ -191,6 +191,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号；
 - 必须输出 `bar_by_bar_summary`，**至少 8 条**（分析窗口≥8根时），覆盖最近 **K8–K1** 每一根已收盘 K 线各 1 条（可简写 reason，但**不可只写 K5–K1 共 5 条**）；最多 12 条。数据不足 8 根则覆盖全部。
 - 每条只写该 K 线对当前结构的增量作用，不写下单价格、不写止损止盈。
 - `role` 只能使用示例中的 8 个英文枚举；延续/跟随棒统一写 `confirmation`，不要写 `continuation`。
+- 形态标签（如 `reversal_attempt`、`double_bottom_attempt`）只写在 `detected_patterns`；逐 K 的 `role` 用 `signal`/`trap`/`test` 等描述该棒功能，禁止把形态名填入 `role`。
 - K线序号方向：K1 是最新已收盘，K2 是它前一根；判断 K2 的后续跟随时看 K1，判断 K3 的后续跟随时看 K2/K1；K1 的跟随通常为 pending。
 - `bar_type` **必须与程序 K线几何特征表中该 K 线的 bar_type 完全一致，禁止覆盖**。程序的几何判定是权威来源；如果你认为实体是阳线但程序判定为 `trend_bear`，你的判断必须服从程序——可以在 `reason` 里说明（如"程序判定 trend_bear，下影线较长，但整体收阴"），但 `bar_type` 字段必须填程序值。写错会导致校验失败。
 - `context_effect` 必须使用 **strengthens_bull / strengthens_bear**（带 s），禁止写 strengthen_bull、strengthen_bear。
@@ -400,6 +401,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号；
 
 **§9 逐K信号链与新鲜度硬规则：**
 - §9.0–§9.7 必须引用 `bar_analysis.signal_bar.bar` 与阶段一 `bar_by_bar_summary` 中的对应 K 线；只有在“计划型限价/突破挂单，尚无已收盘信号棒”时，`signal_bar.bar` 才可为 null，且必须设 `quality="invalid"`、`pattern="none"`，并在 9.0 写明“等待信号确认/接受该瑕疵”。若限价单/突破单尚未触发，`bar_analysis.entry_bar.bar` 可为 null，但必须设 `strength="not_triggered"`、`freshness="pending"`，并在 9.7 写明“等待触发，尚无入场棒”。
+- **市价单**：表示在最新已收盘 K 线（通常 `last_closed_bar`，如 K1）直接入场；`entry_bar.bar` 必须填该 K 线（如 `"K1"`），`strength` 填 `strong`，`freshness` 填 `fresh`；**禁止**对市价单使用 `not_triggered`/`pending`（那是挂单语义）。信号棒须为更早的 K 线（如信号 K2、入场 K1）。
 - 信号棒、入场棒、确认棒必须时间顺序合理：信号棒序号通常大于入场棒序号（更早），入场棒之后的跟随看更新的 K 线。
 - 如果信号棒之后已经出现 2–3 根无跟随、反向强 K、或 `entry_bar.freshness=stale|invalid`，不得继续把旧信号当作新的突破单依据。
 - 如果最新 K1 是 doji、弱入场棒、无跟随或反向确认，必须降低 trade_confidence；除非有非常明确的二次入场/突破测试证据，否则 order_type=不下单。

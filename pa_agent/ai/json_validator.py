@@ -94,6 +94,27 @@ def _extract_outer_json_object(text: str) -> str:
     return text[start:].strip()
 
 
+def resolve_stage_json_text(
+    content: str | None,
+    reasoning_content: str | None = None,
+) -> str:
+    """Pick JSON text for stage validation: content first, then reasoning fallback."""
+    text = (content or "").strip()
+    if text:
+        return text
+    reasoning = (reasoning_content or "").strip()
+    if "{" not in reasoning:
+        return text
+    candidate = _strip_fences(reasoning)
+    if candidate.startswith("{"):
+        logger.info(
+            "Recovered stage JSON from reasoning_content (%d chars; content was empty)",
+            len(candidate),
+        )
+        return candidate
+    return text
+
+
 def _strip_fences(text: str) -> str:
     """Remove markdown fences and isolate the JSON object payload."""
     t = text.strip()

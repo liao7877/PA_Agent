@@ -16,6 +16,12 @@ from pa_agent.util.price_tick import (
 logger = logging.getLogger(__name__)
 
 _TRADE_ORDER_TYPES = frozenset({"限价单", "突破单", "市价单"})
+_DIRECTION_TO_ORDER = {
+    "bullish": "做多",
+    "bearish": "做空",
+    "long": "做多",
+    "short": "做空",
+}
 _NO_ORDER_PRICE_FIELDS = (
     "order_direction",
     "entry_price",
@@ -161,6 +167,64 @@ def _coerce_decision_no_order(out: dict[str, Any]) -> bool:
 
     _clear_decision_to_no_order(decision)
     logger.debug("Coerced decision to 不下单 (%s)", ", ".join(triggers))
+    return True
+
+
+def _resolve_last_closed_bar_label(
+    bar_analysis: dict[str, Any],
+    *,
+    kline_frame: Any = None,
+) -> str | None:
+    """Best-effort K{n} label for the most recent closed bar."""
+    lcb = bar_analysis.get("last_closed_bar")
+    seq = parse_k_seq(lcb) if lcb is not None else None
+    if seq is None and kline_frame is not None:
+        seq = _max_bar_seq_from_frame(kline_frame)
+    if seq is None:
+        return None
+    return f"K{seq}"
+
+
+def _ground_market_order_entry_bar(
+    bar_analysis: dict[str, Any],
+    decision: dict[str, Any],
+    *,
+    kline_frame: Any = None,
+) -> bool:
+    """Market orders enter on the latest closed bar; models often reuse pending limit semantics."""
+    if decision.get("order_type") != "市价单":
+        return False
+
+    entry_bar = bar_analysis.get("entry_bar")
+    if not isinstance(entry_bar, dict):
+        entry_bar = {}
+        bar_analysis["entry_bar"] = entry_bar
+
+    strength = str(entry_bar.get("strength", "") or "").strip().lower()
+    freshness = str(entry_bar.get("freshness", "") or "").strip().lower()
+
+    entry_seq = parse_k_seq(entry_bar.get("bar"))
+    pending = (
+        entry_seq is None
+        or strength == "not_triggered"
+        or freshness in ("pending", "")
+    )
+    if not pending:
+        return False
+
+    label = _resolve_last_closed_bar_label(bar_analysis, kline_frame=kline_frame)
+    if label is None:
+        label = "K1"
+
+    entry_bar["bar"] = label
+    if strength in ("", "not_triggered", "weak"):
+        entry_bar["strength"] = "strong"
+    if freshness in ("", "pending", "stale", "invalid"):
+        entry_bar["freshness"] = "fresh"
+    entry_bar.setdefault("still_valid", True)
+    if entry_bar.get("follow_through") in (None, "", False):
+        entry_bar["follow_through"] = "pending"
+    logger.info("Grounded market order entry_bar.bar -> %s", label)
     return True
 
 
@@ -448,6 +512,99 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
     # else: unparseable probabilities with unpredictable=False — leave for validator
 
 
+def _infer_order_direction(
+    decision: dict[str, Any],
+    out: dict[str, Any],
+    *,
+    stage1_json: dict[str, Any] | None = None,
+) -> bool:
+    """Fill missing order_direction from diagnosis / stage1 / price geometry."""
+    current = decision.get("order_direction")
+    if isinstance(current, str) and current.strip():
+        return False
+
+    order_type = decision.get("order_type")
+    needs_direction = order_type in _TRADE_ORDER_TYPES or (
+        order_type == "不下单" and decision.get("position_action") == "调整"
+    )
+    if not needs_direction:
+        return False
+
+    mapped: str | None = None
+    entry = decision.get("entry_price")
+    tp = decision.get("take_profit_price")
+    sl = decision.get("stop_loss_price")
+    if (
+        isinstance(entry, (int, float))
+        and isinstance(tp, (int, float))
+        and isinstance(sl, (int, float))
+    ):
+        if tp > entry and sl < entry:
+            mapped = "做多"
+        elif tp < entry and sl > entry:
+            mapped = "做空"
+
+    if not mapped:
+        extreme = decision.get("entry_basis_extreme")
+        if extreme == "high":
+            mapped = "做多"
+        elif extreme == "low":
+            mapped = "做空"
+
+    if not mapped:
+        ba = out.get("bar_analysis")
+        if isinstance(ba, dict):
+            always_in = str(ba.get("always_in", "") or "").strip().lower()
+            if always_in == "long":
+                mapped = "做多"
+            elif always_in == "short":
+                mapped = "做空"
+
+    if not mapped:
+        for source in (
+            out.get("diagnosis_summary")
+            if isinstance(out.get("diagnosis_summary"), dict)
+            else None,
+            stage1_json,
+        ):
+            if not isinstance(source, dict):
+                continue
+            key = str(source.get("direction") or "").strip().lower()
+            mapped = _DIRECTION_TO_ORDER.get(key)
+            if mapped:
+                break
+
+    if not mapped and isinstance(entry, (int, float)):
+        if isinstance(tp, (int, float)):
+            mapped = "做多" if tp > entry else "做空" if tp < entry else None
+        if not mapped and isinstance(sl, (int, float)):
+            mapped = "做多" if sl < entry else "做空" if sl > entry else None
+
+    if not mapped:
+        return False
+
+    decision["order_direction"] = mapped
+    logger.info("Inferred order_direction -> %s (order_type=%s)", mapped, order_type)
+    return True
+
+
+def _normalize_estimated_win_rate_reasoning(decision: dict[str, Any]) -> None:
+    """Schema requires string reasoning when estimated_win_rate is set for trade orders."""
+    order_type = decision.get("order_type")
+    if order_type not in _TRADE_ORDER_TYPES:
+        return
+    rate = decision.get("estimated_win_rate")
+    if rate is None:
+        return
+    reasoning = decision.get("estimated_win_rate_reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return
+    decision["estimated_win_rate_reasoning"] = (
+        f"模型未填写胜率依据，程序沿用 estimated_win_rate={rate}% 用于校验。"
+    )
+    logger.debug("Filled estimated_win_rate_reasoning for trade order")
+
+
 def _normalize_watch_points(decision: dict[str, Any]) -> None:
     """Coerce watch_points items to strings when the model outputs objects."""
     raw = decision.get("watch_points")
@@ -510,6 +667,10 @@ def normalize_stage2(
         )
     _coerce_decision_when_trade_metrics_fail(out, decision_stance=decision_stance)
 
+    decision = out.get("decision")
+    if isinstance(decision, dict):
+        _infer_order_direction(decision, out, stage1_json=stage1_json)
+
     # ── DecisionNodeEngine: fill §9.1/§9.2/§9.3/§9.5/§11 ─────────────────────
     if kline_frame is not None:
         try:
@@ -526,12 +687,16 @@ def normalize_stage2(
     decision = out.get("decision")
     if isinstance(decision, dict):
         _normalize_watch_points(decision)
+        _normalize_estimated_win_rate_reasoning(decision)
     if isinstance(decision, dict) and decision.get("order_type") == "不下单":
         _apply_no_order_field_clearing(decision)
 
     bar_analysis = out.get("bar_analysis")
     decision = out.get("decision")
     if isinstance(bar_analysis, dict) and isinstance(decision, dict):
+        _ground_market_order_entry_bar(
+            bar_analysis, decision, kline_frame=kline_frame
+        )
         if _normalize_signal_entry_bar_chain(bar_analysis, decision):
             pass
     if isinstance(bar_analysis, dict):
@@ -542,10 +707,14 @@ def normalize_stage2(
             signal_bar.setdefault("pattern", "none")
 
         entry_bar = bar_analysis.get("entry_bar")
+        order_type = decision.get("order_type") if isinstance(decision, dict) else None
         if isinstance(entry_bar, dict):
             strength = str(entry_bar.get("strength", "") or "").strip().lower()
             has_bar = bool(entry_bar.get("bar"))
-            if strength == "not_triggered" or not has_bar:
+            if (
+                order_type != "市价单"
+                and (strength == "not_triggered" or not has_bar)
+            ):
                 # Pending limit/breakout orders do not have an actual entry bar
                 # yet. Normalize common model variants before schema checks.
                 entry_bar["strength"] = "not_triggered"

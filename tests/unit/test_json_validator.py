@@ -13,6 +13,7 @@ from pa_agent.ai.json_validator import (
     _finalize_json_repairs,
     _repair_unescaped_quotes,
     _strip_fences,
+    resolve_stage_json_text,
 )
 
 _SAMPLE = Path(__file__).resolve().parents[2] / "tools" / "stage2_raw_sample.txt"
@@ -252,3 +253,13 @@ def test_check_next_bar_prediction_invalid_fields_prefix():
     assert all(e.startswith("next_bar_prediction.") for e in errors), (
         f"Not all errors have prefix: {errors}"
     )
+
+
+def test_resolve_stage_json_text_prefers_content() -> None:
+    assert resolve_stage_json_text('{"a":1}', '{"b":2}') == '{"a":1}'
+
+
+def test_resolve_stage_json_text_falls_back_to_reasoning() -> None:
+    reasoning = 'draft...\n```json\n{"cycle_position":"spike"}\n```'
+    out = resolve_stage_json_text("", reasoning)
+    assert json.loads(out)["cycle_position"] == "spike"

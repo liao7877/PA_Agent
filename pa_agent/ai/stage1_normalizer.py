@@ -28,6 +28,11 @@ _BAR_ROLE_ALIASES: dict[str, str] = {
     "confirm": "confirmation",
     "confirmed": "confirmation",
     "reversal": "signal",
+    "reversal_attempt": "signal",
+    "signal_failed": "trap",
+    "failed_signal": "trap",
+    "double_bottom_attempt": "signal",
+    "double_top_attempt": "signal",
     "breakout": "signal",
     "setup": "signal",
     "pullback": "test",
@@ -55,6 +60,17 @@ _BAR_ROLE_ALIASES: dict[str, str] = {
 }
 
 # Model often omits the trailing "s" on strengthens_* / weakens_*.
+_SIGNAL_BAR_QUALITY_ALIASES: dict[str, str] = {
+    "low": "weak",
+    "high": "strong",
+    "failed": "invalid",
+    "failure": "invalid",
+    "broken": "invalid",
+    "none": "invalid",
+    "bad": "invalid",
+    "poor": "weak",
+}
+
 _VALID_BAR_TYPES = frozenset({
     "trend_bull",
     "trend_bear",
@@ -136,6 +152,83 @@ def _normalize_strategy_file_names(files: Any) -> list[str]:
     return out
 
 
+def _normalize_bar_by_bar_follow_through(out: dict[str, Any]) -> None:
+    """Default missing follow_through on bar_by_bar_summary items."""
+    summary = out.get("bar_by_bar_summary")
+    if not isinstance(summary, list):
+        return
+    for item in summary:
+        if not isinstance(item, dict):
+            continue
+        ft = item.get("follow_through")
+        if ft is None or ft == "":
+            seq = _summary_bar_seq(item.get("bar"))
+            item["follow_through"] = "pending" if seq == 1 else "no"
+            logger.debug(
+                "Filled bar_by_bar_summary follow_through for %s -> %s",
+                item.get("bar"),
+                item["follow_through"],
+            )
+        elif isinstance(ft, bool):
+            item["follow_through"] = "yes" if ft else "no"
+
+
+def _normalize_signal_bar_quality(out: dict[str, Any]) -> None:
+    """Map invented signal_bar.quality tokens to schema enums."""
+    ba = out.get("bar_analysis")
+    if not isinstance(ba, dict):
+        return
+    signal_bar = ba.get("signal_bar")
+    if not isinstance(signal_bar, dict):
+        return
+    raw = signal_bar.get("quality")
+    if not isinstance(raw, str):
+        return
+    key = raw.strip().lower()
+    mapped = _SIGNAL_BAR_QUALITY_ALIASES.get(key)
+    if mapped and mapped != key:
+        signal_bar["quality"] = mapped
+        logger.info("Mapped signal_bar.quality %r -> %s", raw, mapped)
+
+
+def _infer_gate_result(out: dict[str, Any]) -> None:
+    """Fill missing gate_result from gate_trace when the model omits it."""
+    if str(out.get("gate_result", "") or "").strip():
+        return
+    gate = out.get("gate_trace")
+    if not isinstance(gate, list) or not gate:
+        out["gate_result"] = "unknown"
+        logger.info("Filled missing gate_result -> unknown (no gate_trace)")
+        return
+
+    for item in gate:
+        if not isinstance(item, dict):
+            continue
+        ans = str(item.get("answer", "") or "").strip()
+        nid = str(item.get("node_id", "") or "").strip()
+        if ans in ("否", "等待") or (nid in ("1.2", "1.3") and ans == "否"):
+            out["gate_result"] = "wait"
+            logger.info(
+                "Inferred gate_result=wait from gate_trace %s answer=%s",
+                nid,
+                ans,
+            )
+            return
+
+    out["gate_result"] = "proceed"
+    logger.info("Inferred gate_result=proceed (gate_trace present)")
+
+
+def _fix_invalid_bar_labels(out: dict[str, Any], *, kline_frame: Any = None) -> None:
+    """Rewrite K0 (unclosed bar) to K1 before geometry coherence checks."""
+    if kline_frame is None:
+        return
+    from pa_agent.ai.coherence_checks import auto_fix_invalid_bar_labels
+
+    for msg in auto_fix_invalid_bar_labels(out, kline_frame=kline_frame):
+        logger.info("stage1 %s", msg)
+
+
 def _normalize_bar_by_bar_roles(out: dict[str, Any]) -> None:
     summary = out.get("bar_by_bar_summary")
     if not isinstance(summary, list):
@@ -148,6 +241,8 @@ def _normalize_bar_by_bar_roles(out: dict[str, Any]) -> None:
             continue
         key = role.strip().lower()
         normalized = _BAR_ROLE_ALIASES.get(key)
+        if not normalized and key.endswith("_attempt"):
+            normalized = "signal"
         if normalized:
             item["role"] = normalized
             logger.debug("Mapped bar_by_bar_summary role %r -> %s", role, normalized)
@@ -442,8 +537,12 @@ def normalize_stage1(
     sync_detected_patterns_field(out)
 
     _hoist_bar_by_bar_summary(out)
+    _normalize_signal_bar_quality(out)
+    _infer_gate_result(out)
     normalize_stage1_traces(out, normalization_mode=normalization_mode)
     _normalize_bar_by_bar_roles(out)
+    _normalize_bar_by_bar_follow_through(out)
+    _fix_invalid_bar_labels(out, kline_frame=kline_frame)
     _normalize_bar_by_bar_context_effects(out)
     _normalize_bar_types(out, kline_frame=kline_frame)
     _pad_bar_by_bar_summary_to_minimum(out, kline_frame=kline_frame)

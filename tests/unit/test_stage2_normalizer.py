@@ -350,6 +350,51 @@ def test_coerce_decision_when_103_no_but_prices_remain() -> None:
     assert isinstance(result, Ok)
 
 
+def test_grounds_market_order_pending_entry_bar() -> None:
+    obj = {
+        "decision": {
+            "order_type": "市价单",
+            "order_direction": "做空",
+            "entry_price": 4278.76,
+            "take_profit_price": 4235.0,
+            "stop_loss_price": 4297.02,
+            "reasoning": "t",
+            "diagnosis_confidence": 80,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 49,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 45,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "t",
+        },
+        "bar_analysis": {
+            "last_closed_bar": "K1",
+            "signal_bar": {"bar": "K1", "quality": "strong", "pattern": "none", "reason": "t"},
+            "entry_bar": {
+                "strength": "not_triggered",
+                "follow_through": False,
+                "still_valid": True,
+                "freshness": "pending",
+            },
+        },
+        "diagnosis_summary": {
+            "cycle_position": "spike",
+            "direction": "bearish",
+            "key_signals": [],
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "14", "outcome": "trade", "label": "t"},
+    }
+    out = normalize_stage2(obj)
+    assert out["bar_analysis"]["entry_bar"]["bar"] == "K1"
+    assert out["bar_analysis"]["entry_bar"]["strength"] == "strong"
+    assert out["bar_analysis"]["entry_bar"]["freshness"] == "fresh"
+    assert out["bar_analysis"]["signal_bar"]["bar"] == "K2"
+
+
 def test_signal_bar_bumped_when_same_seq_as_entry() -> None:
     obj = {
         "decision": {
@@ -485,6 +530,136 @@ def test_normalize_watch_points_objects_to_strings() -> None:
         "stage2", json.dumps(out, ensure_ascii=False)
     )
     assert isinstance(result, Ok), result
+
+
+def test_infers_order_direction_from_always_in() -> None:
+    obj = {
+        "decision": {
+            "order_type": "市价单",
+            "order_direction": None,
+            "entry_price": 100.0,
+            "take_profit_price": 90.0,
+            "stop_loss_price": 105.0,
+            "reasoning": "t",
+            "diagnosis_confidence": 70,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 60,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 55,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "t",
+        },
+        "bar_analysis": {
+            "always_in": "short",
+            "signal_bar": {"bar": "K2", "quality": "strong", "pattern": "none", "reason": "t"},
+            "entry_bar": {
+                "bar": "K1",
+                "strength": "strong",
+                "freshness": "fresh",
+                "follow_through": "yes",
+            },
+        },
+        "diagnosis_summary": {
+            "cycle_position": "broad_channel",
+            "direction": "neutral",
+            "key_signals": [],
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "0", "outcome": "trade", "label": "t"},
+    }
+    out = normalize_stage2(obj)
+    assert out["decision"]["order_direction"] == "做空"
+
+
+def test_infers_order_direction_from_diagnosis_summary() -> None:
+    obj = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": None,
+            "entry_price": 100.0,
+            "entry_basis_bar": "K2",
+            "entry_basis_extreme": "high",
+            "entry_rule": "test",
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+            "reasoning": "t",
+            "diagnosis_confidence": 70,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 60,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 55,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "t",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "normal_channel",
+            "direction": "bullish",
+            "key_signals": [],
+        },
+        "bar_analysis": {
+            "signal_bar": {"bar": "K2", "quality": "strong", "pattern": "none", "reason": "t"},
+            "entry_bar": {
+                "bar": None,
+                "strength": "not_triggered",
+                "freshness": "pending",
+                "follow_through": "pending",
+            },
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "0", "outcome": "trade", "label": "t"},
+    }
+    out = normalize_stage2(obj)
+    assert out["decision"]["order_direction"] == "做多"
+
+
+def test_grounds_market_order_with_stale_freshness() -> None:
+    obj = {
+        "decision": {
+            "order_type": "市价单",
+            "order_direction": "做空",
+            "entry_price": 4278.76,
+            "take_profit_price": 4235.0,
+            "stop_loss_price": 4297.02,
+            "reasoning": "t",
+            "diagnosis_confidence": 80,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 49,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 45,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "t",
+        },
+        "bar_analysis": {
+            "last_closed_bar": "K1",
+            "signal_bar": {"bar": "K2", "quality": "strong", "pattern": "none", "reason": "t"},
+            "entry_bar": {
+                "bar": None,
+                "strength": "strong",
+                "follow_through": "pending",
+                "freshness": "stale",
+            },
+        },
+        "diagnosis_summary": {
+            "cycle_position": "spike",
+            "direction": "bearish",
+            "key_signals": [],
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "14", "outcome": "trade", "label": "t"},
+    }
+    out = normalize_stage2(obj)
+    entry = out["bar_analysis"]["entry_bar"]
+    assert entry["bar"] == "K1"
+    assert entry["freshness"] == "fresh"
 
 
 def test_normalize_preserves_position_adjust_tp_sl_on_no_order() -> None:

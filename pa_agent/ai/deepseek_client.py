@@ -67,6 +67,11 @@ def _is_deepseek_native(base_url: str) -> bool:
     return "deepseek.com" in (base_url or "").lower()
 
 
+def _is_deepseek_model(model: str) -> bool:
+    """DeepSeek-family models share the same output cap on proxies (e.g. KKAI)."""
+    return "deepseek" in (model or "").lower()
+
+
 def _is_opencode_go(base_url: str) -> bool:
     """OpenCode Zen Go plan — routes to DeepSeek with the same API limits."""
     url = (base_url or "").lower()
@@ -88,10 +93,17 @@ def _is_packyapi(base_url: str) -> bool:
     return "packyapi.com" in (base_url or "").lower()
 
 
+def _is_agnes_ai(base_url: str) -> bool:
+    """Agnes AI (Sapiens) OpenAI-compatible gateway."""
+    return "agnes-ai.com" in (base_url or "").lower()
+
+
 # Packy claude-officially returns 400 if max_tokens exceeds model output cap.
 _PACKY_CLAUDE_MAX_OUTPUT_TOKENS = 128_000
 # DeepSeek API: max_tokens must be in [1, 393216].
 _DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216
+# Agnes-2.0-Flash: official max output ~65.5K tokens.
+_AGNES_MAX_OUTPUT_TOKENS = 65_500
 
 
 def _model_uses_claude_adaptive(model: str) -> bool:
@@ -137,7 +149,11 @@ def _effort_budget_tokens(effort: str | None, *, max_output: int) -> int:
 
 def _thinking_enabled(extra_body: dict[str, Any], effort: str | None) -> bool:
     if extra_body:
-        return extra_body.get("thinking", {}).get("type") in ("enabled", "adaptive")
+        if extra_body.get("thinking", {}).get("type") in ("enabled", "adaptive"):
+            return True
+        ctk = extra_body.get("chat_template_kwargs") or {}
+        if ctk.get("enable_thinking") is True:
+            return True
     return effort is not None and effort != "none"
 
 
@@ -171,8 +187,10 @@ def _provider_max_output_tokens(settings: AIProviderSettings) -> int:
     model = (settings.model or "").lower()
     if _is_packyapi(settings.base_url) and "claude" in model:
         return _PACKY_CLAUDE_MAX_OUTPUT_TOKENS
-    if _uses_deepseek_api_limits(settings.base_url):
+    if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
         return _DEEPSEEK_MAX_OUTPUT_TOKENS
+    if _is_agnes_ai(settings.base_url):
+        return _AGNES_MAX_OUTPUT_TOKENS
     return _PRACTICAL_UNLIMITED_MAX_TOKENS
 
 
@@ -198,7 +216,7 @@ def _resolve_thinking_params(
     _effort = reasoning_effort if reasoning_effort is not None else settings.reasoning_effort
     model = settings.model or ""
 
-    if _uses_deepseek_api_limits(settings.base_url):
+    if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
         extra_body: dict[str, Any] = {
             "thinking": {"type": "enabled" if _thinking else "disabled"},
         }
@@ -206,6 +224,13 @@ def _resolve_thinking_params(
 
     if not _thinking:
         return {}, None
+
+    if _is_agnes_ai(settings.base_url):
+        # Agnes OpenAI route: enable_thinking in chat_template_kwargs (not reasoning_effort).
+        return (
+            {"chat_template_kwargs": {"enable_thinking": True}},
+            None,
+        )
 
     max_out = _completion_max_tokens(
         settings, extra_body={}, effort=_effort

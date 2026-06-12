@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pa_agent.ai.coherence_checks import _CYCLE_BRANCH_ALIASES, _normalize_direction_branch
 from pa_agent.ai.decision_tree import load_decision_tree
@@ -25,6 +25,10 @@ NormalizationMode = str  # "strict" | "lenient"
 # branch values that mean yes/no but not a cycle id (node 1.2 must use cycle_position).
 _GATE_12_GENERIC_BRANCHES = frozenset(
     {"yes", "no", "y", "n", "是", "否", "true", "false", ""}
+)
+# Models sometimes put direction in node 1.2 branch instead of cycle_position.
+_GATE_12_DIRECTION_BRANCHES = frozenset(
+    {"bullish", "bearish", "neutral", "long", "short", "bull", "bear"}
 )
 
 _BAR_RANGE_RE = re.compile(r"^K(\d+)-K(\d+)$", re.IGNORECASE)
@@ -578,28 +582,31 @@ def normalize_trace_list(
     *,
     default_max_seq: int | None = None,
     normalization_mode: NormalizationMode = "strict",
+    trace_kind: Literal["gate", "decision"] = "decision",
+    sort_nodes: bool = True,
 ) -> list[Any] | None:
     if not isinstance(trace, list):
         return trace
 
-    # Reorder by chapter: AI may output nodes in any order; the correct
-    # canonical order is by node_id prefix (3.x → 4.x → ... → 14).
-    _CHAPTER_ORDER: dict[str, int] = {
-        "3.": 30, "4.": 40, "5.": 50, "6.": 60,
-        "7.": 70, "8.": 80, "9.": 90, "10.": 100,
-        "11.": 110, "12.": 120, "13.": 130, "14": 140,
-    }
+    # Reorder by chapter — must use the same keys as decision_tree validators.
+    if sort_nodes:
+        from pa_agent.ai.decision_tree import _gate_trace_sort_key, _node_sort_key
 
-    def _chapter_rank(item: Any) -> int:
-        if not isinstance(item, dict):
-            return 999
-        nid = str(item.get("node_id", ""))
-        for prefix, rank in _CHAPTER_ORDER.items():
-            if nid.startswith(prefix):
-                return rank
-        return 500  # unrecognised nodes go in the middle
+        if trace_kind == "gate":
 
-    trace.sort(key=_chapter_rank)
+            def _sort_key(item: Any) -> tuple[int, int, str]:
+                if not isinstance(item, dict):
+                    return (999, 999, "")
+                return _gate_trace_sort_key(str(item.get("node_id", "")))
+
+        else:
+
+            def _sort_key(item: Any) -> tuple[int, str]:
+                if not isinstance(item, dict):
+                    return (999, "")
+                return _node_sort_key(str(item.get("node_id", "")))
+
+        trace.sort(key=_sort_key)
 
     max_seq = default_max_seq or infer_max_bar_seq_from_trace(trace)
     last_br: str | None = None
@@ -641,6 +648,14 @@ def _sync_gate_12_branch_with_cycle(obj: dict[str, Any]) -> None:
         ans = str(item.get("answer", "")).strip()
         br_raw = item.get("branch")
         br = _normalize_cycle_branch_value(br_raw)
+        if br in _GATE_12_DIRECTION_BRANCHES:
+            item["branch"] = cycle if ans == "是" else "unknown"
+            logger.info(
+                "gate_trace 1.2 direction-like branch %r -> %s",
+                br_raw,
+                item["branch"],
+            )
+            return
         if br_raw is not None and br and br not in _GATE_12_GENERIC_BRANCHES:
             if br != str(br_raw).strip().lower().replace(" ", "_"):
                 item["branch"] = br
@@ -923,13 +938,16 @@ def normalize_stage1_traces(
     *,
     normalization_mode: NormalizationMode = "strict",
 ) -> None:
+    gate_result = str(obj.get("gate_result", "") or "").strip().lower()
     normalize_trace_list(
         obj.get("gate_trace"),
         normalization_mode=normalization_mode,
+        trace_kind="gate",
+        # wait/unknown: AI terminating node (否/等待) must stay last — do not reorder.
+        sort_nodes=gate_result == "proceed",
     )
     _repair_stage1_gate_trace(obj)
-    if normalization_mode == "lenient":
-        _sync_gate_12_branch_with_cycle(obj)
+    _sync_gate_12_branch_with_cycle(obj)
 
 
 def normalize_stage2_traces(
@@ -944,6 +962,7 @@ def normalize_stage2_traces(
             trace,
             default_max_seq=default_max_seq,
             normalization_mode=normalization_mode,
+            trace_kind="decision",
         )
         _repair_stage2_decision_trace_questions(trace)
     _repair_stage2_terminal(obj)

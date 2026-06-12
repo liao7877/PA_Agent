@@ -302,6 +302,108 @@ def _accumulate_usage(current: dict, reply_usage: Any) -> dict:
     return result
 
 
+def _reply_with_resolved_content(
+    reply: Any,
+    content: str,
+    *,
+    raw_note: dict[str, Any] | None = None,
+) -> Any:
+    raw = dict(reply.raw)
+    if raw_note:
+        raw.update(raw_note)
+    raw["content"] = content
+    return dataclasses.replace(reply, content=content, raw=raw)
+
+
+def _merge_stage_replies(first: Any, second: Any, *, fallback_reason: str) -> Any:
+    from pa_agent.ai.deepseek_client import AIUsage
+
+    usage = AIUsage(
+        prompt_tokens=first.usage.prompt_tokens + second.usage.prompt_tokens,
+        cached_prompt_tokens=first.usage.cached_prompt_tokens
+        + second.usage.cached_prompt_tokens,
+        completion_tokens=first.usage.completion_tokens + second.usage.completion_tokens,
+        total_tokens=first.usage.total_tokens + second.usage.total_tokens,
+    )
+    raw = dict(second.raw)
+    raw.update(
+        {
+            "empty_content_fallback": True,
+            "fallback_reason": fallback_reason,
+            "first_attempt_reasoning_chars": len(first.reasoning_content or ""),
+            "first_attempt_request_id": first.request_id,
+        }
+    )
+    return dataclasses.replace(
+        second,
+        reasoning_content=first.reasoning_content or second.reasoning_content,
+        usage=usage,
+        latency_ms=first.latency_ms + second.latency_ms,
+        raw=raw,
+    )
+
+
+def _stream_stage_with_empty_content_fallback(
+    client: Any,
+    messages: list[dict[str, Any]],
+    *,
+    stage: str,
+    thinking: bool,
+    reasoning_effort: str,
+    cancel_token: CancelToken | None,
+    on_reasoning_token: Callable[[str], None] | None,
+    on_content_token: Callable[[str], None] | None,
+) -> Any:
+    """Call stream_chat; recover JSON from reasoning or retry once without thinking."""
+    from pa_agent.ai.json_validator import resolve_stage_json_text
+
+    reply = client.stream_chat(
+        messages,
+        on_reasoning_token=on_reasoning_token,
+        on_content_token=on_content_token,
+        cancel_token=cancel_token,
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+    )
+    resolved = resolve_stage_json_text(reply.content, reply.reasoning_content)
+    if resolved.strip():
+        if resolved != (reply.content or "").strip():
+            return _reply_with_resolved_content(
+                reply,
+                resolved,
+                raw_note={"json_recovered_from": "reasoning_content"},
+            )
+        return reply
+
+    if not thinking:
+        return reply
+
+    logger.warning(
+        "Stage %s: empty JSON after thinking (effort=%s); retrying once with thinking disabled",
+        stage,
+        reasoning_effort,
+    )
+    retry = client.stream_chat(
+        messages,
+        on_content_token=on_content_token,
+        cancel_token=cancel_token,
+        thinking=False,
+        reasoning_effort=None,
+    )
+    retry_resolved = resolve_stage_json_text(retry.content, retry.reasoning_content)
+    if retry_resolved.strip() and retry_resolved != (retry.content or "").strip():
+        retry = _reply_with_resolved_content(
+            retry,
+            retry_resolved,
+            raw_note={"json_recovered_from": "reasoning_content"},
+        )
+    return _merge_stage_replies(
+        reply,
+        retry,
+        fallback_reason="empty_content_after_thinking",
+    )
+
+
 class TwoStageOrchestrator:
     """Orchestrates the two-stage AI analysis pipeline.
 
@@ -382,6 +484,10 @@ class TwoStageOrchestrator:
         AnalysisRecord
             Fully or partially populated record.
         """
+        from pa_agent.licensing.enforce import require_active_license
+
+        require_active_license(context="two_stage_submit")
+
         # ── Step 1: Build partial record ──────────────────────────────────────
         record = _build_empty_record(frame, self._settings)
 
@@ -453,13 +559,15 @@ class TwoStageOrchestrator:
                 on_stage1_content(chunk)
 
         try:
-            reply_s1 = self._client.stream_chat(
+            reply_s1 = _stream_stage_with_empty_content_fallback(
+                self._client,
                 messages_s1,
-                on_reasoning_token=_on_s1_reasoning,
-                on_content_token=_on_s1_content,
-                cancel_token=cancel_token,
+                stage="stage1",
                 thinking=_thinking,
                 reasoning_effort=_effort,
+                cancel_token=cancel_token,
+                on_reasoning_token=_on_s1_reasoning,
+                on_content_token=_on_s1_content,
             )
         except Exception as exc:
             if self._is_network_error(exc):
@@ -702,13 +810,15 @@ class TwoStageOrchestrator:
                 on_stage2_content(chunk)
 
         try:
-            reply_s2 = self._client.stream_chat(
+            reply_s2 = _stream_stage_with_empty_content_fallback(
+                self._client,
                 messages_s2,
-                on_reasoning_token=_on_s2_reasoning,
-                on_content_token=_on_s2_content,
-                cancel_token=cancel_token,
+                stage="stage2",
                 thinking=_thinking,
                 reasoning_effort=_effort,
+                cancel_token=cancel_token,
+                on_reasoning_token=_on_s2_reasoning,
+                on_content_token=_on_s2_content,
             )
         except Exception as exc:
             if self._is_network_error(exc):
@@ -799,11 +909,33 @@ class TwoStageOrchestrator:
                 decision_stance=record.meta.decision_stance,
                 stage1_json=stage1_json,
             )
+            exc_payload = {
+                "type": "validation_error",
+                "stage": "stage2",
+                "category": err.category,
+                "message": err_message,
+                "missing_fields": err.missing_fields,
+                "invalid_fields": err.invalid_fields,
+                "raw_text": err.raw_text,
+                "parse_position": err.parse_position,
+                "decision_preserved": preserved_s2 is not None,
+            }
+            from pa_agent.positions.decision_fields import (
+                should_apply_position_despite_validation,
+            )
+
+            exc_payload["position_apply_allowed"] = (
+                should_apply_position_despite_validation(
+                    exc_payload,
+                    stage2_decision=preserved_s2,
+                )
+            )
             logger.warning(
-                "Stage 2 validation failed: category=%s message=%s preserved=%s",
+                "Stage 2 validation failed: category=%s message=%s preserved=%s apply=%s",
                 err.category,
                 err_message,
                 preserved_s2 is not None,
+                exc_payload["position_apply_allowed"],
             )
             record = record.model_copy(
                 update={
@@ -822,17 +954,7 @@ class TwoStageOrchestrator:
                         _accumulate_usage(record.usage_total, reply_s1.usage),
                         reply_s2.usage,
                     ),
-                    "exception": {
-                        "type": "validation_error",
-                        "stage": "stage2",
-                        "category": err.category,
-                        "message": err_message,
-                        "missing_fields": err.missing_fields,
-                        "invalid_fields": err.invalid_fields,
-                        "raw_text": err.raw_text,
-                        "parse_position": err.parse_position,
-                        "decision_preserved": preserved_s2 is not None,
-                    },
+                    "exception": exc_payload,
                 }
             )
             self._pending_writer.save_partial(record, f"stage2_{err.category}")
