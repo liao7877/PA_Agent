@@ -72,6 +72,14 @@ class GeneralSettings(BaseModel):
     auto_resume_chart_after_analysis: bool = False
     #: 持续跟踪分析：有新K线收盘时自动触发新一轮分析
     keep_analysis: bool = False
+    #: 持续跟踪仅在指定时段内自动分析（有持仓时可豁免，见下）
+    keep_analysis_time_window_enabled: bool = False
+    #: 跟踪时段开始（HH:MM，本机当地时区）
+    keep_analysis_time_start: str = "09:00"
+    #: 跟踪时段结束（HH:MM，本机当地时区；可跨午夜，如 22:00–06:00）
+    keep_analysis_time_end: str = "23:00"
+    #: 有持仓时不受跟踪时段限制（仍按 K 线收盘触发）
+    keep_analysis_bypass_with_position: bool = True
     #: MT5 安装目录或 terminal64.exe 完整路径；空=自动连接已运行/默认实例
     mt5_terminal_path: str = ""
 
@@ -170,9 +178,10 @@ def load_settings(path: Path | None = None) -> "Settings":
         import sys
 
         from pa_agent.config.paths import BUNDLE_ROOT
+        from pa_agent.licensing.packaged import is_packaged_build
 
         seeded = False
-        if getattr(sys, "frozen", False):
+        if is_packaged_build():
             example = BUNDLE_ROOT / "config" / "settings.example.json"
             if example.is_file():
                 path.parent.mkdir(parents=True, exist_ok=True)
