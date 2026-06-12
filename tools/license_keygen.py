@@ -26,6 +26,10 @@ def cmd_generate_keys(args: argparse.Namespace) -> int:
         private_path=Path(args.output_dir) / "license_private.pem",
         public_path=Path(args.public_key or DEFAULT_PUBLIC_KEY),
     )
+    import subprocess
+
+    sync_script = ROOT / "tools" / "sync_embedded_pubkey.py"
+    subprocess.run([sys.executable, str(sync_script)], check=True)
     print(f"私钥（妥善保管，勿分发）: {private_path}")
     print(f"公钥（随程序打包）: {public_path}")
     return 0

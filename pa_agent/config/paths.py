@@ -9,15 +9,17 @@ import os
 import sys
 from pathlib import Path
 
+from pa_agent.licensing.packaged import is_packaged_build
+
 
 def _bundle_root() -> Path:
-    if getattr(sys, "frozen", False):
+    if is_packaged_build():
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
     return Path(__file__).resolve().parent.parent.parent
 
 
 def _runtime_root() -> Path:
-    if getattr(sys, "frozen", False) and sys.platform == "win32":
+    if is_packaged_build() and sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
         root = base / "PA_Agent"
         root.mkdir(parents=True, exist_ok=True)
@@ -30,7 +32,7 @@ PROJECT_ROOT: Path = _runtime_root()
 BUNDLE_ROOT: Path = _bundle_root()
 
 # ── Prompt engineering assets (read-only at runtime) ─────────────────────────
-PROMPT_DIR: Path = (BUNDLE_ROOT if getattr(sys, "frozen", False) else PROJECT_ROOT) / "prompt_engineering"
+PROMPT_DIR: Path = (BUNDLE_ROOT if is_packaged_build() else PROJECT_ROOT) / "prompt_engineering"
 
 # Alias kept for backward compat with design doc
 PA_AGENT_DIR: Path = PROJECT_ROOT

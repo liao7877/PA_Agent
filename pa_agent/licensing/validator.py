@@ -1,7 +1,6 @@
 """License validation and activation."""
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -10,11 +9,14 @@ from pa_agent.licensing import crypto
 from pa_agent.licensing.client_config import LicenseClientConfig, load_license_client_config
 from pa_agent.licensing.machine_id import get_machine_fingerprint
 from pa_agent.licensing.online_client import online_activate, online_heartbeat
+from pa_agent.licensing.packaged import is_packaged_build
+from pa_agent.licensing.trusted_time import clock_skew_exceeds_tolerance
 from pa_agent.licensing.storage import (
     StoredLicenseState,
     check_clock_rollback,
     clear_state,
     load_state,
+    persistent_clock_rollback_detected,
     save_state,
     touch_last_seen,
     utc_now_ts,
@@ -48,9 +50,24 @@ class LicenseInfo:
         return self.status is LicenseStatus.VALID
 
 
+_IAT_TOLERANCE_SECONDS = 300
+
+
 def _dev_license_bypass_enabled() -> bool:
-    """Skip activation when running from source; frozen (packaged) builds still require a license."""
-    return not getattr(sys, "frozen", False)
+    """Skip activation when running from source; packaged builds still require a license."""
+    return not is_packaged_build()
+
+
+def _offline_time_checks(now: int) -> LicenseInfo | None:
+    """Extra offline anti-tamper checks for packaged builds."""
+    if not is_packaged_build():
+        return None
+    if clock_skew_exceeds_tolerance(now):
+        return LicenseInfo(
+            LicenseStatus.CLOCK_ROLLBACK,
+            "系统时间与网络时间偏差过大，请开启网络并同步系统时间",
+        )
+    return None
 
 
 def _payload_checks(payload: dict, signature: bytes) -> LicenseInfo:
@@ -63,6 +80,15 @@ def _payload_checks(payload: dict, signature: bytes) -> LicenseInfo:
 
     exp = int(payload["exp"])
     now = utc_now_ts()
+    iat = int(payload.get("iat", 0))
+    if iat and now + _IAT_TOLERANCE_SECONDS < iat:
+        return LicenseInfo(
+            LicenseStatus.CLOCK_ROLLBACK,
+            "系统时间异常（早于激活码签发时间），请同步网络时间后重试",
+        )
+    skew_info = _offline_time_checks(now)
+    if skew_info is not None:
+        return skew_info
     if now > exp:
         return LicenseInfo(
             LicenseStatus.EXPIRED,
@@ -154,6 +180,12 @@ class LicenseValidator:
         return _payload_checks(payload, signature)
 
     def activate(self, token: str) -> LicenseInfo:
+        if persistent_clock_rollback_detected():
+            return LicenseInfo(
+                LicenseStatus.CLOCK_ROLLBACK,
+                "检测到系统时间被回拨，请恢复正确时间后重试",
+            )
+
         info = self.validate_token(token)
         if not info.ok:
             return info
@@ -187,6 +219,11 @@ class LicenseValidator:
 
         if check_clock_rollback(state.last_seen_utc):
             return LicenseInfo(LicenseStatus.CLOCK_ROLLBACK, "检测到系统时间被回拨，请恢复正确时间后重试")
+
+        now = utc_now_ts()
+        skew_info = _offline_time_checks(now)
+        if skew_info is not None:
+            return skew_info
 
         info = self.validate_token(state.license_token)
         if not info.ok:

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from pa_agent.licensing.packaged import is_packaged_build
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def _config_candidates() -> list[Path]:
 
     names = ("license_client.json", "license_client.example.json")
     paths: list[Path] = []
-    if getattr(sys, "frozen", False):
+    if is_packaged_build():
         for name in names:
             paths.append(BUNDLE_ROOT / "config" / name)
     for name in names:

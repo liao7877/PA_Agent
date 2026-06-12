@@ -333,6 +333,10 @@ class LicenseIssuerWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "生成失败", str(exc))
             return
+        import subprocess
+
+        sync_script = ROOT / "tools" / "sync_embedded_pubkey.py"
+        subprocess.run([sys.executable, str(sync_script)], check=False)
         self._private_key_edit.setText(str(priv))
         self._persist_issue_settings()
         QMessageBox.information(

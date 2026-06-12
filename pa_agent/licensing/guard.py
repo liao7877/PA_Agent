@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from pa_agent.licensing.enforce import GUARD_INTERVAL_MS
 from pa_agent.licensing.validator import LicenseInfo, LicenseValidator
 
 
@@ -12,7 +13,7 @@ class LicenseGuard(QObject):
     def __init__(
         self,
         validator: LicenseValidator | None = None,
-        interval_ms: int = 5 * 60 * 1000,
+        interval_ms: int = GUARD_INTERVAL_MS,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)

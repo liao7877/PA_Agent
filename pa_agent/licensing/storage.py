@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _CLOCK_TOLERANCE_SECONDS = 300
+_REGISTRY_KEY = r"Software\PA_Agent"
+_REGISTRY_VALUE = "last_seen_utc"
 
 
 def license_dir() -> Path:
@@ -24,6 +26,43 @@ def license_dir() -> Path:
 
 def license_file_path() -> Path:
     return license_dir() / "license_state.json"
+
+
+def _registry_read_last_seen() -> int | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REGISTRY_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, _REGISTRY_VALUE)
+            return int(value)
+    except OSError:
+        return None
+
+
+def _registry_write_last_seen(ts: int) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REGISTRY_KEY) as key:
+            winreg.SetValueEx(key, _REGISTRY_VALUE, 0, winreg.REG_DWORD, int(ts))
+    except OSError:
+        pass
+
+
+def _registry_clear_last_seen() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REGISTRY_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, _REGISTRY_VALUE)
+    except OSError:
+        pass
 
 
 def _protect(data: bytes) -> str:
@@ -100,12 +139,14 @@ def load_state() -> StoredLicenseState | None:
 def save_state(state: StoredLicenseState) -> None:
     payload = json.dumps(state.to_dict(), ensure_ascii=False).encode("utf-8")
     license_file_path().write_text(_protect(payload), encoding="utf-8")
+    _registry_write_last_seen(state.last_seen_utc)
 
 
 def clear_state() -> None:
     path = license_file_path()
     if path.exists():
         path.unlink()
+    _registry_clear_last_seen()
 
 
 def utc_now_ts() -> int:
@@ -115,7 +156,17 @@ def utc_now_ts() -> int:
 def check_clock_rollback(last_seen_utc: int, now_utc: int | None = None) -> bool:
     """Return True when system clock appears rolled back beyond tolerance."""
     now = utc_now_ts() if now_utc is None else now_utc
-    return now + _CLOCK_TOLERANCE_SECONDS < last_seen_utc
+    if now + _CLOCK_TOLERANCE_SECONDS < last_seen_utc:
+        return True
+    return persistent_clock_rollback_detected(now)
+
+
+def persistent_clock_rollback_detected(now_utc: int | None = None) -> bool:
+    now = utc_now_ts() if now_utc is None else now_utc
+    registry_seen = _registry_read_last_seen()
+    if registry_seen is not None and now + _CLOCK_TOLERANCE_SECONDS < registry_seen:
+        return True
+    return False
 
 
 def touch_last_seen(state: StoredLicenseState, now_utc: int | None = None) -> StoredLicenseState:
@@ -125,4 +176,5 @@ def touch_last_seen(state: StoredLicenseState, now_utc: int | None = None) -> St
     if now > state.last_seen_utc:
         state.last_seen_utc = now
         save_state(state)
+        _registry_write_last_seen(now)
     return state

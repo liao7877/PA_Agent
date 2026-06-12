@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import json
-from importlib import resources
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -20,7 +19,18 @@ def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
 
 
 def load_public_key_pem() -> bytes:
-    return resources.files("pa_agent.licensing").joinpath("public_key.pem").read_bytes()
+    from pathlib import Path
+
+    from pa_agent.licensing.embedded_pubkey import get_embedded_public_key_pem
+    from pa_agent.licensing.packaged import is_packaged_build
+
+    if is_packaged_build():
+        return get_embedded_public_key_pem()
+
+    pem_path = Path(__file__).resolve().parent / "public_key.pem"
+    if pem_path.is_file():
+        return pem_path.read_bytes()
+    return get_embedded_public_key_pem()
 
 
 def load_public_key() -> Ed25519PublicKey:
