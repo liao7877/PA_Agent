@@ -187,6 +187,8 @@ class MainWindow(QMainWindow):
         self._incremental_available: bool = False  # prior record aligns; incremental btn visible
         self._keep_analysis_last_closed_ts: int | None = None  # tracks last closed bar for keep-analysis
         self._keep_analysis_submit_closed_ts: int | None = None  # closed bar ts at analysis submit time
+        self._keep_analysis_outside_window = False  # was outside tracking window on last tick
+        self._pending_from_keep_analysis = False
         self._free_chat_session: Any = None
         self._last_stage1_diagnosis: dict | None = None
         self._demo_mode = False
@@ -485,10 +487,18 @@ class MainWindow(QMainWindow):
         self._keep_analysis_checkbox = QCheckBox("持续跟踪分析")
         self._keep_analysis_checkbox.setChecked(False)
         self._keep_analysis_checkbox.setToolTip(
-            "勾选后，每当有新的K线收盘时自动开始新一轮分析"
+            "勾选后，每当有新的K线收盘时自动开始新一轮分析；"
+            "可在「设置」中限定跟踪时段（有持仓时可豁免）。"
+            "进入跟踪时段时会自动判断完整分析或增量分析。"
         )
         self._keep_analysis_checkbox.stateChanged.connect(self._on_keep_analysis_checkbox_changed)
         ctrl_layout.addWidget(self._keep_analysis_checkbox)
+
+        self._keep_analysis_status_label = QLabel("")
+        self._keep_analysis_status_label.setObjectName("keepAnalysisStatusLabel")
+        self._keep_analysis_status_label.setMinimumWidth(140)
+        self._keep_analysis_status_label.hide()
+        ctrl_layout.addWidget(self._keep_analysis_status_label)
 
         # Reset persisted keep_analysis flag so future restarts also start unchecked
         if _settings is not None:
@@ -1584,6 +1594,7 @@ class MainWindow(QMainWindow):
                 and self._keep_analysis_checkbox.isChecked()
             )
             if not (keep_analysis_on and self._pending_submit_after_close):
+                self._update_keep_analysis_status_display()
                 return
 
         # Auto-incremental: if a switch set the pending flag, trigger now
@@ -1602,6 +1613,7 @@ class MainWindow(QMainWindow):
 
         if not bars:
             self._update_symbol_data_alert()
+            self._update_keep_analysis_status_display()
             return
 
         alert = getattr(self, "_symbol_alert_label", None)
@@ -1633,6 +1645,7 @@ class MainWindow(QMainWindow):
 
         # 保持分析：检测是否有新K线收盘，若有则自动触发分析
         self._check_keep_analysis(bars)
+        self._update_keep_analysis_status_display()
 
     def _on_symbol_or_tf_changed(self, new_symbol: str, new_tf: str) -> None:
         """Handle symbol or timeframe combo box change.
@@ -1921,12 +1934,78 @@ class MainWindow(QMainWindow):
         """Cancel wait-for-bar-close armed by the checkbox."""
         self._pending_submit_after_close = False
         self._pending_force_incremental = False
+        self._pending_from_keep_analysis = False
         self._wait_forming_ts = None
         self._pending_submit_symbol = ""
         self._pending_submit_timeframe = ""
         self._pending_submit_bar_count = 0
         self._update_submit_button_state()
         self._update_wait_close_countdown_display()
+        self._update_keep_analysis_status_display()
+
+    def _has_active_position(self, symbol: str, timeframe: str) -> bool:
+        """Return True when software position tracking has an active position."""
+        if getattr(self, "_demo_mode", False):
+            return False
+        tracker = getattr(self._ctx, "position_tracker", None)
+        if tracker is None:
+            return False
+        try:
+            return tracker.get_active(symbol, timeframe) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _keep_analysis_tracking_allowed(
+        self, symbol: str, timeframe: str
+    ) -> bool:
+        """Whether keep-analysis may submit at the current reference clock."""
+        from pa_agent.config.tracking_schedule import keep_analysis_tracking_allowed
+
+        settings = getattr(self._ctx, "settings", None)
+        return keep_analysis_tracking_allowed(
+            settings,
+            has_active_position=self._has_active_position(symbol, timeframe),
+        )
+
+    def _update_keep_analysis_status_display(self) -> None:
+        """Refresh the keep-analysis status badge beside the checkbox."""
+        lbl = getattr(self, "_keep_analysis_status_label", None)
+        cb = getattr(self, "_keep_analysis_checkbox", None)
+        if lbl is None or cb is None:
+            return
+
+        from pa_agent.config.tracking_schedule import keep_analysis_status_text
+
+        symbol = self._symbol_combo.currentText().strip()
+        tf = self._tf_combo.currentText()
+        waiting = bool(
+            self._pending_submit_after_close
+            and getattr(self, "_pending_from_keep_analysis", False)
+        )
+        visible, text, tooltip = keep_analysis_status_text(
+            keep_analysis_enabled=cb.isChecked(),
+            settings=getattr(self._ctx, "settings", None),
+            has_active_position=self._has_active_position(symbol, tf),
+            analysis_in_progress=bool(self._analysis_in_progress),
+            waiting_bar_close=waiting,
+            data_source=getattr(self._ctx, "data_source", None),
+        )
+        if not visible:
+            lbl.hide()
+            lbl.setText("")
+            return
+
+        lbl.setText(text)
+        lbl.setToolTip(tooltip)
+        if text.startswith("非跟踪时段"):
+            lbl.setProperty("status", "paused")
+        elif "分析进行中" in text or "等待K线" in text:
+            lbl.setProperty("status", "busy")
+        else:
+            lbl.setProperty("status", "active")
+        lbl.style().unpolish(lbl)
+        lbl.style().polish(lbl)
+        lbl.show()
 
     def _check_pending_bar_close(self, bars: Any) -> None:
         """If the forming bar rolled over, start the deferred analysis."""
@@ -1943,6 +2022,15 @@ class MainWindow(QMainWindow):
             symbol=symbol,
             now_ms=self._reference_now_ms(),
         ):
+            return
+        from_keep = bool(getattr(self, "_pending_from_keep_analysis", False))
+        if from_keep and not self._keep_analysis_tracking_allowed(symbol, timeframe):
+            self._clear_pending_bar_close_wait()
+            logger.info(
+                "持续跟踪：K线已收盘但跟踪时段外，推迟至进入时段后分析（symbol=%s tf=%s）",
+                symbol,
+                timeframe,
+            )
             return
         bar_count = self._pending_submit_bar_count
         force_incremental = self._pending_force_incremental
@@ -1974,6 +2062,7 @@ class MainWindow(QMainWindow):
         bar_count: int,
         *,
         force_incremental: bool = False,
+        from_keep_analysis: bool = False,
     ) -> bool:
         """Wait until bars[0] ts_open changes, then call _start_analysis."""
         from datetime import datetime
@@ -2001,6 +2090,13 @@ class MainWindow(QMainWindow):
             now_ms=self._reference_now_ms(),
         )
         if forming_ts is None:
+            if from_keep_analysis and not self._keep_analysis_tracking_allowed(
+                symbol, timeframe
+            ):
+                logger.info(
+                    "持续跟踪：最新K线已收盘但跟踪时段外，推迟至进入时段后分析"
+                )
+                return False
             submit_hint = "提交增量分析" if force_incremental else "提交分析"
             self._status_bar.showMessage(f"最新K线已收盘，正在{submit_hint}…")
             self._start_analysis(
@@ -2014,6 +2110,7 @@ class MainWindow(QMainWindow):
 
         self._pending_submit_after_close = True
         self._pending_force_incremental = force_incremental
+        self._pending_from_keep_analysis = from_keep_analysis
         self._wait_forming_ts = forming_ts
         self._last_forming_ts_open = forming_ts
         self._pending_submit_symbol = symbol.strip()
@@ -2038,6 +2135,7 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 f"等待当前K线收盘…（{ts_hint}，收盘后将自动{submit_hint}）"
             )
+        self._update_keep_analysis_status_display()
         return True
 
     def _on_demo_mode_button(self) -> None:
@@ -2100,6 +2198,7 @@ class MainWindow(QMainWindow):
             # with no retry.  Instead, let _check_keep_analysis (called on every
             # RefreshLoop tick) handle the first trigger once bars arrive.
             self._keep_analysis_last_closed_ts = None
+            self._keep_analysis_outside_window = False
             logger.info(
                 "持续跟踪分析已开启，重置哨兵，等待 RefreshLoop 推送第一批数据后自动触发"
             )
@@ -2112,6 +2211,7 @@ class MainWindow(QMainWindow):
             if self._pending_submit_after_close:
                 self._clear_pending_bar_close_wait()
             self._status_bar.showMessage("持续跟踪分析已关闭")
+        self._update_keep_analysis_status_display()
 
     def _refresh_keep_analysis_sentinel(self) -> None:
         """Sync keep-analysis sentinel after analysis completes.
@@ -2220,28 +2320,62 @@ class MainWindow(QMainWindow):
                 return
 
             closed_ts = int(ts_open)
+            symbol = self._symbol_combo.currentText().strip()
+            tf = self._tf_combo.currentText()
+            bar_count = self._analysis_bar_count()
+            tracking_allowed = self._keep_analysis_tracking_allowed(symbol, tf)
+            was_outside = bool(getattr(self, "_keep_analysis_outside_window", False))
+
             if self._keep_analysis_last_closed_ts is None:
-                # First tick after enabling — record sentinel and immediately arm
-                # a wait for the *current* forming bar to close so the first
-                # analysis starts as soon as the bar in progress finishes, rather
-                # than waiting for an additional bar after that.
+                # First tick after enabling — record sentinel; only arm inside window.
                 self._keep_analysis_last_closed_ts = closed_ts
                 logger.info(
                     "持续跟踪分析：哨兵初始化 closed_ts=%s，立即 arm 等待当前K线收盘",
                     closed_ts,
                 )
-                symbol = self._symbol_combo.currentText().strip()
-                tf = self._tf_combo.currentText()
-                bar_count = self._analysis_bar_count()
+                if not tracking_allowed:
+                    self._keep_analysis_outside_window = True
+                    logger.info("持续跟踪：当前在跟踪时段外，待进入时段后再分析")
+                    return
                 if (
                     not self._analysis_in_progress
                     and not self._pending_submit_after_close
                     and self._bars_sufficient_for_analysis(bars, bar_count)
                 ):
                     self._arm_wait_for_bar_close(
-                        symbol, tf, bar_count, force_incremental=False
+                        symbol,
+                        tf,
+                        bar_count,
+                        force_incremental=False,
+                        from_keep_analysis=True,
                     )
                 return
+
+            if not tracking_allowed:
+                self._keep_analysis_outside_window = True
+                logger.debug(
+                    "持续跟踪：跟踪时段外，跳过（closed_ts=%s）", closed_ts
+                )
+                return
+
+            if was_outside and self._bars_sufficient_for_analysis(bars, bar_count):
+                self._keep_analysis_outside_window = False
+                self._keep_analysis_last_closed_ts = closed_ts
+                logger.info(
+                    "持续跟踪：进入跟踪时段，触发衔接分析（closed_ts=%s）",
+                    closed_ts,
+                )
+                self._start_analysis_with_bars(
+                    symbol,
+                    tf,
+                    bar_count,
+                    bars,
+                    force_incremental=False,
+                    from_keep_analysis=True,
+                )
+                return
+
+            self._keep_analysis_outside_window = False
 
             if closed_ts == self._keep_analysis_last_closed_ts:
                 logger.debug("持续跟踪分析：无新K线（sentinel=%s）", closed_ts)
@@ -2250,9 +2384,6 @@ class MainWindow(QMainWindow):
             # New bar has closed — update sentinel and trigger analysis
             self._keep_analysis_last_closed_ts = closed_ts
             logger.info("保持分析：检测到新K线收盘（ts_open=%s），自动触发分析", closed_ts)
-            symbol = self._symbol_combo.currentText().strip()
-            tf = self._tf_combo.currentText()
-            bar_count = self._analysis_bar_count()
             if self._bars_sufficient_for_analysis(bars, bar_count):
                 # A bar just closed — submit analysis immediately with the
                 # current bars rather than arming another wait-for-close.
@@ -2577,6 +2708,9 @@ class MainWindow(QMainWindow):
 
     def _begin_submit_analysis(self, *, force_incremental: bool) -> None:
         """Shared entry for normal and forced-incremental submit buttons."""
+        from pa_agent.licensing.enforce import require_active_license
+
+        require_active_license(self._license_validator, context="submit_analysis", parent=self)
         if not self._can_submit():
             return
 
@@ -2840,6 +2974,7 @@ class MainWindow(QMainWindow):
         self._analysis_in_progress = True
         self._last_analysis_had_error = False
         self._update_submit_button_state()
+        self._update_keep_analysis_status_display()
         from pa_agent.ai.decision_stance import stance_label_zh
 
         stance_raw = "balanced"
@@ -3014,7 +3149,19 @@ class MainWindow(QMainWindow):
                 inner = {**inner, "next_bar_prediction": decision["next_bar_prediction"]}
             if "next_cycle_prediction" in decision and "next_cycle_prediction" not in inner:
                 inner = {**inner, "next_cycle_prediction": decision["next_cycle_prediction"]}
-            self._chart_widget.set_decision(inner)
+            tracker = getattr(self._ctx, "position_tracker", None)
+            symbol = self._symbol_combo.currentText().strip()
+            timeframe = self._tf_combo.currentText()
+            has_filled = False
+            if tracker is not None and not getattr(self, "_demo_mode", False):
+                from pa_agent.positions.model import PositionStatus
+
+                active = tracker.get_active(symbol, timeframe)
+                has_filled = (
+                    active is not None and active.status == PositionStatus.FILLED
+                )
+            if not has_filled:
+                self._chart_widget.set_decision(inner)
             if getattr(self, "_demo_mode", False):
                 self._chart_widget.fit_view()
             stance = None
@@ -3312,21 +3459,49 @@ class MainWindow(QMainWindow):
                 return
             decision = getattr(record, "stage2_decision", None)
             exc_info = getattr(record, "exception", None)
-            if decision and not exc_info:
+            from pa_agent.positions.decision_fields import (
+                should_apply_position_despite_validation,
+            )
+
+            apply_position = decision and (
+                not exc_info
+                or exc_info.get("position_apply_allowed")
+                or should_apply_position_despite_validation(
+                    exc_info, stage2_decision=decision
+                )
+            )
+            if apply_position:
                 record_id = getattr(meta, "timestamp_local_iso", None)
                 current_price = None
+                fill_bar_ts = None
                 kline_data = getattr(record, "kline_data", None) or []
                 if kline_data:
                     try:
                         current_price = float(kline_data[0].get("close"))
                     except (TypeError, ValueError, AttributeError):
                         current_price = None
+                    from pa_agent.data.bar_close_wait import bar_ts_open_ms
+
+                    fill_bar_ts = bar_ts_open_ms(kline_data[0])
+                if exc_info:
+                    from pa_agent.ai.stage2_normalizer import normalize_stage2
+
+                    stage1_diag = getattr(record, "stage1_diagnosis", None)
+                    decision = normalize_stage2(
+                        decision,
+                        normalization_mode="lenient",
+                        decision_stance=getattr(meta, "decision_stance", None),
+                        stage1_json=stage1_diag
+                        if isinstance(stage1_diag, dict)
+                        else None,
+                    )
                 tracker.apply_decision(
                     symbol=symbol,
                     timeframe=timeframe,
                     decision=decision,
                     record_id=record_id,
                     current_price=current_price,
+                    fill_bar_ts=fill_bar_ts,
                 )
             self._sync_chart_active_position(symbol, timeframe)
         except Exception as exc:  # noqa: BLE001
@@ -3343,9 +3518,13 @@ class MainWindow(QMainWindow):
             chart.set_active_position(None)
         else:
             chart.set_active_position(position.model_dump(mode="json"))
+            from pa_agent.positions.model import PositionStatus
+
+            if position.status == PositionStatus.FILLED:
+                chart.clear_decision_overlay()
 
     def _check_position_on_tick(self, bars: Any) -> None:
-        """Detect planned-order fill / position exit from the latest bar."""
+        """Detect planned-order fill / position exit from the newest **closed** bar."""
         tracker = getattr(self._ctx, "position_tracker", None)
         if tracker is None or getattr(self, "_demo_mode", False) or not bars:
             return
@@ -3353,16 +3532,26 @@ class MainWindow(QMainWindow):
         timeframe = self._tf_combo.currentText()
         if tracker.get_active(symbol, timeframe) is None:
             return
-        newest = bars[0]
-        high = getattr(newest, "high", None)
-        low = getattr(newest, "low", None)
-        if high is None and isinstance(newest, dict):
-            high = newest.get("high")
-            low = newest.get("low")
+        from pa_agent.data.bar_close_wait import bar_ts_open_ms, newest_closed_bar_for_tick
+
+        closed_bar = newest_closed_bar_for_tick(list(bars))
+        if closed_bar is None:
+            return
+        high = getattr(closed_bar, "high", None)
+        low = getattr(closed_bar, "low", None)
+        if high is None and isinstance(closed_bar, dict):
+            high = closed_bar.get("high")
+            low = closed_bar.get("low")
         if high is None or low is None:
             return
         try:
-            tracker.on_tick(symbol, timeframe, high=high, low=low)
+            tracker.on_tick(
+                symbol,
+                timeframe,
+                high=high,
+                low=low,
+                bar_ts=bar_ts_open_ms(closed_bar),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Position tick check failed: %s", exc)
         self._sync_chart_active_position(symbol, timeframe)
@@ -3714,6 +3903,7 @@ class MainWindow(QMainWindow):
         else:
             msg = "分析完成"
         self._status_bar.showMessage(msg)
+        self._update_keep_analysis_status_display()
 
     def showEvent(self, event: QShowEvent | None) -> None:
         """On first show, prompt for API Key when missing."""
@@ -3793,7 +3983,11 @@ class MainWindow(QMainWindow):
         if settings is None:
             settings = Settings()
 
-        dlg = SettingsDialog(settings, parent=self)
+        dlg = SettingsDialog(
+            settings,
+            parent=self,
+            data_source=getattr(self._ctx, "data_source", None),
+        )
         dlg.set_decision_flow_play_handler(self._trigger_decision_flow_playback)
         if focus_api_key:
             dlg.focus_api_key_field()
@@ -3813,6 +4007,7 @@ class MainWindow(QMainWindow):
                 update_api_key(key)
             self._update_ai_mode_label()
             self._refresh_api_key_ui_state()
+            self._update_keep_analysis_status_display()
 
     def _apply_chart_display_settings(self) -> None:
         """Sync chart label font sizes from persisted general settings."""
@@ -3856,6 +4051,11 @@ class MainWindow(QMainWindow):
             mode = "adaptive" if "opus-4-7" in p.model or "opus-4-6" in p.model else "effort"
             self._ai_mode_label.setText(
                 f"PackyAPI 思考: {thinking} · {mode}={effort} · {p.model}"
+            )
+        elif "agnes-ai.com" in base:
+            thinking = "开" if p.thinking else "关"
+            self._ai_mode_label.setText(
+                f"Agnes 思考: {thinking} · enable_thinking · {p.model}"
             )
         else:
             self._ai_mode_label.setText(

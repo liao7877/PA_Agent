@@ -11,15 +11,17 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import QTime, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
 
 from pa_agent.config.settings import Settings, save_settings
@@ -34,11 +36,18 @@ _AGENT_TUTORIAL_URL = (
 class SettingsDialog(QDialog):
     """Modal dialog that exposes all Settings fields as editable form widgets."""
 
-    def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        parent: QWidget | None = None,
+        *,
+        data_source: object | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("设置")
         self.setMinimumWidth(520)
         self._settings = settings
+        self._data_source = data_source
         self._setup_ui()
         self._load_values()
 
@@ -141,6 +150,49 @@ class SettingsDialog(QDialog):
             "勾选后，每当有新的K线收盘时自动触发分析（与主界面「持续跟踪分析」勾选框同步）"
         )
         general_form.addRow("持续跟踪分析:", self._keep_analysis_check)
+
+        self._keep_analysis_time_window_check = QCheckBox("仅在指定时段内持续跟踪")
+        self._keep_analysis_time_window_check.setToolTip(
+            "开启后，持续跟踪只在下方时段内自动提交分析；"
+            "时段外若无持仓则暂停跟踪，进入时段时会根据 K 线与上次分析能否衔接，"
+            "自动选择完整分析或增量分析。\n"
+            "支持跨午夜：开始时间晚于结束时间即表示到次日，"
+            "例如 08:00 至 02:00 = 早上 8 点到次日凌晨 2 点。"
+        )
+        general_form.addRow("跟踪时段:", self._keep_analysis_time_window_check)
+
+        tracking_time_row = QHBoxLayout()
+        self._keep_analysis_time_start_edit = QTimeEdit()
+        self._keep_analysis_time_start_edit.setDisplayFormat("HH:mm")
+        self._keep_analysis_time_start_edit.setToolTip(
+            "跟踪开始时刻（按本机当地时区填写，程序会自动检测并换算 MT5 经纪商时钟）。\n"
+            "若开始晚于结束，表示跨到次日，如 08:00 开始、02:00 结束 = 至次日凌晨 2 点。"
+        )
+        tracking_time_row.addWidget(self._keep_analysis_time_start_edit)
+        self._keep_analysis_time_sep_label = QLabel("至")
+        tracking_time_row.addWidget(self._keep_analysis_time_sep_label)
+        self._keep_analysis_time_end_edit = QTimeEdit()
+        self._keep_analysis_time_end_edit.setDisplayFormat("HH:mm")
+        self._keep_analysis_time_end_edit.setToolTip(
+            "跟踪结束时刻（不含该分钟，本机当地时区）。\n"
+            "结束早于开始时表示次日，例如 08:00 至 02:00："
+            "当天 08:00 起跟踪，次日 02:00 前停止（02:00 起算时段外）。"
+        )
+        tracking_time_row.addWidget(self._keep_analysis_time_end_edit)
+        general_form.addRow("跟踪起止时间:", tracking_time_row)
+
+        self._keep_analysis_time_hint_label = QLabel()
+        self._keep_analysis_time_hint_label.setWordWrap(True)
+        self._keep_analysis_time_hint_label.setStyleSheet("color: #8b949e; font-size: 11px;")
+        general_form.addRow("", self._keep_analysis_time_hint_label)
+
+        self._keep_analysis_bypass_position_check = QCheckBox(
+            "有持仓时不受跟踪时段限制"
+        )
+        self._keep_analysis_bypass_position_check.setToolTip(
+            "勾选后，只要软件持仓跟踪中有活跃持仓，时段外仍会在 K 线收盘时自动分析"
+        )
+        general_form.addRow("", self._keep_analysis_bypass_position_check)
 
         self._context_warning_spin = QSpinBox()
         self._context_warning_spin.setRange(1, 100)
@@ -328,6 +380,33 @@ class SettingsDialog(QDialog):
         self._keep_analysis_check.setChecked(
             bool(getattr(g, "keep_analysis", False))
         )
+        self._keep_analysis_time_window_check.setChecked(
+            bool(getattr(g, "keep_analysis_time_window_enabled", False))
+        )
+        from pa_agent.config.tracking_schedule import parse_hhmm
+
+        start_h, start_m = parse_hhmm(
+            getattr(g, "keep_analysis_time_start", "09:00"), default=(9, 0)
+        )
+        end_h, end_m = parse_hhmm(
+            getattr(g, "keep_analysis_time_end", "23:00"), default=(23, 0)
+        )
+        self._keep_analysis_time_start_edit.setTime(QTime(start_h, start_m))
+        self._keep_analysis_time_end_edit.setTime(QTime(end_h, end_m))
+        self._keep_analysis_bypass_position_check.setChecked(
+            bool(getattr(g, "keep_analysis_bypass_with_position", True))
+        )
+        self._sync_keep_analysis_time_widgets_enabled()
+        self._keep_analysis_time_window_check.toggled.connect(
+            self._sync_keep_analysis_time_widgets_enabled
+        )
+        self._keep_analysis_time_start_edit.timeChanged.connect(
+            self._update_keep_analysis_time_hint
+        )
+        self._keep_analysis_time_end_edit.timeChanged.connect(
+            self._update_keep_analysis_time_hint
+        )
+        self._update_keep_analysis_time_hint()
         self._context_warning_spin.setValue(int(g.context_warning_threshold_pct))
         self._stream_font_spin.setValue(int(getattr(g, "stream_pane_font_pt", 11)))
         self._chart_seq_font_spin.setValue(int(getattr(g, "chart_seq_label_font_pt", 7)))
@@ -382,7 +461,8 @@ class SettingsDialog(QDialog):
         return (
             f"Base URL 不是有效网址（当前：{base_url}）。\n"
             "DeepSeek 示例：https://api.deepseek.com\n"
-            "PackyAPI 示例：https://www.packyapi.com/v1"
+            "PackyAPI 示例：https://www.packyapi.com/v1\n"
+            "Agnes 示例：https://apihub.agnes-ai.com/v1（模型 agnes-2.0-flash）"
         )
 
     def _on_save(self) -> None:
@@ -408,6 +488,18 @@ class SettingsDialog(QDialog):
         g.mt5_terminal_path = self._mt5_terminal_path_edit.text().strip()
         g.auto_resume_chart_after_analysis = self._auto_resume_chart_check.isChecked()
         g.keep_analysis = self._keep_analysis_check.isChecked()
+        g.keep_analysis_time_window_enabled = (
+            self._keep_analysis_time_window_check.isChecked()
+        )
+        g.keep_analysis_time_start = (
+            self._keep_analysis_time_start_edit.time().toString("HH:mm")
+        )
+        g.keep_analysis_time_end = (
+            self._keep_analysis_time_end_edit.time().toString("HH:mm")
+        )
+        g.keep_analysis_bypass_with_position = (
+            self._keep_analysis_bypass_position_check.isChecked()
+        )
         g.context_warning_threshold_pct = float(self._context_warning_spin.value())
         g.stream_pane_font_pt = self._stream_font_spin.value()
         g.chart_seq_label_font_pt = self._chart_seq_font_spin.value()
@@ -423,6 +515,33 @@ class SettingsDialog(QDialog):
 
         save_settings(self._settings, SETTINGS_JSON_PATH)
         self.accept()
+
+    def _sync_keep_analysis_time_widgets_enabled(self, *_args: object) -> None:
+        enabled = self._keep_analysis_time_window_check.isChecked()
+        self._keep_analysis_time_start_edit.setEnabled(enabled)
+        self._keep_analysis_time_end_edit.setEnabled(enabled)
+        self._keep_analysis_bypass_position_check.setEnabled(enabled)
+        self._keep_analysis_time_hint_label.setEnabled(enabled)
+        self._update_keep_analysis_time_hint()
+
+    def _update_keep_analysis_time_hint(self, *_args: object) -> None:
+        from pa_agent.config.tracking_schedule import (
+            format_tracking_window_hint,
+            is_overnight_window,
+        )
+
+        start = self._keep_analysis_time_start_edit.time().toString("HH:mm")
+        end = self._keep_analysis_time_end_edit.time().toString("HH:mm")
+        overnight = is_overnight_window(start, end)
+        self._keep_analysis_time_sep_label.setText("至次日" if overnight else "至")
+        data_source = self._data_source
+        if data_source is None and self.parent() is not None:
+            ctx = getattr(self.parent(), "_ctx", None)
+            if ctx is not None:
+                data_source = getattr(ctx, "data_source", None)
+        self._keep_analysis_time_hint_label.setText(
+            format_tracking_window_hint(start, end, data_source=data_source)
+        )
 
     def _sync_notification_settings(self) -> None:
         """Write notification widgets back into self._settings.notification."""

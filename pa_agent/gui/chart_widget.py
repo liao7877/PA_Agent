@@ -385,6 +385,8 @@ class ChartWidget(pg.PlotWidget):
         # Held-position lines persist across refreshes; redraw after rebuild.
         if self._active_position is not None:
             self._draw_active_position()
+        elif self._pending_decision is not None:
+            self.set_decision(self._pending_decision)
 
         if self._fit_on_next_render:
             self._fit_on_next_render = False

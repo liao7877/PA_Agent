@@ -222,6 +222,11 @@ class AIStreamPanel(QWidget):
                 f"PackyAPI: 思考={thinking} · effort="
                 f"{p.reasoning_effort if p.thinking else '—'} · {p.model}"
             )
+        elif "agnes-ai.com" in base:
+            thinking = "开" if p.thinking else "关"
+            self._mode_label.setText(
+                f"Agnes: 思考={thinking} · enable_thinking · {p.model}"
+            )
         else:
             self._mode_label.setText(
                 f"API: {p.model} · 思考={('开' if p.thinking else '关')}"
