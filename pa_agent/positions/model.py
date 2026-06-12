@@ -47,6 +47,7 @@ class PositionState(BaseModel):
     filled_at_ms: Optional[int] = None
     closed_at_ms: Optional[int] = None
     fill_price: Optional[float] = None
+    filled_on_bar_ts: Optional[int] = None  # bar open ts (ms) when filled; skip SL/TP on that bar
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None       # take_profit | stop_loss | ai_close | manual
     opened_at_record_id: Optional[str] = None  # pending json basename

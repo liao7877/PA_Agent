@@ -133,6 +133,30 @@ def test_tick_exit_stop_loss_long(store, notifier):
     assert exits and "止损" in exits[-1].text
 
 
+def test_market_short_not_stopped_on_entry_bar_same_bar(store, notifier):
+    """SCS market short: SL above signal high must not fire on the entry bar itself."""
+    tracker = PositionTracker(store=store, notifier=notifier)
+    entry_ts = 1_700_000_000_000
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        fill_bar_ts=entry_ts,
+        decision={
+            "decision": {
+                "order_type": "市价单",
+                "order_direction": "做空",
+                "entry_price": 4278.76,
+                "take_profit_price": 4235.0,
+                "stop_loss_price": 4297.02,
+            }
+        },
+    )
+    pos = tracker.get_active("X", "15m")
+    assert pos is not None and pos.status is PositionStatus.FILLED
+    tracker.on_tick("X", "15m", high=4298.0, low=4277.0, bar_ts=entry_ts)
+    assert tracker.get_active("X", "15m") is not None
+
+
 def test_short_position_stop_and_target(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     short = {"decision": {"order_type": "限价单", "order_direction": "做空",

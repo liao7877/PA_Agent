@@ -79,6 +79,7 @@ class PositionTracker:
         decision: dict,
         record_id: str | None = None,
         current_price: float | None = None,
+        fill_bar_ts: int | None = None,
     ) -> Optional[PositionState]:
         """Reconcile a new stage-2 decision with the current active position.
 
@@ -92,7 +93,11 @@ class PositionTracker:
             # No active position: a tradeable decision opens a new planned order.
             if order_type in _ORDER_TYPES:
                 return self._open_planned(
-                    symbol=symbol, timeframe=timeframe, inner=inner, record_id=record_id
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    inner=inner,
+                    record_id=record_id,
+                    fill_bar_ts=fill_bar_ts,
                 )
             return None
 
@@ -102,7 +107,13 @@ class PositionTracker:
         )
 
     def _open_planned(
-        self, *, symbol: str, timeframe: str, inner: dict, record_id: str | None
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        inner: dict,
+        record_id: str | None,
+        fill_bar_ts: int | None = None,
     ) -> Optional[PositionState]:
         entry = _to_float(inner.get("entry_price"))
         if entry is None:
@@ -126,6 +137,8 @@ class PositionTracker:
             position.status = PositionStatus.FILLED
             position.filled_at_ms = position.planned_at_ms
             position.fill_price = entry
+            if fill_bar_ts is not None:
+                position.filled_on_bar_ts = int(fill_bar_ts)
         self._store.upsert_active(position)
         logger.info("Position opened (%s) %s %s @ %s",
                     position.status.value, symbol, timeframe, entry)
@@ -208,8 +221,16 @@ class PositionTracker:
         return existing
 
     # ── Tick-based detection ───────────────────────────────────────────────
-    def on_tick(self, symbol: str, timeframe: str, *, high: float, low: float) -> Optional[PositionState]:
-        """Update the active position against the latest bar's high/low.
+    def on_tick(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        high: float,
+        low: float,
+        bar_ts: int | None = None,
+    ) -> Optional[PositionState]:
+        """Update the active position against a **closed** bar's high/low.
 
         Returns the active position after processing (or None if closed/none).
         """
@@ -227,11 +248,19 @@ class PositionTracker:
                 position.status = PositionStatus.FILLED
                 position.filled_at_ms = _now_ms()
                 position.fill_price = position.entry_price
+                if bar_ts is not None:
+                    position.filled_on_bar_ts = int(bar_ts)
                 self._store.upsert_active(position)
                 self._notify_entry(position)
             return position
 
         if position.status == PositionStatus.FILLED:
+            if (
+                bar_ts is not None
+                and position.filled_on_bar_ts is not None
+                and int(bar_ts) == int(position.filled_on_bar_ts)
+            ):
+                return position
             long = position.is_long
             tp = position.take_profit_price
             sl = position.stop_loss_price
