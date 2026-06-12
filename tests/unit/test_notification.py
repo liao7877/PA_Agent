@@ -218,6 +218,69 @@ def test_notify_record_routes_error_and_decision():
     assert svc.dispatched[-1].event is NotificationEvent.NEW_ORDER
 
 
+def test_notify_record_sends_error_when_metrics_reject_trade():
+    s = _settings_with(
+        enabled=True, wechat_webhook="https://x",
+        notify_new_order=True, notify_error=True,
+    )
+    svc = _RecordingService(s)
+    rec = SimpleNamespace(
+        meta=SimpleNamespace(symbol="XAUUSD", timeframe="5m"),
+        exception={
+            "type": "validation_error",
+            "stage": "stage2",
+            "category": "c",
+            "invalid_fields": ["metrics:盈亏比不达标"],
+            "decision_preserved": True,
+        },
+        stage2_decision={
+            "decision": {
+                "order_type": "市价单",
+                "order_direction": "做空",
+                "entry_price": 1.0,
+                "take_profit_price": 0.5,
+                "stop_loss_price": 2.0,
+            }
+        },
+        stage1_diagnosis=None,
+    )
+    svc.notify_record(rec)
+    assert svc.dispatched[-1].event is NotificationEvent.ERROR
+
+
+def test_notify_record_sends_decision_when_validation_preserved():
+    s = _settings_with(
+        enabled=True, wechat_webhook="https://x",
+        notify_new_order=True, notify_error=True,
+    )
+    svc = _RecordingService(s)
+    rec = SimpleNamespace(
+        meta=SimpleNamespace(symbol="XAUUSD", timeframe="5m"),
+        exception={
+            "type": "validation_error",
+            "stage": "stage2",
+            "category": "c",
+            "message": "signal_chain:market order requires a concrete entry_bar.bar",
+            "decision_preserved": True,
+        },
+        stage2_decision={
+            "decision": {
+                "order_type": "市价单",
+                "order_direction": "做空",
+                "entry_price": 4278.76,
+                "take_profit_price": 4235.0,
+                "stop_loss_price": 4297.02,
+                "reasoning": "追空",
+            }
+        },
+        stage1_diagnosis=None,
+    )
+    svc.notify_record(rec)
+    assert len(svc.dispatched) == 1
+    assert svc.dispatched[0].event is NotificationEvent.NEW_ORDER
+    assert "市价单" in svc.dispatched[0].text
+
+
 # ── Channel payloads ──────────────────────────────────────────────────────────
 def test_dingtalk_payload_is_action_card():
     ch = DingTalkChannel(webhook="https://oapi.dingtalk.com/robot/send?access_token=abc")

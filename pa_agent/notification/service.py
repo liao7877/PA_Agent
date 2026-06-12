@@ -69,14 +69,32 @@ class NotificationService:
             symbol = getattr(meta, "symbol", "") if meta else ""
             timeframe = getattr(meta, "timeframe", "") if meta else ""
             exception = getattr(record, "exception", None)
-            if exception:
-                self.notify(
-                    formatter.format_error(
-                        symbol=symbol, timeframe=timeframe, exception=exception
-                    )
-                )
-                return
             decision = getattr(record, "stage2_decision", None)
+            from pa_agent.positions.decision_fields import (
+                is_actionable_trade_decision,
+                should_apply_position_despite_validation,
+            )
+
+            exc = exception if isinstance(exception, dict) else None
+            actionable = is_actionable_trade_decision(decision)
+            trade_ok = should_apply_position_despite_validation(
+                exc, stage2_decision=decision
+            )
+            if exc:
+                if actionable and not trade_ok:
+                    self.notify(
+                        formatter.format_error(
+                            symbol=symbol, timeframe=timeframe, exception=exc
+                        )
+                    )
+                    return
+                if not decision and not exc.get("decision_preserved"):
+                    self.notify(
+                        formatter.format_error(
+                            symbol=symbol, timeframe=timeframe, exception=exc
+                        )
+                    )
+                    return
             if not decision:
                 return
             stage1 = getattr(record, "stage1_diagnosis", None)
