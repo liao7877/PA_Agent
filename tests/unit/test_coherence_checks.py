@@ -134,7 +134,14 @@ def test_stage2_order_direction_conflicts_stage1() -> None:
         },
     }
     errs = validate_stage2_coherence(s2, s1, kline_frame=_frame())
-    assert any("做空 conflicts" in e for e in errs)
+    # Conflicts are auto-resolved by injecting node 2.3 instead of hard-failing.
+    assert errs == []
+    injected = [
+        x for x in s2["decision_trace"]
+        if isinstance(x, dict) and x.get("node_id") == "2.3" and x.get("_auto_injected")
+    ]
+    assert injected
+    assert injected[0].get("branch") == "bearish"
 
 
 def test_duplicate_single_bar_range_is_allowed() -> None:
@@ -151,7 +158,8 @@ def test_duplicate_single_bar_range_is_allowed() -> None:
 
 
 def test_duplicate_multi_bar_range_still_errors() -> None:
-    trace = [{"node_id": f"9.{i}", "answer": "否", "reason": "r", "bar_range": "K8-K1"} for i in range(6)]
+    # Narrow windows (fewer than 4 bars) are still flagged when overused.
+    trace = [{"node_id": f"9.{i}", "answer": "否", "reason": "r", "bar_range": "K3-K2"} for i in range(6)]
     errs = validate_duplicate_bar_ranges(trace, path_prefix="decision_trace", min_items=5)
     assert any("identical bar_range" in e for e in errs)
 
@@ -229,7 +237,7 @@ def test_auto_fix_k0_bar_label_to_k1() -> None:
     assert errs == []
 
 
-def test_structural_inside_outside_mismatch_still_errors_in_strict() -> None:
+def test_opposite_trend_direction_still_errors_in_strict() -> None:
     frame = KlineFrame(
         symbol="XAUUSD",
         timeframe="15m",
@@ -260,7 +268,7 @@ def test_structural_inside_outside_mismatch_still_errors_in_strict() -> None:
         indicators=IndicatorBundle(ema20=(100.0, 100.0), atr14=(10.0, 10.0)),
     )
     stage1 = {
-        "bar_by_bar_summary": [{"bar": "K1", "bar_type": "trend_bull", "reason": "x"}]
+        "bar_by_bar_summary": [{"bar": "K2", "bar_type": "trend_bear", "reason": "x"}]
     }
     errs = validate_bar_by_bar_vs_features(stage1, kline_frame=frame, strict=True)
     assert any("contradicts" in e for e in errs)

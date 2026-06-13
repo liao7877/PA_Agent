@@ -285,20 +285,18 @@ def test_stage2_continuation_omits_stage1_user_prompt(assembler: PromptAssembler
         experience_entries=[],
     )
 
-    # New 4-message structure: system, user(S1), assistant(S1), user(S2)
-    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    # Cache-friendly 3-message structure: system, user(S1), user(S2); no assistant turn.
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
     # System prompt includes full binary tree (same as Stage 1 now)
     assert "二元决策.txt" in messages[0]["content"] or "## 3." in messages[0]["content"]
     # Message [1] is Stage 1 user prompt (with K-line table)
     assert "K线数据" in messages[1]["content"]
     assert "序号 | 时间" in messages[1]["content"]  # K-line table present
-    # Message [2] is Stage 1 assistant reply
-    assert "cycle_position" in messages[2]["content"]
-    # Message [3] is Stage 2 user prompt (without K-line table)
-    assert "沿用上一轮阶段一用户消息中的同一份 K线数据" in messages[3]["content"]
-    assert "下跌通道分析识别" in messages[3]["content"]
-    assert "上涨通道分析识别" not in messages[3]["content"]
-    assert "【最后一步·必做】" in messages[3]["content"]
+    # Message [2] is Stage 2 user prompt (without K-line table)
+    assert "沿用上一轮阶段一用户消息中的同一份 K线数据" in messages[2]["content"]
+    assert "下跌通道分析识别" in messages[2]["content"]
+    assert "上涨通道分析识别" not in messages[2]["content"]
+    assert "【最后一步·必做】" in messages[2]["content"]
 
 
 def test_stage2_prompt_includes_balanced_stance_guidance(assembler: PromptAssembler):
@@ -616,7 +614,7 @@ def test_previous_prediction_rendered_in_incremental_mode(assembler: PromptAssem
         previous_record=previous,
     )
 
-    user = messages[3]["content"]  # Stage 2 user prompt is now at index 3
+    user = messages[2]["content"]  # Stage 2 user prompt
     assert "上一轮下一根K线预测" in user
     assert "阳线" in user
     assert "60%" in user
@@ -678,5 +676,5 @@ def test_unpredictable_previous_prediction_renders_note(assembler: PromptAssembl
         previous_record=previous,
     )
 
-    user = messages[3]["content"]  # Stage 2 user prompt is now at index 3
+    user = messages[2]["content"]  # Stage 2 user prompt
     assert "不可预测" in user

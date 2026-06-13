@@ -24,7 +24,7 @@ _CN_TZ = ZoneInfo("Asia/Shanghai")
 _AK_MIN_INTERVAL_S = 0.9
 _last_ak_fetch_mono: float = 0.0
 
-# PA Agent timeframe → AkShare minute period (stock_zh_a_hist_min_em)
+# Trading Agent timeframe → AkShare minute period (stock_zh_a_hist_min_em)
 _MINUTE_PERIOD: dict[str, str] = {
     "1h": "60",
 }

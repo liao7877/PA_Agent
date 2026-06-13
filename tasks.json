@@ -10,7 +10,7 @@
         "reveal": "always",
         "panel": "new"
       },
-      "detail": "启动 PA Agent GUI"
+      "detail": "启动 Trading Agent GUI"
     },
     {
       "label": "test",

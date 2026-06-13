@@ -134,12 +134,24 @@ def test_stage2_schema_rejects_invalid_prediction_subfield():
         "unpredictable": False,
         "features_used": ["stage1_diagnosis"],
     }
+    # normalize_stage2 rescales probability sums before schema checks; test the
+    # checker directly so invalid sums are still guarded after normalization.
+    errors = _validator._check_next_bar_prediction(obj)
+    assert any("sum=30" in e for e in errors)
+
+
+def test_stage2_schema_rescales_invalid_prediction_sum_via_normalizer():
+    """Probability sums that are off but fixable are normalized instead of rejected."""
+    obj = _valid_stage2_no_prediction()
+    obj["next_bar_prediction"] = {
+        "direction": "bullish",
+        "probabilities": {"bullish": 10, "bearish": 10, "neutral": 10},
+        "reasoning": "x" * 30,
+        "unpredictable": False,
+        "features_used": ["stage1_diagnosis"],
+    }
     result = _validator.validate("stage2", json.dumps(obj, ensure_ascii=False))
-    assert isinstance(result, ValidationError)
-    assert result.category == "c"
-    assert any("next_bar_prediction." in f for f in result.invalid_fields), (
-        f"Expected next_bar_prediction. prefix, got {result.invalid_fields}"
-    )
+    assert isinstance(result, Ok), f"Expected Ok after normalization, got {result}"
 
 
 # ── T6: Validator unit tests for _check_next_bar_prediction ──────────────────

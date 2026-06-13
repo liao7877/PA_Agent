@@ -103,6 +103,25 @@ def test_format_error():
     assert "异常" in msg.title
 
 
+def test_format_api_error():
+    msg = formatter.format_api_error(
+        message="401 Unauthorized",
+        symbol="XAUUSD",
+        timeframe="15m",
+        stage="stage1",
+        source="analysis",
+    )
+    assert msg.event is NotificationEvent.API_ERROR
+    assert "API 异常" in msg.title
+    assert "401" in msg.text
+
+
+def test_is_api_exception_dict():
+    assert formatter.is_api_exception({"type": "api_error", "message": "boom"})
+    assert formatter.is_api_exception({"type": "network_error", "message": "boom"})
+    assert not formatter.is_api_exception({"type": "validation_error", "message": "boom"})
+
+
 def test_format_entry_exit_manage():
     filled = formatter.format_entry_filled(
         symbol="XAUUSD", timeframe="15m", direction="做多", entry_price=2350,
@@ -190,6 +209,39 @@ def test_notify_record_no_trade_respects_scene_toggle():
     svc.notify_record(rec)
     assert svc.dispatched[-1].event is NotificationEvent.NO_TRADE
     assert "2350" in svc.dispatched[-1].text
+
+
+def test_notify_api_error_toggle_blocks_api_failures():
+    s = _settings_with(
+        enabled=True,
+        dingtalk_webhook="https://x",
+        notify_api_error=False,
+    )
+    svc = _RecordingService(s)
+    svc.notify_api_failure(message="timeout", stage="stage1")
+    assert svc.dispatched == []
+
+    s.notification.notify_api_error = True
+    svc.notify_api_failure(message="timeout", stage="stage1")
+    assert svc.dispatched[-1].event is NotificationEvent.API_ERROR
+
+
+def test_notify_record_routes_api_error_separately_from_validation_error():
+    s = _settings_with(
+        enabled=True,
+        wechat_webhook="https://x",
+        notify_api_error=True,
+        notify_error=False,
+    )
+    svc = _RecordingService(s)
+    rec = SimpleNamespace(
+        meta=SimpleNamespace(symbol="XAUUSD", timeframe="15m"),
+        exception={"type": "api_error", "stage": "stage2", "message": "429 Too Many Requests"},
+        stage2_decision=None,
+    )
+    svc.notify_record(rec)
+    assert svc.dispatched[-1].event is NotificationEvent.API_ERROR
+    assert "429" in svc.dispatched[-1].text
 
 
 def test_notify_record_routes_error_and_decision():

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _CLOCK_TOLERANCE_SECONDS = 300
-_REGISTRY_KEY = r"Software\PA_Agent"
+_REGISTRY_KEY = r"Software\Trading_Agent"
 _REGISTRY_VALUE = "last_seen_utc"
 
 
@@ -19,7 +19,7 @@ def license_dir() -> Path:
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     else:
         base = Path.home() / ".pa_agent"
-    path = base / "PA_Agent"
+    path = base / "Trading_Agent"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -69,7 +69,7 @@ def _protect(data: bytes) -> str:
     if sys.platform == "win32":
         import win32crypt
 
-        blob = win32crypt.CryptProtectData(data, "PA Agent License", None, None, None, 0)
+        blob = win32crypt.CryptProtectData(data, "Trading Agent License", None, None, None, 0)
         return base64.b64encode(blob).decode("ascii")
     from cryptography.fernet import Fernet
 

@@ -24,11 +24,11 @@ class ActivationDialog(QDialog):
         self._validator = validator
         self._result_info: LicenseInfo | None = None
 
-        self.setWindowTitle("PA Agent 激活")
+        self.setWindowTitle("Trading Agent 激活")
         self.setModal(True)
         self.setMinimumWidth(520)
 
-        title = QLabel("请输入供应商提供的激活码以继续使用 PA Agent")
+        title = QLabel("请输入供应商提供的激活码以继续使用 Trading Agent")
         title.setWordWrap(True)
 
         machine = validator.current_machine_id()

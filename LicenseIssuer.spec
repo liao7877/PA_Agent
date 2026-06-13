@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for PA Agent License Issuer GUI (vendor tool)."""
+"""PyInstaller spec for Trading Agent License Issuer GUI (vendor tool)."""
 
 from pathlib import Path
 
@@ -54,7 +54,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="PA_Agent_License_Issuer",
+    name="Trading_Agent_License_Issuer",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

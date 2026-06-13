@@ -9,7 +9,7 @@ description = "Price Action AI assistant: MT5 kline data, two-stage LLM analysis
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
-authors = [{ name = "PA Agent Team" }]
+authors = [{ name = "Trading Agent Team" }]
 dependencies = [
     "PyQt6>=6.6",
     "pyqtgraph>=0.13",

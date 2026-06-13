@@ -1,4 +1,4 @@
-"""Pydantic settings models for PA Agent."""
+"""Pydantic settings models for Trading Agent."""
 from __future__ import annotations
 from typing import Literal
 
@@ -133,6 +133,8 @@ class NotificationSettings(BaseModel):
     notify_no_trade: bool = False
     #: 分析失败/异常时通知。
     notify_error: bool = False
+    #: AI API 调用异常时通知（网络错误、鉴权失败、限流等）。
+    notify_api_error: bool = False
 
     #: HTTP 请求超时（秒）。
     request_timeout_s: int = Field(default=10, ge=1, le=120)

@@ -1,4 +1,4 @@
-"""Design tokens for the PA Agent dark trading-terminal theme."""
+"""Design tokens for the Trading Agent dark trading-terminal theme."""
 from __future__ import annotations
 
 # Backgrounds

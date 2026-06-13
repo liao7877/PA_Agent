@@ -1,1 +1,1 @@
-"""PA Agent security and secret store package."""
+"""Trading Agent security and secret store package."""

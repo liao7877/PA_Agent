@@ -1,4 +1,4 @@
-"""Application entry point for PA Agent."""
+"""Application entry point for Trading Agent."""
 from __future__ import annotations
 
 import logging
@@ -15,12 +15,12 @@ def main(argv: list[str] | None = None) -> int:
 
     argv = list(sys.argv if argv is None else argv)
     app = QApplication(argv)
-    app.setApplicationName("PA Agent")
+    app.setApplicationName("Trading Agent")
 
     from pa_agent.gui.theme import apply_theme
     apply_theme(app)
 
-    logger.info("PA Agent starting up")
+    logger.info("Trading Agent starting up")
 
     from pa_agent.licensing.activation_dialog import ensure_license_or_exit
     from pa_agent.licensing.validator import LicenseValidator

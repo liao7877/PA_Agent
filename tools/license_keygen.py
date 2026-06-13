@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vendor-only CLI to generate license keys for PA Agent."""
+"""Vendor-only CLI to generate license keys for Trading Agent."""
 from __future__ import annotations
 
 import argparse
@@ -73,7 +73,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PA Agent 激活码生成工具（仅供应商使用）")
+    parser = argparse.ArgumentParser(description="Trading Agent 激活码生成工具（仅供应商使用）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("generate-keys", help="生成新的 Ed25519 密钥对")

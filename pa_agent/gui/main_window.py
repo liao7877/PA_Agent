@@ -1,4 +1,4 @@
-"""Main application window for PA Agent."""
+"""Main application window for Trading Agent."""
 from __future__ import annotations
 
 import logging
@@ -63,7 +63,7 @@ class _AnalysisWorker(QThread):
 
     finished = pyqtSignal(dict)
     record_ready = pyqtSignal(object)   # emits the full AnalysisRecord
-    error_occurred = pyqtSignal(str)    # unhandled worker/orchestrator failure
+    error_occurred = pyqtSignal(object)  # unhandled worker/orchestrator failure
     status_update = pyqtSignal(str)
     reasoning_token = pyqtSignal(str, str)   # (stage, chunk)
     content_token = pyqtSignal(str, str)     # (stage, chunk)
@@ -145,7 +145,7 @@ class _AnalysisWorker(QThread):
             logger.error("Analysis worker error: %s", exc, exc_info=True)
             decision = {}
             record = None  # type: ignore[assignment]
-            self.error_occurred.emit(str(exc))
+            self.error_occurred.emit(exc)
 
         if record is not None:
             self.record_ready.emit(record)
@@ -165,7 +165,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(
-            "PA Agent — Trading Terminal（分析仅供参考，不构成投资建议）"
+            "Trading Agent — 分析仅供参考，不构成投资建议"
         )
         self.resize(1440, 900)
         self._ctx = ctx
@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
             api_key=_api_key,
             settings=_settings,
         )
+        self._ai_sidebar.bind_notifier(getattr(self._ctx, "notifier", None))
         self._stream_panel = self._ai_sidebar.stream
         self._debug_widget = self._ai_sidebar.debug
         self._prompt_files_panel = self._ai_sidebar.prompt_files
@@ -3392,9 +3393,27 @@ class MainWindow(QMainWindow):
         if box.clickedButton() == btn_open:
             self._open_settings_dialog()
 
-    def _on_analysis_error(self, message: str) -> None:
+    def _on_analysis_error(self, exc_info: object) -> None:
         """Unhandled exception in the analysis worker thread."""
         self._last_analysis_had_error = True
+        message = str(exc_info)
+        notifier = getattr(self._ctx, "notifier", None)
+        if (
+            notifier is not None
+            and hasattr(notifier, "notify_api_failure")
+            and isinstance(exc_info, BaseException)
+        ):
+            try:
+                from pa_agent.ai.api_health import is_api_error
+
+                if is_api_error(exc_info):
+                    notifier.notify_api_failure(
+                        message=message,
+                        source="analysis",
+                        stage="worker",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Analysis API failure notification skipped: %s", exc)
         panel = getattr(self, "_stream_panel", None)
         if panel is not None:
             panel.show_error_banner("程序异常", message)
@@ -4003,6 +4022,7 @@ class MainWindow(QMainWindow):
                 key = getattr(settings.provider, "api_key", "") or ""
                 self._debug_widget._api_key = key
                 self._ai_sidebar.bind_settings(settings)
+                self._ai_sidebar.bind_notifier(getattr(self._ctx, "notifier", None))
                 self._apply_chart_display_settings()
                 update_api_key(key)
             self._update_ai_mode_label()

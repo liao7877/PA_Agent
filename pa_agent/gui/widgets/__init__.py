@@ -1,4 +1,4 @@
-"""PA Agent GUI widgets package."""
+"""Trading Agent GUI widgets package."""
 
 from pa_agent.gui.widgets.candle_item import CandleItem
 from pa_agent.gui.widgets.seq_label_item import SeqLabelItem

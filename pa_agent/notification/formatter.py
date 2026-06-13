@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pa_agent.ai.api_health import is_api_exception_dict
 from pa_agent.notification.decision_card import build_decision_card
 from pa_agent.notification.events import NotificationEvent, NotificationMessage
 
@@ -73,6 +74,46 @@ def format_decision(
             "entry_price": inner.get("entry_price"),
             "take_profit_price": inner.get("take_profit_price"),
             "stop_loss_price": inner.get("stop_loss_price"),
+        },
+    )
+
+
+def is_api_exception(exc: dict | None) -> bool:
+    """Public alias used by notification routing."""
+    return is_api_exception_dict(exc)
+
+
+def format_api_error(
+    *,
+    message: str,
+    symbol: str = "",
+    timeframe: str = "",
+    stage: str = "",
+    source: str = "analysis",
+    exception: dict | None = None,
+) -> NotificationMessage:
+    """Build a message for AI API connectivity / upstream failures."""
+    pair = f"{symbol} {timeframe}".strip()
+    title_scope = f" · {pair}" if pair else ""
+    title = f"⚠ API 异常{title_scope}"
+    exc = exception if isinstance(exception, dict) else {}
+    detail = (message or str(exc.get("message") or "")).strip()
+    stage_text = (stage or str(exc.get("stage") or "")).strip()
+    source_text = (source or str(exc.get("source") or "analysis")).strip()
+    lines = [f"来源: {source_text}"]
+    if stage_text:
+        lines.append(f"阶段: {stage_text}")
+    if detail:
+        lines.append(f"信息: {_truncate(detail, 320)}")
+    return NotificationMessage(
+        event=NotificationEvent.API_ERROR,
+        title=title,
+        text="\n".join(lines),
+        fields={
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "stage": stage_text,
+            "source": source_text,
         },
     )
 

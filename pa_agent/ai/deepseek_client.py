@@ -72,6 +72,44 @@ def _is_deepseek_model(model: str) -> bool:
     return "deepseek" in (model or "").lower()
 
 
+def _is_openai_gpt_reasoning_model(model: str) -> bool:
+    """OpenAI reasoning models (GPT-5.x, o-series) use top-level reasoning_effort."""
+    m = (model or "").lower()
+    if m.startswith(("o1", "o3", "o4")):
+        return True
+    return "gpt-5" in m
+
+
+# GPT-5.5 / GPT-5 family: 128K max output tokens (OpenAI model page).
+_OPENAI_GPT_MAX_OUTPUT_TOKENS = 128_000
+
+# Map UI/settings effort to OpenAI Chat Completions reasoning_effort values.
+_OPENAI_GPT_EFFORT_MAP: dict[str, str] = {
+    "none": "none",
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "xhigh",
+    "xhigh": "xhigh",
+}
+
+
+def _map_effort_to_openai_gpt(effort: str | None) -> str:
+    """Convert internal effort (incl. max) to OpenAI GPT reasoning_effort."""
+    key = (effort or "medium").strip().lower()
+    return _OPENAI_GPT_EFFORT_MAP.get(key, "medium")
+
+
+def _extract_reasoning_text(obj: Any) -> str:
+    """Read reasoning from message/delta (reasoning_content or reasoning)."""
+    for attr in ("reasoning_content", "reasoning"):
+        val = getattr(obj, attr, None)
+        if val:
+            return str(val)
+    return ""
+
+
 def _is_opencode_go(base_url: str) -> bool:
     """OpenCode Zen Go plan — routes to DeepSeek with the same API limits."""
     url = (base_url or "").lower()
@@ -154,6 +192,8 @@ def _thinking_enabled(extra_body: dict[str, Any], effort: str | None) -> bool:
         ctk = extra_body.get("chat_template_kwargs") or {}
         if ctk.get("enable_thinking") is True:
             return True
+    if effort in ("none", "minimal"):
+        return False
     return effort is not None and effort != "none"
 
 
@@ -191,6 +231,8 @@ def _provider_max_output_tokens(settings: AIProviderSettings) -> int:
         return _DEEPSEEK_MAX_OUTPUT_TOKENS
     if _is_agnes_ai(settings.base_url):
         return _AGNES_MAX_OUTPUT_TOKENS
+    if _is_openai_gpt_reasoning_model(model):
+        return _OPENAI_GPT_MAX_OUTPUT_TOKENS
     return _PRACTICAL_UNLIMITED_MAX_TOKENS
 
 
@@ -221,6 +263,12 @@ def _resolve_thinking_params(
             "thinking": {"type": "enabled" if _thinking else "disabled"},
         }
         return extra_body, _effort if _thinking else None
+
+    if _is_openai_gpt_reasoning_model(model):
+        # OpenAI GPT-5.x / o-series: reasoning_effort only (no extra_body.thinking).
+        if not _thinking:
+            return {}, "none"
+        return {}, _map_effort_to_openai_gpt(_effort)
 
     if not _thinking:
         return {}, None
@@ -362,7 +410,7 @@ class DeepSeekClient:
 
         msg = response.choices[0].message
         content = msg.content or ""
-        reasoning_content = getattr(msg, "reasoning_content", None) or ""
+        reasoning_content = _extract_reasoning_text(msg)
 
         # Build usage
         u = response.usage
@@ -541,9 +589,8 @@ class DeepSeekClient:
                 if delta is None:
                     continue
 
-                # Official pattern: reasoning_content is None when absent, not ""
-                # reasoning_content arrives first (thinking phase), then content
-                r = getattr(delta, "reasoning_content", None)
+                # reasoning_content (DeepSeek/proxies) or reasoning (vLLM) may arrive first
+                r = _extract_reasoning_text(delta) or None
                 if r:
                     reasoning_content += r
                     if on_reasoning_token is not None:

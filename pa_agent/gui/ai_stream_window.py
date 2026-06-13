@@ -76,6 +76,7 @@ class AIStreamPanel(QWidget):
         self._sending = False
         self._red_warned = False
         self._settings: Optional["Settings"] = None
+        self._notifier: object | None = None
 
         self._stage: str = ""
         self._reasoning_chars = 0
@@ -189,6 +190,9 @@ class AIStreamPanel(QWidget):
 
     def bind_settings(self, settings: Optional["Settings"]) -> None:
         self._settings = settings
+
+    def bind_notifier(self, notifier: object | None) -> None:
+        self._notifier = notifier
         self._apply_stream_font()
         self._refresh_mode_label()
 
@@ -599,6 +603,16 @@ class AIStreamPanel(QWidget):
     def _on_reply_error(self, msg: str) -> None:
         self._append_reasoning(f"\n[错误] {msg}\n")
         self._end_stage("追问（失败）")
+        notifier = self._notifier
+        if notifier is not None and hasattr(notifier, "notify_api_failure"):
+            try:
+                notifier.notify_api_failure(
+                    message=msg,
+                    stage="free_chat",
+                    source="追问",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Free-chat API failure notification skipped: %s", exc)
 
     def _on_worker_done(self) -> None:
         self._sending = False

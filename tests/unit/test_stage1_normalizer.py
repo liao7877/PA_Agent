@@ -350,6 +350,26 @@ def test_fills_missing_follow_through_on_bar_by_bar_summary() -> None:
     assert out["bar_by_bar_summary"][1]["follow_through"] == "pending"
 
 
+def test_fills_null_entry_setup_type() -> None:
+    """Regression: model sets entry_setup_type=null and fails schema (blocks stage2)."""
+    import json
+
+    from pa_agent.ai.json_validator import Ok
+
+    raw = {
+        **VALID_STAGE1,
+        "bar_analysis": {
+            **VALID_STAGE1.get("bar_analysis", {}),
+            "entry_setup_type": None,
+        },
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_analysis"]["entry_setup_type"] == "none"
+
+    result = schema_test_validator().validate("stage1", json.dumps(out))
+    assert isinstance(result, Ok), result
+
+
 def test_maps_reversal_attempt_role_to_signal() -> None:
     """Regression: model uses detected_patterns token as bar_by_bar_summary.role."""
     import json

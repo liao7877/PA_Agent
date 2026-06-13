@@ -1,4 +1,4 @@
-"""Centralised path constants for PA Agent.
+"""Centralised path constants for Trading Agent.
 
 All runtime directories are rooted at PROJECT_ROOT.
 Import this module everywhere instead of hard-coding paths.
@@ -21,7 +21,7 @@ def _bundle_root() -> Path:
 def _runtime_root() -> Path:
     if is_packaged_build() and sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        root = base / "PA_Agent"
+        root = base / "Trading_Agent"
         root.mkdir(parents=True, exist_ok=True)
         return root
     return Path(__file__).resolve().parent.parent.parent

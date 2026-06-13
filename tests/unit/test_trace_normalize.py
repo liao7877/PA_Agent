@@ -552,6 +552,24 @@ def test_repair_stage2_terminal_trade_outcome_when_no_order() -> None:
     assert isinstance(result, Ok), result
 
 
+def test_repair_stage2_terminal_maps_chinese_outcome_aliases() -> None:
+    """Regression: model uses position vocabulary (持有/adjust) for terminal.outcome."""
+    for raw_outcome, expected in (("持有", "wait"), ("adjust", "wait")):
+        obj = copy.deepcopy(VALID_STAGE2)
+        obj["terminal"] = {
+            "node_id": "10.3",
+            "outcome": raw_outcome,
+            "label": "测试",
+        }
+        out = normalize_stage2(obj)
+        assert out["terminal"]["outcome"] == expected
+
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
+
+
 def test_repair_stage2_terminal_reject_to_wait_when_no_entry_plan() -> None:
     obj = copy.deepcopy(VALID_STAGE2)
     obj["decision"]["order_type"] = "不下单"

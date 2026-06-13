@@ -472,6 +472,41 @@ def test_normalize_stage2_without_prediction_noop():
     assert "next_bar_prediction" not in result
 
 
+def test_map_predictable_alias_to_unpredictable() -> None:
+    """Regression: model writes predictable instead of unpredictable."""
+    bar_pred = {
+        "direction": "bullish",
+        "probabilities": {"bullish": 50, "bearish": 30, "neutral": 20},
+        "reasoning": "x",
+        "predictable": True,
+        "features_used": ["stage1_diagnosis"],
+    }
+    _normalize_next_bar_prediction(bar_pred)
+    assert bar_pred["unpredictable"] is False
+    assert "predictable" not in bar_pred
+
+    cycle_pred = {
+        "cycle": "broad_channel",
+        "direction": "neutral",
+        "probabilities": {
+            "spike": 2,
+            "micro_channel": 5,
+            "tight_channel": 10,
+            "normal_channel": 20,
+            "broad_channel": 35,
+            "trending_tr": 18,
+            "trading_range": 8,
+            "extreme_tr": 2,
+        },
+        "reasoning": "x",
+        "predictable": False,
+        "features_used": ["stage1_diagnosis"],
+    }
+    _normalize_next_cycle_prediction(cycle_pred)
+    assert cycle_pred["unpredictable"] is True
+    assert "predictable" not in cycle_pred
+
+
 def test_hoist_probability_alias_for_next_predictions() -> None:
     bar_pred = {
         "direction": "bearish",

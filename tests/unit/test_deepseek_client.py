@@ -11,6 +11,8 @@ from pa_agent.ai.deepseek_client import (
     AIUsage,
     CancelledError,
     _completion_max_tokens,
+    _map_effort_to_openai_gpt,
+    _resolve_thinking_params,
 )
 
 
@@ -452,6 +454,124 @@ def test_chat_no_plaintext_key_in_logs(caplog):
         assert "sk-super-secret-9999" not in record.getMessage(), (
             f"Plaintext API key found in log: {record.getMessage()}"
         )
+
+
+def test_map_effort_to_openai_gpt_max_becomes_xhigh():
+    assert _map_effort_to_openai_gpt("max") == "xhigh"
+    assert _map_effort_to_openai_gpt("high") == "high"
+    assert _map_effort_to_openai_gpt("medium") == "medium"
+    assert _map_effort_to_openai_gpt("low") == "low"
+
+
+def test_gpt55_thinking_on_sends_reasoning_effort_not_extra_body():
+    settings = _make_settings()
+    settings.base_url = "https://api.openai.com/v1"
+    settings.model = "gpt-5.5"
+    settings.thinking = True
+    settings.reasoning_effort = "max"
+    client = DeepSeekClient(settings)
+
+    mock_resp = _make_mock_response()
+    mock_openai = MagicMock()
+    mock_openai.return_value.chat.completions.create.return_value = mock_resp
+
+    with patch("pa_agent.ai.deepseek_client._OpenAI", mock_openai):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["reasoning_effort"] == "xhigh"
+    assert "extra_body" not in kwargs
+    assert kwargs["max_tokens"] == 128_000
+    assert "temperature" not in kwargs
+
+
+def test_gpt55_thinking_off_sends_reasoning_effort_none():
+    settings = _make_settings()
+    settings.base_url = "https://api.openai.com/v1"
+    settings.model = "gpt-5.5"
+    settings.thinking = False
+    client = DeepSeekClient(settings)
+
+    mock_resp = _make_mock_response()
+    mock_openai = MagicMock()
+    mock_openai.return_value.chat.completions.create.return_value = mock_resp
+
+    with patch("pa_agent.ai.deepseek_client._OpenAI", mock_openai):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    kwargs = mock_openai.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["reasoning_effort"] == "none"
+    assert "extra_body" not in kwargs
+    assert kwargs["temperature"] == 0
+
+
+def test_resolve_thinking_params_gpt55_effort_levels():
+    settings = _make_settings()
+    settings.model = "gpt-5.5-2026-04-23"
+    settings.thinking = True
+
+    for internal, expected in (
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("max", "xhigh"),
+    ):
+        settings.reasoning_effort = internal  # type: ignore[assignment]
+        extra, effort = _resolve_thinking_params(settings, thinking=True, reasoning_effort=None)
+        assert extra == {}
+        assert effort == expected
+
+    extra, effort = _resolve_thinking_params(settings, thinking=False, reasoning_effort=None)
+    assert extra == {}
+    assert effort == "none"
+
+
+def test_completion_max_tokens_gpt55_cap():
+    settings = _make_settings()
+    settings.model = "gpt-5.5"
+    assert _completion_max_tokens(settings, extra_body={}, effort="high") == 128_000
+
+
+def test_stream_gpt55_reads_reasoning_field():
+    settings = _make_settings()
+    settings.base_url = "https://api.openai.com/v1"
+    settings.model = "gpt-5.5"
+    settings.thinking = True
+    settings.reasoning_effort = "medium"
+    client = DeepSeekClient(settings)
+
+    chunk_reason = MagicMock()
+    chunk_reason.choices = [MagicMock()]
+    delta = MagicMock()
+    delta.reasoning_content = None
+    delta.reasoning = "gpt-think"
+    delta.content = None
+    chunk_reason.choices[0].delta = delta
+    chunk_reason.usage = None
+    chunk_reason.id = "id-1"
+    chunk_reason.model = "gpt-5.5"
+
+    chunk_done = MagicMock()
+    chunk_done.choices = []
+    chunk_done.usage = MagicMock(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        prompt_tokens_details=MagicMock(cached_tokens=0),
+    )
+
+    mock_openai = MagicMock()
+    mock_openai.return_value.chat.completions.create.return_value = iter(
+        [chunk_reason, chunk_done]
+    )
+
+    with patch("pa_agent.ai.deepseek_client._OpenAI", mock_openai):
+        reply = client.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            on_reasoning_token=lambda c: None,
+        )
+
+    assert reply.reasoning_content == "gpt-think"
 
 
 def test_chat_returns_aireply_fields():

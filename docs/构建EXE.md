@@ -1,4 +1,4 @@
-# PA Agent 构建 Windows EXE 指南
+# Trading Agent 构建 Windows EXE 指南
 
 本文说明如何将 **最新源码** 打包为 Windows 可执行程序，供技术人员与 AI Agent 按同一流程复现构建。
 
@@ -27,9 +27,9 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows_nuitka.ps1 -Clean -
 **成功标志：**
 
 - 控制台最后输出 `Build complete.`
-- 存在 `dist/PA_Agent/PA_Agent.exe`
+- 存在 `dist/Trading_Agent/Trading_Agent.exe`
 - 安全扫描输出 `Build safety check passed`
-- 若带 `-Installer`，另存在 `dist/PA_Agent_Setup.exe`
+- 若带 `-Installer`，另存在 `dist/Trading_Agent_Setup.exe`
 
 **失败时：** 不要手动改 `dist/` 里的文件；根据报错修复源码或环境后重新运行脚本（可加 `-Clean`）。
 
@@ -62,7 +62,7 @@ python -m venv .venv
 | `tools/build_windows_nuitka.ps1` | **正式发布推荐**：Nuitka 构建 + 嵌入式公钥同步 |
 | `tools/build_windows.ps1` | PyInstaller 构建（兼容/应急） |
 | `tools/sync_embedded_pubkey.py` | 将 `public_key.pem` 同步进 `embedded_pubkey.py` |
-| `PA_Agent.spec` | PyInstaller 规格 |
+| `Trading_Agent.spec` | PyInstaller 规格 |
 | `tools/verify_build_safe.ps1` | 扫描产物，防止误打包密钥与独立公钥文件 |
 | `tools/installer.iss` | Inno Setup 安装包脚本（可选） |
 
@@ -71,8 +71,8 @@ python -m venv .venv
 | 参数 | 说明 |
 | --- | --- |
 | （无） | 默认：安装依赖 → 跑 `pytest tests/unit` → 打包 → 安全扫描 |
-| `-Installer` | 额外生成 `dist/PA_Agent_Setup.exe` |
-| `-Clean` | 构建前删除 `build/` 与 `dist/PA_Agent/` |
+| `-Installer` | 额外生成 `dist/Trading_Agent_Setup.exe` |
+| `-Clean` | 构建前删除 `build/` 与 `dist/Trading_Agent/` |
 | `-SkipTests` | 跳过单元测试（应急用，正式发布不建议） |
 | `-SkipInstall` | 跳过 `pip install -e .`（依赖已就绪时加快重复构建） |
 
@@ -93,7 +93,7 @@ pip install -e .  +  pyinstaller
     ↓
 PyInstaller 或 Nuitka
     ↓
-verify_build_safe.ps1 扫描 dist/PA_Agent
+verify_build_safe.ps1 扫描 dist/Trading_Agent
     ↓
 [可选 -Installer] Inno Setup 编译 installer.iss
 ```
@@ -105,21 +105,21 @@ verify_build_safe.ps1 扫描 dist/PA_Agent
 ### 仅 EXE 目录（默认）
 
 ```
-dist/PA_Agent/
-├── PA_Agent.exe          ← 主程序（无控制台窗口）
+dist/Trading_Agent/
+├── Trading_Agent.exe          ← 主程序（无控制台窗口）
 ├── _internal/            ← PyInstaller 依赖与资源（须与 exe 同目录分发）
 └── ...
 ```
 
-**分发方式：** 将整个 `dist/PA_Agent/` 文件夹打包为 zip 给客户，或在本机直接运行 `PA_Agent.exe` 做冒烟测试。
+**分发方式：** 将整个 `dist/Trading_Agent/` 文件夹打包为 zip 给客户，或在本机直接运行 `Trading_Agent.exe` 做冒烟测试。
 
 ### 安装包（加 `-Installer`）
 
 ```
-dist/PA_Agent_Setup.exe   ← 安装向导，默认装到 Program Files
+dist/Trading_Agent_Setup.exe   ← 安装向导，默认装到 Program Files
 ```
 
-安装后用户数据（配置、日志、授权）在 `%APPDATA%\PA_Agent\`，不覆盖开发机上的 `config/settings.json`。
+安装后用户数据（配置、日志、授权）在 `%APPDATA%\Trading_Agent\`，不覆盖开发机上的 `config/settings.json`。
 
 ---
 
@@ -141,7 +141,7 @@ dist/PA_Agent_Setup.exe   ← 安装向导，默认装到 Program Files
 - `records/`、`logs/`、`experience/`
 - 开发用测试与 `.git`
 
-若新增资源目录（如图标、额外 JSON），需同步修改 `PA_Agent.spec` 的 `datas` 列表。
+若新增资源目录（如图标、额外 JSON），需同步修改 `Trading_Agent.spec` 的 `datas` 列表。
 
 ### 打包前检查清单
 
@@ -159,7 +159,7 @@ dist/PA_Agent_Setup.exe   ← 安装向导，默认装到 Program Files
    打包版首次启动会要求激活。开发机可先用源码 `python run.py` 验证功能，再测 exe 的激活流程。
 
 2. **检查目录体积**  
-   `dist/PA_Agent/` 通常为数百 MB（含 PyQt6、numpy 等）。
+   `dist/Trading_Agent/` 通常为数百 MB（含 PyQt6、numpy 等）。
 
 3. **确认无密钥泄露**  
    脚本已自动执行 `verify_build_safe.ps1`；也可手动：
@@ -169,7 +169,7 @@ dist/PA_Agent_Setup.exe   ← 安装向导，默认装到 Program Files
    ```
 
 4. **在干净目录测试**  
-   将 `dist/PA_Agent` 复制到无 Python 的机器或新路径，双击 `PA_Agent.exe`，确认能弹出激活窗或主界面。
+   将 `dist/Trading_Agent` 复制到无 Python 的机器或新路径，双击 `Trading_Agent.exe`，确认能弹出激活窗或主界面。
 
 ---
 
@@ -193,15 +193,15 @@ python tools/license_keygen.py generate-keys
 
 ### PyInstaller 报 `ModuleNotFoundError` 相关模块
 
-在 `PA_Agent.spec` 的 `hiddenimports` 中补充模块名后重新构建。
+在 `Trading_Agent.spec` 的 `hiddenimports` 中补充模块名后重新构建。
 
 ### `Inno Setup 6 not found`
 
-安装 Inno Setup 6，或去掉 `-Installer` 只产出 `dist/PA_Agent/`。
+安装 Inno Setup 6，或去掉 `-Installer` 只产出 `dist/Trading_Agent/`。
 
 ### 客户机 SmartScreen 拦截
 
-对 `PA_Agent_Setup.exe` 做 **Authenticode 代码签名**（见 [打包与授权.md](打包与授权.md) 第九节）。
+对 `Trading_Agent_Setup.exe` 做 **Authenticode 代码签名**（见 [打包与授权.md](打包与授权.md) 第九节）。
 
 ### 源码运行不需要激活，exe 需要
 
@@ -222,10 +222,10 @@ python tools/license_keygen.py generate-keys
 
 | 需求 | 修改位置 |
 | --- | --- |
-| 增加数据文件/资源 | `PA_Agent.spec` 或 `tools/build_windows_nuitka.ps1` 的 `--include-data-*` |
+| 增加数据文件/资源 | `Trading_Agent.spec` 或 `tools/build_windows_nuitka.ps1` 的 `--include-data-*` |
 | 轮换 Ed25519 公钥 | `python tools/license_keygen.py generate-keys` → 自动 `sync_embedded_pubkey.py` → 重打包 |
-| 缺少隐式导入的第三方库 | `PA_Agent.spec` → `hiddenimports` |
-| 程序图标 | `PA_Agent.spec` → `EXE(..., icon='path/to.ico')` |
+| 缺少隐式导入的第三方库 | `Trading_Agent.spec` → `hiddenimports` |
+| 程序图标 | `Trading_Agent.spec` → `EXE(..., icon='path/to.ico')` |
 | 安装包版本号/名称 | `tools/installer.iss` → `#define MyAppVersion` 等 |
 | 项目版本号 | `pyproject.toml` → `[project] version` |
 
@@ -241,9 +241,9 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1 -Clean
 
 执行任务前后可按此核对：
 
-1. 工作目录是否为 `PA_Agent` 根目录（含 `pyproject.toml`、`PA_Agent.spec`）
+1. 工作目录是否为 `PA_Agent` 根目录（含 `pyproject.toml`、`Trading_Agent.spec`）
 2. 运行 `tools/build_windows.ps1`，记录是否 `Build complete`
-3. 确认 `dist/PA_Agent/PA_Agent.exe` 存在
-4. 若用户要求安装包，加 `-Installer` 并确认 `dist/PA_Agent_Setup.exe`
+3. 确认 `dist/Trading_Agent/Trading_Agent.exe` 存在
+4. 若用户要求安装包，加 `-Installer` 并确认 `dist/Trading_Agent_Setup.exe`
 5. 向用户报告：版本号、exe 路径、安装包路径（如有）、是否跳过测试
 6. **不要**将 `tools/.license_keys/`、`config/settings.json` 提交或发给客户

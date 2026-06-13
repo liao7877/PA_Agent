@@ -54,6 +54,28 @@ class NotificationService:
         )
         thread.start()
 
+    def notify_api_failure(
+        self,
+        *,
+        message: str,
+        symbol: str = "",
+        timeframe: str = "",
+        stage: str = "",
+        source: str = "analysis",
+        exception: dict | None = None,
+    ) -> None:
+        """Dispatch an API connectivity/upstream failure notification."""
+        self.notify(
+            formatter.format_api_error(
+                message=message,
+                symbol=symbol,
+                timeframe=timeframe,
+                stage=stage,
+                source=source,
+                exception=exception,
+            )
+        )
+
     def notify_record(self, record: Any) -> None:
         """Convenience: classify an ``AnalysisRecord`` and dispatch.
 
@@ -76,6 +98,16 @@ class NotificationService:
             )
 
             exc = exception if isinstance(exception, dict) else None
+            if exc and formatter.is_api_exception(exc):
+                self.notify_api_failure(
+                    message=str(exc.get("message") or ""),
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    stage=str(exc.get("stage") or ""),
+                    source=str(exc.get("source") or "analysis"),
+                    exception=exc,
+                )
+                return
             actionable = is_actionable_trade_decision(decision)
             trade_ok = should_apply_position_despite_validation(
                 exc, stage2_decision=decision

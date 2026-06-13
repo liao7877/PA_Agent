@@ -1,4 +1,4 @@
-﻿# 实施计划：AI K线分析程序（ai-kline-analyzer）
+# 实施计划：AI K线分析程序（ai-kline-analyzer）
 
 ## 概述
 
@@ -25,7 +25,7 @@
   - [x] 1.1 在 `D:\cl\PA_Agent\` 创建 `pyproject.toml`（首选）或 `requirements.txt`，固定版本：`PyQt6>=6.6`、`pyqtgraph>=0.13`、`numpy>=1.26`、`pandas>=2.2`、`openai>=1.40`、`tiktoken>=0.7`、`jsonschema>=4.22`、`pydantic>=2.7`、`tvdatafeed`、`cryptography>=42`、`pywin32; sys_platform == 'win32'`，开发依赖 `pytest>=8`、`hypothesis>=6`、`pytest-qt`，并配置 `ruff` + `black` 作为格式化/静态检查工具链；包名为 `pa_agent`，最低 Python 版本 3.11。 (R0 隐含 / 设计 §8)
   - [x] 1.2 按 design §B.1 创建 `pa_agent/` 包目录树（`gui/`、`gui/widgets/`、`data/`、`indicators/`、`ai/`、`ai/prompts/`、`orchestrator/`、`records/`、`config/`、`security/`、`util/`），为每个目录创建空 `__init__.py`。 (R2.1)
   - [x] 1.3 创建运行期目录占位：`D:\cl\PA_Agent\records\pending\`、`D:\cl\PA_Agent\experience\{micro_channel,tight_channel,normal_channel,broad_channel,spike,trading_range,trending_tr,extreme_tr,unknown}\{success_cases,failure_cases}\`、`D:\cl\PA_Agent\config\`、`D:\cl\PA_Agent\logs\`，每个空目录下放一个 `.gitkeep`。 (R12.1, R13.1, R17.1)
-  - [x] 1.4 实现 `pa_agent/main.py`：构造 `QApplication`，打开一个空的 `QMainWindow` 标题为 "PA Agent"，作为后续启动入口与冒烟目标；`if __name__ == "__main__": main()` 风格。 (R10.1, R16.1)
+  - [x] 1.4 实现 `pa_agent/main.py`：构造 `QApplication`，打开一个空的 `QMainWindow` 标题为 "Trading Agent"，作为后续启动入口与冒烟目标；`if __name__ == "__main__": main()` 风格。 (R10.1, R16.1)
   - [x] 1.5 实现 `pa_agent/app_context.py`：定义 `AppContext` 数据类承载 `Settings`、共享 `Logger`、共享 `EventBus` 占位字段，`main.py` 装配并传入 `MainWindow`，避免后续模块拿全局单例。 (R10.1, R16.1, R16.2)
 
 - [ ] 2. 配置与路径常量

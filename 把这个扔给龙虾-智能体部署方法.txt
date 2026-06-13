@@ -1,5 +1,5 @@
 ================================================================
-  PA Agent 智能体部署方法（Windows 版）
+  Trading Agent 智能体部署方法（Windows 版）
   适用环境：Windows + Python 3.11+ 已安装 + MT5 已安装
 ================================================================
 
@@ -228,7 +228,7 @@ bat 文件必须放在项目根目录（与 run.py 同级），且使用 GBK 编
   $batContent = @"
 @echo off
 chcp 936 >nul 2>&1
-title PA Agent - AI K线分析助手
+title Trading Agent - AI K线分析助手
 cd /d "%~dp0"
 python run.py
 if errorlevel 1 (
@@ -282,7 +282,7 @@ if errorlevel 1 (
 
 验收标准：
 - 程序窗口成功弹出（PyQt6 GUI 窗口出现）
-- 窗口标题显示 "PA Agent"
+- 窗口标题显示 "Trading Agent"
 - 控制台无 ImportError / ModuleNotFoundError 等致命错误
 - MT5 连接：若 MT5 终端已打开且登录，控制台应显示 "MT5 connected"
   若 MT5 未打开，会显示警告但程序不会崩溃

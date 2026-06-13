@@ -26,7 +26,7 @@ class LicenseInfoDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(480)
 
-        self._title = QLabel("PA Agent 授权状态")
+        self._title = QLabel("Trading Agent 授权状态")
         self._title.setStyleSheet("font-size: 14px; font-weight: 600;")
 
         self._status_label = QLabel()

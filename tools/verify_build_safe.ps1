@@ -1,6 +1,6 @@
 # Scan PyInstaller output for accidental inclusion of developer secrets.
 param(
-    [string]$DistDir = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist\PA_Agent")
+    [string]$DistDir = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist\Trading_Agent")
 )
 
 $ErrorActionPreference = "Stop"

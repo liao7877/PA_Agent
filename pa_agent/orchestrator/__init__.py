@@ -1,4 +1,4 @@
-"""PA Agent orchestrator package."""
+"""Trading Agent orchestrator package."""
 
 from pa_agent.orchestrator.free_chat import FreeChatSession
 from pa_agent.orchestrator.two_stage import TwoStageOrchestrator

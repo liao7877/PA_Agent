@@ -708,6 +708,36 @@ _TERMINAL_OUTCOME_DEFAULT_LABELS: dict[str, str] = {
     "proceed": "继续评估",
 }
 
+_TERMINAL_OUTCOME_ALIASES: dict[str, str] = {
+    "持有": "wait",
+    "等待": "wait",
+    "hold": "wait",
+    "holding": "wait",
+    "adjust": "wait",
+    "调整": "wait",
+    "continue": "proceed",
+    "continuing": "proceed",
+    "放弃": "reject",
+    "放弃入场": "reject",
+    "reject_entry": "reject",
+    "execute": "trade",
+    "execution": "trade",
+    "交易": "trade",
+    "下单": "trade",
+}
+
+
+def _normalize_terminal_outcome_aliases(terminal: dict[str, Any]) -> None:
+    outcome = str(terminal.get("outcome", "") or "").strip()
+    if not outcome or outcome in _TERMINAL_OUTCOME_DEFAULT_LABELS:
+        return
+    mapped = _TERMINAL_OUTCOME_ALIASES.get(outcome) or _TERMINAL_OUTCOME_ALIASES.get(
+        outcome.lower()
+    )
+    if mapped:
+        logger.info("Mapped terminal.outcome %r -> %s", outcome, mapped)
+        terminal["outcome"] = mapped
+
 
 def _ensure_stage2_terminal_label(obj: dict[str, Any]) -> None:
     """Fill missing terminal.label from the cited trace node or outcome defaults."""
@@ -822,6 +852,7 @@ def _repair_stage2_terminal(obj: dict[str, Any]) -> None:
     decision = obj.get("decision")
     if not isinstance(trace, list) or not isinstance(terminal, dict):
         return
+    _normalize_terminal_outcome_aliases(terminal)
     if not isinstance(decision, dict) or decision.get("order_type") != "不下单":
         return
 

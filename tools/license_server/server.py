@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PA Agent online license server (vendor self-hosted).
+"""Trading Agent online license server (vendor self-hosted).
 
 Usage:
   pip install fastapi uvicorn
@@ -110,7 +110,7 @@ def create_app(db_path: Path, public_key_path: Path | None = None) -> FastAPI:
 
         crypto.load_public_key_pem = _load  # type: ignore[method-assign]
 
-    app = FastAPI(title="PA Agent License Server", version="1.0")
+    app = FastAPI(title="Trading Agent License Server", version="1.0")
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
@@ -213,7 +213,7 @@ def create_app(db_path: Path, public_key_path: Path | None = None) -> FastAPI:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="PA Agent license server")
+    parser = argparse.ArgumentParser(description="Trading Agent license server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--db", default=str(DEFAULT_DB))

@@ -1,4 +1,4 @@
-"""Detect whether PA Agent is running from a packaged release build."""
+"""Detect whether Trading Agent is running from a packaged release build."""
 from __future__ import annotations
 
 import sys

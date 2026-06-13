@@ -1,4 +1,4 @@
-# Build PA Agent with Nuitka (recommended release backend).
+# Build Trading Agent with Nuitka (recommended release backend).
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File tools/build_windows_nuitka.ps1
@@ -29,8 +29,8 @@ function Assert-PythonReady {
 
 function Remove-NuitkaArtifacts {
     $targets = @(
-        (Join-Path $Root "dist\PA_Agent"),
-        (Join-Path $Root "dist\PA_Agent.nuitka"),
+        (Join-Path $Root "dist\Trading_Agent"),
+        (Join-Path $Root "dist\Trading_Agent.nuitka"),
         (Join-Path $Root "run.build"),
         (Join-Path $Root "run.dist"),
         (Join-Path $Root "run.onefile-build")
@@ -43,7 +43,7 @@ function Remove-NuitkaArtifacts {
     }
 }
 
-Write-Step "PA Agent Nuitka build"
+Write-Step "Trading Agent Nuitka build"
 Assert-PythonReady
 
 if ($Clean) {
@@ -78,7 +78,7 @@ if (-not (Test-Path $licenseClient)) {
     $licenseClient = Join-Path $Root "config\license_client.example.json"
 }
 
-$distDir = Join-Path $Root "dist\PA_Agent"
+$distDir = Join-Path $Root "dist\Trading_Agent"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
 Write-Step "Building with Nuitka"
@@ -102,7 +102,7 @@ $nuitkaArgs = @(
     "--include-data-files=$licenseClient=config/license_client.json",
     "--include-data-files=pa_agent/gui/theme/dark.qss=pa_agent/gui/theme/dark.qss",
     "--output-dir=$distDir",
-    "--output-filename=PA_Agent.exe",
+    "--output-filename=Trading_Agent.exe",
     "--remove-output"
 )
 
@@ -111,13 +111,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "Nuitka failed with exit code $LASTEXITCODE"
 }
 
-$exePath = Join-Path $distDir "PA_Agent.exe"
+$exePath = Join-Path $distDir "Trading_Agent.exe"
 if (-not (Test-Path $exePath)) {
     # Nuitka standalone may place exe in run.dist subfolder
-    $candidate = Get-ChildItem -Path $distDir -Recurse -Filter "PA_Agent.exe" -File | Select-Object -First 1
+    $candidate = Get-ChildItem -Path $distDir -Recurse -Filter "Trading_Agent.exe" -File | Select-Object -First 1
     if ($candidate) {
         if ($candidate.DirectoryName -ne $distDir) {
-            Write-Host "Moving Nuitka output into dist/PA_Agent"
+            Write-Host "Moving Nuitka output into dist/Trading_Agent"
             Get-ChildItem -Path $candidate.Directory.FullName | ForEach-Object {
                 Copy-Item -Recurse -Force $_.FullName (Join-Path $distDir $_.Name)
             }
@@ -126,7 +126,7 @@ if (-not (Test-Path $exePath)) {
 }
 
 if (-not (Test-Path $exePath)) {
-    throw "Build failed: PA_Agent.exe not found under $distDir"
+    throw "Build failed: Trading_Agent.exe not found under $distDir"
 }
 
 # Remove duplicate Nuitka subfolder after flattening

@@ -19,6 +19,7 @@ class NotificationEvent(str, Enum):
     MANAGE = "manage"                # 持仓管理调整（移动止损/止盈）
     NO_TRADE = "no_trade"            # 观望/不下单结论
     ERROR = "error"                  # 分析失败/异常
+    API_ERROR = "api_error"          # AI API 调用失败（网络/鉴权/限流等）
 
     @property
     def setting_attr(self) -> str:

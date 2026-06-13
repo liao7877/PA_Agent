@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PA Agent 激活码可视化签发工具（供应商专用）。"""
+"""Trading Agent 激活码可视化签发工具（供应商专用）。"""
 from __future__ import annotations
 
 import json
@@ -50,7 +50,7 @@ def _settings_path() -> Path:
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     else:
         base = Path.home() / ".pa_agent_issuer"
-    path = base / "PA_Agent_Issuer"
+    path = base / "Trading_Agent_Issuer"
     path.mkdir(parents=True, exist_ok=True)
     return path / "settings.json"
 
@@ -72,7 +72,7 @@ def _save_settings(data: dict) -> None:
 class LicenseIssuerWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PA Agent 激活码签发工具")
+        self.setWindowTitle("Trading Agent 激活码签发工具")
         self.resize(760, 620)
 
         self._settings = _load_settings()
@@ -181,7 +181,7 @@ class LicenseIssuerWindow(QMainWindow):
 
         info = QLabel(
             "首次使用可在此生成 Ed25519 密钥对。\n"
-            "私钥用于签发，公钥需复制到 PA Agent 项目的 pa_agent/licensing/public_key.pem 后重新打包主程序。"
+            "私钥用于签发，公钥需复制到 Trading Agent 项目的 pa_agent/licensing/public_key.pem 后重新打包主程序。"
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -342,13 +342,13 @@ class LicenseIssuerWindow(QMainWindow):
         QMessageBox.information(
             self,
             "生成成功",
-            f"私钥：{priv}\n公钥：{pub}\n\n请将公钥复制到 PA Agent 项目后重新打包主程序。",
+            f"私钥：{priv}\n公钥：{pub}\n\n请将公钥复制到 Trading Agent 项目后重新打包主程序。",
         )
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("PA Agent License Issuer")
+    app.setApplicationName("Trading Agent License Issuer")
     app.setStyle("Fusion")
     window = LicenseIssuerWindow()
     window.show()

@@ -1,4 +1,4 @@
-"""Offline license validation for PA Agent."""
+"""Offline license validation for Trading Agent."""
 
 from pa_agent.licensing.validator import LicenseInfo, LicenseStatus, LicenseValidator
 

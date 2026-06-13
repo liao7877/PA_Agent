@@ -82,6 +82,28 @@ _VALID_BAR_TYPES = frozenset({
     "other",
 })
 
+_VALID_ENTRY_SETUP_TYPES = frozenset({
+    "h1",
+    "h2",
+    "l1",
+    "l2",
+    "mtr",
+    "wedge",
+    "tr_boundary",
+    "breakout_pullback",
+    "none",
+})
+
+_ENTRY_SETUP_TYPE_ALIASES: dict[str, str] = {
+    "": "none",
+    "null": "none",
+    "n/a": "none",
+    "na": "none",
+    "无": "none",
+    "没有": "none",
+    "无形态": "none",
+}
+
 _BAR_TYPE_ALIASES: dict[str, str] = {
     "inside_bear": "inside",
     "inside_bull": "inside",
@@ -171,6 +193,29 @@ def _normalize_bar_by_bar_follow_through(out: dict[str, Any]) -> None:
             )
         elif isinstance(ft, bool):
             item["follow_through"] = "yes" if ft else "no"
+
+
+def _normalize_entry_setup_type(out: dict[str, Any]) -> None:
+    """Default null/missing entry_setup_type and map common aliases to schema tokens."""
+    ba = out.get("bar_analysis")
+    if not isinstance(ba, dict):
+        return
+    raw = ba.get("entry_setup_type")
+    if raw is None or raw == "":
+        ba["entry_setup_type"] = "none"
+        logger.info("Filled bar_analysis.entry_setup_type null/empty -> none")
+        return
+    if not isinstance(raw, str):
+        ba["entry_setup_type"] = "none"
+        logger.info("Coerced bar_analysis.entry_setup_type %r -> none", raw)
+        return
+    key = raw.strip().lower()
+    mapped = _ENTRY_SETUP_TYPE_ALIASES.get(key, key)
+    if mapped not in _VALID_ENTRY_SETUP_TYPES:
+        mapped = "none"
+    if mapped != raw:
+        ba["entry_setup_type"] = mapped
+        logger.info("Mapped bar_analysis.entry_setup_type %r -> %s", raw, mapped)
 
 
 def _normalize_signal_bar_quality(out: dict[str, Any]) -> None:
@@ -537,6 +582,7 @@ def normalize_stage1(
     sync_detected_patterns_field(out)
 
     _hoist_bar_by_bar_summary(out)
+    _normalize_entry_setup_type(out)
     _normalize_signal_bar_quality(out)
     _infer_gate_result(out)
     normalize_stage1_traces(out, normalization_mode=normalization_mode)

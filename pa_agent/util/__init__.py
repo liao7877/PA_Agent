@@ -1,4 +1,4 @@
-"""PA Agent utility package."""
+"""Trading Agent utility package."""
 
 from pa_agent.util.threading import CancelToken, OrchestratorEvent
 from pa_agent.util.event_bus import EventBus

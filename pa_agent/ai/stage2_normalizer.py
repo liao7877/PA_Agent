@@ -311,6 +311,20 @@ def _coerce_decision_when_trade_metrics_fail(
     return True
 
 
+def _map_predictable_alias(prediction: dict[str, Any]) -> None:
+    """Models sometimes write ``predictable`` instead of ``unpredictable`` (inverted)."""
+    if "predictable" not in prediction:
+        return
+    predictable = prediction.pop("predictable")
+    if "unpredictable" not in prediction:
+        prediction["unpredictable"] = not bool(predictable)
+        logger.info(
+            "Mapped next_*_prediction predictable=%r -> unpredictable=%s",
+            predictable,
+            prediction["unpredictable"],
+        )
+
+
 def _hoist_probability_alias(prediction: dict[str, Any], *, field: str = "probabilities") -> None:
     """Models often write singular ``probability`` instead of ``probabilities``."""
     if prediction.get(field) is not None:
@@ -329,6 +343,7 @@ def _normalize_next_cycle_prediction(prediction: dict[str, Any]) -> None:
     if not isinstance(prediction, dict):
         return
 
+    _map_predictable_alias(prediction)
     _hoist_probability_alias(prediction)
 
     # 1. unpredictable fallback
@@ -418,6 +433,7 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
     if not isinstance(prediction, dict):
         return
 
+    _map_predictable_alias(prediction)
     _hoist_probability_alias(prediction)
 
     # 1. unpredictable fallback

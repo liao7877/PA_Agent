@@ -1,4 +1,4 @@
-"""Settings dialog for PA Agent — edits all Settings fields via a form."""
+"""Settings dialog for Trading Agent — edits all Settings fields via a form."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -88,12 +88,23 @@ class SettingsDialog(QDialog):
 
         self._reasoning_effort_combo = QComboBox()
         self._reasoning_effort_combo.addItems(["low", "medium", "high", "max"])
+        self._reasoning_effort_combo.setToolTip(
+            "思考强度。GPT-5.5 / o 系列会映射为 OpenAI reasoning_effort："
+            "low / medium / high / xhigh（max→xhigh）；关闭 Thinking 时发送 none。"
+        )
         provider_form.addRow("Reasoning Effort:", self._reasoning_effort_combo)
 
         self._context_window_spin = QSpinBox()
         self._context_window_spin.setRange(1_000, 2_000_000)
         self._context_window_spin.setSingleStep(1_000)
         provider_form.addRow("Context Window:", self._context_window_spin)
+
+        self._api_health_btn = QPushButton("检测 API 连通性")
+        self._api_health_btn.setToolTip(
+            "使用当前表单中的模型、Base URL、API Key 发送一次最小请求，验证中转站/上游是否可用。"
+        )
+        self._api_health_btn.clicked.connect(self._on_check_api_health)
+        provider_form.addRow("", self._api_health_btn)
 
         self._api_key_help_btn = QPushButton("点击获取模型API KEY")
         self._api_key_help_btn.setToolTip(_API_KEY_HELP_URL)
@@ -335,6 +346,12 @@ class SettingsDialog(QDialog):
         self._notify_error_check = QCheckBox("分析失败/异常时通知")
         notification_form.addRow("场景 · 异常:", self._notify_error_check)
 
+        self._notify_api_error_check = QCheckBox("API 调用异常时通知（网络/鉴权/限流等）")
+        self._notify_api_error_check.setToolTip(
+            "分析或追问时若 AI API 调用失败，将额外推送到已配置的钉钉/微信渠道。"
+        )
+        notification_form.addRow("场景 · API 异常:", self._notify_api_error_check)
+
         self._notify_timeout_spin = QSpinBox()
         self._notify_timeout_spin.setRange(1, 120)
         self._notify_timeout_spin.setSuffix(" s")
@@ -441,6 +458,9 @@ class SettingsDialog(QDialog):
             self._notify_manage_check.setChecked(bool(getattr(n, "notify_manage", True)))
             self._notify_no_trade_check.setChecked(bool(getattr(n, "notify_no_trade", False)))
             self._notify_error_check.setChecked(bool(getattr(n, "notify_error", False)))
+            self._notify_api_error_check.setChecked(
+                bool(getattr(n, "notify_api_error", False))
+            )
             self._notify_timeout_spin.setValue(int(getattr(n, "request_timeout_s", 10)))
 
     @staticmethod
@@ -558,6 +578,7 @@ class SettingsDialog(QDialog):
         n.notify_manage = self._notify_manage_check.isChecked()
         n.notify_no_trade = self._notify_no_trade_check.isChecked()
         n.notify_error = self._notify_error_check.isChecked()
+        n.notify_api_error = self._notify_api_error_check.isChecked()
         n.request_timeout_s = self._notify_timeout_spin.value()
 
     def focus_api_key_field(self) -> None:
@@ -604,6 +625,54 @@ class SettingsDialog(QDialog):
         self._wechat_webhook_edit.setEchoMode(mode)
         self._show_wechat_btn.setText("隐藏" if checked else "显示")
 
+    def _provider_settings_from_form(self):
+        from pa_agent.config.settings import AIProviderSettings
+
+        return AIProviderSettings(
+            model=self._model_edit.text().strip(),
+            base_url=self._base_url_edit.text().strip(),
+            api_key=self._api_key_edit.text().strip(),
+            thinking=self._thinking_check.isChecked(),
+            reasoning_effort=self._reasoning_effort_combo.currentText(),  # type: ignore[arg-type]
+            context_window=self._context_window_spin.value(),
+        )
+
+    def _on_check_api_health(self) -> None:
+        provider = self._provider_settings_from_form()
+        if not provider.api_key:
+            QMessageBox.warning(self, "API 检测", "请先填写 API Key。")
+            return
+        if not provider.base_url:
+            QMessageBox.warning(self, "API 检测", "请先填写 Base URL。")
+            return
+        if not provider.model:
+            QMessageBox.warning(self, "API 检测", "请先填写模型 ID。")
+            return
+
+        self._api_health_btn.setEnabled(False)
+        self._api_health_btn.setText("检测中…")
+        try:
+            from pa_agent.ai.api_health import check_api_health
+
+            result = check_api_health(provider)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "API 检测", f"检测失败：{exc}")
+            return
+        finally:
+            self._api_health_btn.setEnabled(True)
+            self._api_health_btn.setText("检测 API 连通性")
+
+        if result.ok:
+            detail = (
+                f"延迟约 {result.latency_ms:.0f} ms\n"
+                f"思考字符: {result.reasoning_chars}\n"
+                f"回答字符: {result.content_chars}"
+            )
+            QMessageBox.information(self, "API 检测", f"API 调用成功。\n\n{detail}")
+            return
+
+        QMessageBox.warning(self, "API 检测", f"API 调用失败：\n\n{result.message}")
+
     def _on_send_test_notification(self) -> None:
         """Send a test message using the currently-entered channel fields."""
         self._sync_notification_settings()
@@ -621,8 +690,8 @@ class SettingsDialog(QDialog):
 
         message = NotificationMessage(
             event=NotificationEvent.NEW_ORDER,
-            title="🔔 PA Agent 测试通知",
-            text="这是一条来自 PA Agent 的测试消息。\n若你收到它，说明通知渠道配置正确。",
+            title="🔔 Trading Agent 测试通知",
+            text="这是一条来自 Trading Agent 的测试消息。\n若你收到它，说明通知渠道配置正确。",
         )
         timeout = int(n.request_timeout_s or 10)
         errors: list[str] = []

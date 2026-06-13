@@ -1,11 +1,11 @@
-# Build PA Agent Windows distributable (PyInstaller onedir).
+# Build Trading Agent Windows distributable (PyInstaller onedir).
 #
 # Usage (from anywhere):
 #   powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1
 #
 # Options:
-#   -Installer     Also build dist/PA_Agent_Setup.exe (requires Inno Setup 6)
-#   -Clean         Remove build/ and dist/PA_Agent before building
+#   -Installer     Also build dist/Trading_Agent_Setup.exe (requires Inno Setup 6)
+#   -Clean         Remove build/ and dist/Trading_Agent before building
 #   -SkipTests     Skip unit tests before packaging
 #   -SkipInstall   Skip pip install -e . (use when venv/deps are already ready)
 #
@@ -59,7 +59,7 @@ function Assert-PythonReady {
 function Remove-BuildArtifacts {
     $targets = @(
         (Join-Path $Root "build"),
-        (Join-Path $Root "dist\PA_Agent")
+        (Join-Path $Root "dist\Trading_Agent")
     )
     foreach ($path in $targets) {
         if (Test-Path $path) {
@@ -70,7 +70,7 @@ function Remove-BuildArtifacts {
 }
 
 $Version = Get-ProjectVersion
-Write-Step "PA Agent Windows build (version $Version)"
+Write-Step "Trading Agent Windows build (version $Version)"
 Assert-PythonReady
 
 if ($Clean) {
@@ -81,7 +81,7 @@ if ($Clean) {
 if (-not $SkipInstall) {
     Write-Step "Installing project dependencies"
     python -m pip install --upgrade pip
-    python -m pip install -e .
+    python -m pip install -e ".[dev]"
     python -m pip install pyinstaller
 } else {
     Write-Step "Skipping pip install (-SkipInstall)"
@@ -110,15 +110,15 @@ if (-not $SkipTests) {
 }
 
 Write-Step "Building with PyInstaller"
-python -m PyInstaller --noconfirm PA_Agent.spec
+python -m PyInstaller --noconfirm Trading_Agent.spec
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
 }
 
-$DistDir = Join-Path $Root "dist\PA_Agent"
-$ExePath = Join-Path $DistDir "PA_Agent.exe"
+$DistDir = Join-Path $Root "dist\Trading_Agent"
+$ExePath = Join-Path $DistDir "Trading_Agent.exe"
 if (-not (Test-Path $ExePath)) {
-    throw "Build failed: PA_Agent.exe not found in $DistDir"
+    throw "Build failed: Trading_Agent.exe not found in $DistDir"
 }
 
 Write-Step "Verifying build does not contain private config"
@@ -132,7 +132,7 @@ Write-Host "  Exe     : $ExePath"
 Write-Host "  Size    : $([math]::Round($exeInfo.Length / 1MB, 2)) MB"
 Write-Host "  Folder  : $DistDir"
 Write-Host ""
-Write-Host "Distribute the entire dist\PA_Agent\ folder, or use -Installer to create a setup exe."
+Write-Host "Distribute the entire dist\Trading_Agent\ folder, or use -Installer to create a setup exe."
 
 if ($Installer) {
     $Iscc = @(
@@ -150,7 +150,7 @@ if ($Installer) {
         throw "Inno Setup failed with exit code $LASTEXITCODE"
     }
 
-    $setupPath = Join-Path $Root "dist\PA_Agent_Setup.exe"
+    $setupPath = Join-Path $Root "dist\Trading_Agent_Setup.exe"
     if (-not (Test-Path $setupPath)) {
         throw "Installer build failed: $setupPath not found"
     }

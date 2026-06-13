@@ -1,4 +1,4 @@
-# Build PA Agent License Issuer as a standalone Windows exe.
+# Build Trading Agent License Issuer as a standalone Windows exe.
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File tools/build_license_issuer.ps1
 
@@ -12,7 +12,7 @@ python -m pip install pyinstaller cryptography PyQt6 --quiet
 Write-Host "==> Building License Issuer (onefile exe)"
 python -m PyInstaller --noconfirm LicenseIssuer.spec
 
-$ExePath = Join-Path $Root "dist\PA_Agent_License_Issuer.exe"
+$ExePath = Join-Path $Root "dist\Trading_Agent_License_Issuer.exe"
 if (-not (Test-Path $ExePath)) {
     throw "Build failed: $ExePath not found"
 }

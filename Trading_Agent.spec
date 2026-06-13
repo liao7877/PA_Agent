@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for PA Agent Windows distribution."""
+"""PyInstaller spec for Trading Agent Windows distribution."""
 
 import sys
 from pathlib import Path
@@ -52,7 +52,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="PA_Agent",
+    name="Trading_Agent",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -73,5 +73,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="PA_Agent",
+    name="Trading_Agent",
 )

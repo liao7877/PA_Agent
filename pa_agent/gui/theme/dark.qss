@@ -1,4 +1,4 @@
-/* PA Agent — dark trading terminal */
+/* Trading Agent — dark trading terminal */
 
 QMainWindow, QWidget {
     background-color: #0d1117;

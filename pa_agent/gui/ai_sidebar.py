@@ -1,4 +1,4 @@
-﻿"""Right-hand sidebar: live stream, raw I/O, prompt files debug, and decision."""
+"""Right-hand sidebar: live stream, raw I/O, prompt files debug, and decision."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
@@ -79,3 +79,6 @@ class AISidebar(QWidget):
     def bind_settings(self, settings: Optional["Settings"]) -> None:
         self.stream.bind_settings(settings)
         self.decision_flow_viz.bind_settings(settings)
+
+    def bind_notifier(self, notifier: object | None) -> None:
+        self.stream.bind_notifier(notifier)

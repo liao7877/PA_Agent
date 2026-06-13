@@ -1,4 +1,4 @@
-"""PA Agent GUI package."""
+"""Trading Agent GUI package."""
 
 from pa_agent.gui.main_window import MainWindow
 from pa_agent.gui.settings_dialog import SettingsDialog
