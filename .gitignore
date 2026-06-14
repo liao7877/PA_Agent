@@ -18,6 +18,9 @@ dist/
 .env.*
 config/settings.json
 config/settings.local.json
+config/settings.json.backup-*
+config/settings.json.corrupted-*
+config/*.bak
 config/license_client.json
 config/exception_state.json
 config/secret.key
@@ -35,6 +38,9 @@ records/**/*
 
 experience/**/*
 !experience/**/.gitkeep
+
+# ── Local agent / editor tooling (not part of the app) ────────────────────────
+.workbuddy/
 
 # ── OS / editor ───────────────────────────────────────────────────────────────
 Thumbs.db
