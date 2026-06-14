@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PA_Agent 系统架构图</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root, [data-theme="dark"] {
+      --bg: #141413;
+      --card-bg: rgba(20, 20, 19, 0.5);
+      --mask-bg: #1a1a18;
+      --border: rgba(38, 37, 30, 0.2);
+      --text-primary: #faf9f5;
+      --text-secondary: #b0aea5;
+      --grid-line: rgba(38, 37, 30, 0.12);
+      --arrowhead: rgba(38, 37, 30, 0.45);
+      --shadow: rgba(0,0,0,0.14) 0px 4px 16px, rgba(38,37,30,0.1) 0px 0px 0px 1px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f4ed;
+      --card-bg: rgba(250, 249, 245, 0.85);
+      --mask-bg: #faf9f5;
+      --border: #f0eee6;
+      --text-primary: #141413;
+      --text-secondary: #5e5d59;
+      --grid-line: #f0eee6;
+      --arrowhead: #87867f;
+      --shadow: rgba(0,0,0,0.05) 0px 4px 24px, rgba(38,37,30,0.08) 0px 0px 0px 1px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: var(--text-primary);
+      min-height: 100vh;
+      transition: background 0.3s, color 0.3s;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 24px 32px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header h1 { font-size: 1.4rem; letter-spacing: -0.02em; }
+    .header p { color: var(--text-secondary); font-size: 0.75rem; margin-top: 4px; }
+    .pulse { display: inline-block; width: 8px; height: 8px; background: #34d399; border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .theme-btn {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.75rem;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .chart-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+    }
+    .mask-bg { fill: var(--mask-bg); }
+    .text-primary { fill: var(--text-primary); }
+    .text-secondary { fill: var(--text-secondary); }
+    .grid-line { stroke: var(--grid-line); }
+    .arrowhead-color { fill: var(--arrowhead); }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 24px; }
+    @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+    .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card h3 { font-size: 0.85rem; }
+    .card ul { list-style: none; font-size: 0.72rem; color: var(--text-secondary); line-height: 1.8; }
+    .footer { text-align: center; padding: 24px; font-size: 0.65rem; color: var(--text-secondary); }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .tab-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.7rem;
+    }
+    .tab-btn.active { border-color: #22d3ee; color: #22d3ee; background: rgba(20,50,62,0.3); }
+    .diagram { display: none; }
+    .diagram.active { display: block; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1><span class="pulse"></span>PA_Agent / Trading Agent</h1>
+      <p>价格行为 AI 辅助决策 · 系统架构与功能架构</p>
+    </div>
+    <button class="theme-btn" onclick="toggleTheme()">切换主题</button>
+  </header>
+
+  <div class="container">
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('system')">系统架构</button>
+      <button class="tab-btn" onclick="showTab('flow')">分析流水线</button>
+      <button class="tab-btn" onclick="showTab('module')">模块依赖</button>
+    </div>
+
+    <!-- 系统架构 -->
+    <div id="tab-system" class="diagram active">
+      <div class="chart-card">
+        <svg viewBox="0 0 1100 720" width="100%" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" class="grid-line" stroke-width="0.5"/>
+            </pattern>
+            <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" class="arrowhead-color"/>
+            </marker>
+          </defs>
+          <rect width="1100" height="720" fill="url(#grid)"/>
+
+          <!-- 用户 -->
+          <rect x="470" y="20" width="160" height="50" rx="8" class="mask-bg"/>
+          <rect x="470" y="20" width="160" height="50" rx="8" fill="rgba(38,37,30,0.35)" stroke="#94a3b8" stroke-width="1.5"/>
+          <text x="550" y="50" class="text-primary" font-size="11" font-weight="600" text-anchor="middle">交易者（用户）</text>
+
+          <!-- 边界：桌面应用 -->
+          <rect x="30" y="90" width="1040" height="580" rx="12" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8,4"/>
+          <text x="50" y="115" fill="#fbbf24" font-size="9">单进程桌面应用 pa_agent（PyQt6）</text>
+
+          <!-- GUI Layer -->
+          <rect x="60" y="130" width="480" height="100" rx="8" fill="none" stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,4"/>
+          <text x="75" y="148" fill="#22d3ee" font-size="8">GUI Layer（主线程）</text>
+
+          <rect x="80" y="160" width="130" height="55" rx="6" class="mask-bg"/>
+          <rect x="80" y="160" width="130" height="55" rx="6" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="145" y="183" class="text-primary" font-size="10" font-weight="600" text-anchor="middle">MainWindow</text>
+          <text x="145" y="200" class="text-secondary" font-size="8" text-anchor="middle">工具栏·分析触发</text>
+
+          <rect x="230" y="160" width="130" height="55" rx="6" class="mask-bg"/>
+          <rect x="230" y="160" width="130" height="55" rx="6" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="295" y="183" class="text-primary" font-size="10" font-weight="600" text-anchor="middle">ChartWidget</text>
+          <text x="295" y="200" class="text-secondary" font-size="8" text-anchor="middle">pyqtgraph K线</text>
+
+          <rect x="380" y="160" width="140" height="55" rx="6" class="mask-bg"/>
+          <rect x="380" y="160" width="140" height="55" rx="6" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="450" y="183" class="text-primary" font-size="10" font-weight="600" text-anchor="middle">AISidebar</text>
+          <text x="450" y="200" class="text-secondary" font-size="8" text-anchor="middle">7 Tab 侧栏</text>
+
+          <!-- Worker Layer -->
+          <rect x="60" y="250" width="480" height="80" rx="8" fill="none" stroke="#fb923c" stroke-width="1" stroke-dasharray="4,4"/>
+          <text x="75" y="268" fill="#fb923c" font-size="8">后台线程</text>
+
+          <rect x="100" y="280" width="150" height="40" rx="6" class="mask-bg"/>
+          <rect x="100" y="280" width="150" height="40" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+          <text x="175" y="305" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">RefreshLoop</text>
+
+          <rect x="280" y="280" width="180" height="40" rx="6" class="mask-bg"/>
+          <rect x="280" y="280" width="180" height="40" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+          <text x="370" y="305" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">_AnalysisWorker</text>
+
+          <!-- Orchestrator -->
+          <rect x="580" y="130" width="460" height="200" rx="8" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+          <text x="595" y="148" fill="#34d399" font-size="8">Domain / Orchestration</text>
+
+          <rect x="600" y="165" width="200" height="60" rx="6" class="mask-bg"/>
+          <rect x="600" y="165" width="200" height="60" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="700" y="190" class="text-primary" font-size="10" font-weight="600" text-anchor="middle">TwoStageOrchestrator</text>
+          <text x="700" y="208" class="text-secondary" font-size="8" text-anchor="middle">Stage1诊断 → Stage2决策</text>
+
+          <rect x="820" y="165" width="200" height="60" rx="6" class="mask-bg"/>
+          <rect x="820" y="165" width="200" height="60" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="920" y="190" class="text-primary" font-size="10" font-weight="600" text-anchor="middle">FreeChatSession</text>
+          <text x="920" y="208" class="text-secondary" font-size="8" text-anchor="middle">分析后追问</text>
+
+          <rect x="600" y="250" width="130" height="55" rx="6" class="mask-bg"/>
+          <rect x="600" y="250" width="130" height="55" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="665" y="273" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">PromptAssembler</text>
+          <text x="665" y="290" class="text-secondary" font-size="7" text-anchor="middle">+ Router</text>
+
+          <rect x="750" y="250" width="130" height="55" rx="6" class="mask-bg"/>
+          <rect x="750" y="250" width="130" height="55" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="815" y="273" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">JsonValidator</text>
+          <text x="815" y="290" class="text-secondary" font-size="7" text-anchor="middle">+ Normalizers</text>
+
+          <rect x="900" y="250" width="120" height="55" rx="6" class="mask-bg"/>
+          <rect x="900" y="250" width="120" height="55" rx="6" fill="rgba(80,30,120,0.4)" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="960" y="273" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">DeepSeekClient</text>
+          <text x="960" y="290" class="text-secondary" font-size="7" text-anchor="middle">OpenAI兼容</text>
+
+          <!-- Data Layer -->
+          <rect x="60" y="360" width="300" height="120" rx="8" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
+          <text x="75" y="378" fill="#a78bfa" font-size="8">Data Layer</text>
+
+          <rect x="80" y="395" width="80" height="70" rx="6" class="mask-bg"/>
+          <rect x="80" y="395" width="80" height="70" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="120" y="425" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">MT5</text>
+          <text x="120" y="440" class="text-secondary" font-size="7" text-anchor="middle">Source</text>
+
+          <rect x="175" y="395" width="80" height="70" rx="6" class="mask-bg"/>
+          <rect x="175" y="395" width="80" height="70" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="215" y="425" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">Trading</text>
+          <text x="215" y="440" class="text-secondary" font-size="7" text-anchor="middle">View</text>
+
+          <rect x="270" y="395" width="70" height="70" rx="6" class="mask-bg"/>
+          <rect x="270" y="395" width="70" height="70" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="305" y="425" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">AkShare</text>
+
+          <!-- Persistence -->
+          <rect x="400" y="360" width="300" height="120" rx="8" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,4"/>
+          <text x="415" y="378" fill="#a78bfa" font-size="8">Persistence</text>
+
+          <rect x="420" y="395" width="120" height="70" rx="6" class="mask-bg"/>
+          <rect x="420" y="395" width="120" height="70" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="480" y="425" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">PendingWriter</text>
+          <text x="480" y="442" class="text-secondary" font-size="7" text-anchor="middle">records/pending/</text>
+
+          <rect x="560" y="395" width="120" height="70" rx="6" class="mask-bg"/>
+          <rect x="560" y="395" width="120" height="70" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="620" y="425" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">Experience</text>
+          <text x="620" y="442" class="text-secondary" font-size="7" text-anchor="middle">experience/</text>
+
+          <!-- Prompt assets -->
+          <rect x="730" y="360" width="190" height="70" rx="6" class="mask-bg"/>
+          <rect x="730" y="360" width="190" height="70" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="825" y="390" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">prompt_engineering/</text>
+          <text x="825" y="408" class="text-secondary" font-size="7" text-anchor="middle">策略与人设 .txt（只读）</text>
+
+          <!-- Licensing -->
+          <rect x="60" y="510" width="200" height="70" rx="6" class="mask-bg"/>
+          <rect x="60" y="510" width="200" height="70" rx="6" fill="rgba(130,25,50,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+          <text x="160" y="540" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">Licensing</text>
+          <text x="160" y="558" class="text-secondary" font-size="7" text-anchor="middle">Ed25519 · 打包版强制</text>
+
+          <!-- Notification -->
+          <rect x="290" y="510" width="200" height="70" rx="6" class="mask-bg"/>
+          <rect x="290" y="510" width="200" height="70" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="390" y="540" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">NotificationService</text>
+          <text x="390" y="558" class="text-secondary" font-size="7" text-anchor="middle">钉钉 / Bark</text>
+
+          <!-- Position Tracker -->
+          <rect x="520" y="510" width="200" height="70" rx="6" class="mask-bg"/>
+          <rect x="520" y="510" width="200" height="70" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="620" y="540" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">PositionTracker</text>
+          <text x="620" y="558" class="text-secondary" font-size="7" text-anchor="middle">软件内持仓状态机</text>
+
+          <!-- External -->
+          <rect x="780" y="500" width="260" height="90" rx="8" fill="none" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,4"/>
+          <text x="795" y="518" fill="#94a3b8" font-size="8">外部系统</text>
+
+          <rect x="800" y="530" width="100" height="45" rx="6" class="mask-bg"/>
+          <rect x="800" y="530" width="100" height="45" rx="6" fill="rgba(80,30,120,0.4)" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="850" y="558" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">LLM API</text>
+
+          <rect x="920" y="530" width="100" height="45" rx="6" class="mask-bg"/>
+          <rect x="920" y="530" width="100" height="45" rx="6" fill="rgba(38,37,30,0.35)" stroke="#94a3b8" stroke-width="1.5"/>
+          <text x="970" y="558" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">MT5 终端</text>
+
+          <!-- Arrows -->
+          <line x1="550" y1="70" x2="145" y2="160" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="210" y1="215" x2="280" y2="280" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="460" y1="215" x2="600" y2="195" stroke="#34d399" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="305" y1="465" x2="175" y2="320" stroke="#a78bfa" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="700" y1="305" x2="960" y2="250" stroke="#c084fc" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="960" y1="305" x2="850" y2="530" stroke="#c084fc" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="120" y1="465" x2="970" y2="530" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+
+          <!-- Legend -->
+          <rect x="60" y="620" width="1020" height="40" rx="6" class="mask-bg"/>
+          <circle cx="90" cy="640" r="5" fill="#22d3ee"/><text x="105" y="644" class="text-secondary" font-size="8">GUI</text>
+          <circle cx="160" cy="640" r="5" fill="#34d399"/><text x="175" y="644" class="text-secondary" font-size="8">Domain</text>
+          <circle cx="250" cy="640" r="5" fill="#a78bfa"/><text x="265" y="644" class="text-secondary" font-size="8">Data/Storage</text>
+          <circle cx="370" cy="640" r="5" fill="#c084fc"/><text x="385" y="644" class="text-secondary" font-size="8">AI</text>
+          <circle cx="440" cy="640" r="5" fill="#fb7185"/><text x="455" y="644" class="text-secondary" font-size="8">Security</text>
+          <circle cx="530" cy="640" r="5" fill="#fb923c"/><text x="545" y="644" class="text-secondary" font-size="8">Worker</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 分析流水线 -->
+    <div id="tab-flow" class="diagram">
+      <div class="chart-card">
+        <svg viewBox="0 0 900 680" width="100%" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="grid2" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" class="grid-line" stroke-width="0.5"/>
+            </pattern>
+            <marker id="arrow2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" class="arrowhead-color"/>
+            </marker>
+          </defs>
+          <rect width="900" height="680" fill="url(#grid2)"/>
+          <text x="450" y="30" class="text-primary" font-size="12" font-weight="600" text-anchor="middle">两阶段分析功能流水线</text>
+
+          <!-- Steps -->
+          <rect x="350" y="50" width="200" height="40" rx="6" class="mask-bg"/>
+          <rect x="350" y="50" width="200" height="40" rx="6" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="450" y="75" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">用户点击「提交分析」</text>
+
+          <rect x="325" y="110" width="250" height="40" rx="6" class="mask-bg"/>
+          <rect x="325" y="110" width="250" height="40" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="450" y="135" class="text-primary" font-size="9" text-anchor="middle">build_analysis_frame() · 暂停图表刷新</text>
+
+          <rect x="300" y="170" width="300" height="40" rx="6" class="mask-bg"/>
+          <rect x="300" y="170" width="300" height="40" rx="6" fill="rgba(130,25,50,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+          <text x="450" y="195" class="text-primary" font-size="9" text-anchor="middle">PreflightDataGate（≥20 bar · 指标有效）</text>
+
+          <rect x="50" y="230" width="180" height="50" rx="6" class="mask-bg"/>
+          <rect x="50" y="230" width="180" height="50" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+          <text x="140" y="252" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">数据不足</text>
+          <text x="140" y="268" class="text-secondary" font-size="7" text-anchor="middle">save_partial · 不调AI</text>
+
+          <rect x="325" y="240" width="250" height="50" rx="6" class="mask-bg"/>
+          <rect x="325" y="240" width="250" height="50" rx="6" fill="rgba(80,30,120,0.4)" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="450" y="262" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">Stage 1 · 市场诊断</text>
+          <text x="450" y="278" class="text-secondary" font-size="7" text-anchor="middle">PromptAssembler → LLM → JsonValidator</text>
+
+          <rect x="325" y="310" width="250" height="40" rx="6" class="mask-bg"/>
+          <rect x="325" y="310" width="250" height="40" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="450" y="335" class="text-primary" font-size="9" text-anchor="middle">route_strategy_files() + 经验库</text>
+
+          <rect x="50" y="370" width="200" height="50" rx="6" class="mask-bg"/>
+          <rect x="50" y="370" width="200" height="50" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+          <text x="150" y="392" class="text-primary" font-size="8" font-weight="600" text-anchor="middle">闸门短路 wait/unknown</text>
+          <text x="150" y="408" class="text-secondary" font-size="7" text-anchor="middle">跳过 Stage2 API</text>
+
+          <rect x="325" y="370" width="250" height="50" rx="6" class="mask-bg"/>
+          <rect x="325" y="370" width="250" height="50" rx="6" fill="rgba(80,30,120,0.4)" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="450" y="392" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">Stage 2 · 交易决策</text>
+          <text x="450" y="408" class="text-secondary" font-size="7" text-anchor="middle">策略txt + 决策树 → LLM → 校验</text>
+
+          <rect x="325" y="440" width="250" height="40" rx="6" class="mask-bg"/>
+          <rect x="325" y="440" width="250" height="40" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="450" y="465" class="text-primary" font-size="9" text-anchor="middle">PendingWriter.save_full()</text>
+
+          <rect x="200" y="500" width="180" height="45" rx="6" class="mask-bg"/>
+          <rect x="200" y="500" width="180" height="45" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="290" y="527" class="text-primary" font-size="8" text-anchor="middle">PositionTracker</text>
+
+          <rect x="420" y="500" width="180" height="45" rx="6" class="mask-bg"/>
+          <rect x="420" y="500" width="180" height="45" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="510" y="527" class="text-primary" font-size="8" text-anchor="middle">NotificationService</text>
+
+          <rect x="640" y="500" width="180" height="45" rx="6" class="mask-bg"/>
+          <rect x="640" y="500" width="180" height="45" rx="6" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="730" y="527" class="text-primary" font-size="8" text-anchor="middle">GUI 更新 · overlay线</text>
+
+          <rect x="300" y="570" width="300" height="45" rx="6" class="mask-bg"/>
+          <rect x="300" y="570" width="300" height="45" rx="6" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="450" y="597" class="text-primary" font-size="9" text-anchor="middle">可选：FreeChatSession 追问</text>
+
+          <!-- Flow arrows -->
+          <line x1="450" y1="90" x2="450" y2="110" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="150" x2="450" y2="170" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="210" x2="140" y2="230" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="210" x2="450" y2="240" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="290" x2="450" y2="310" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="350" x2="150" y2="370" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="350" x2="450" y2="370" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="420" x2="450" y2="440" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="480" x2="290" y2="500" stroke="#34d399" stroke-width="1" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="480" x2="510" y2="500" stroke="#34d399" stroke-width="1" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="480" x2="730" y2="500" stroke="#22d3ee" stroke-width="1" marker-end="url(#arrow2)"/>
+          <line x1="450" y1="545" x2="450" y2="570" stroke="#22d3ee" stroke-width="1" marker-end="url(#arrow2)"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 模块依赖 -->
+    <div id="tab-module" class="diagram">
+      <div class="chart-card">
+        <svg viewBox="0 0 900 500" width="100%" xmlns="http://www.w3.org/2000/svg">
+          <rect width="900" height="500" fill="url(#grid)"/>
+          <text x="450" y="30" class="text-primary" font-size="12" font-weight="600" text-anchor="middle">AppContext 依赖装配图</text>
+
+          <rect x="370" y="50" width="160" height="50" rx="8" class="mask-bg"/>
+          <rect x="370" y="50" width="160" height="50" rx="8" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="2"/>
+          <text x="450" y="80" class="text-primary" font-size="10" font-weight="700" text-anchor="middle">AppContext</text>
+
+          <!-- Row 1 -->
+          <rect x="50" y="140" width="110" height="40" rx="6" class="mask-bg"/>
+          <rect x="50" y="140" width="110" height="40" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="105" y="165" class="text-primary" font-size="8" text-anchor="middle">Settings</text>
+
+          <rect x="180" y="140" width="110" height="40" rx="6" class="mask-bg"/>
+          <rect x="180" y="140" width="110" height="40" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="235" y="165" class="text-primary" font-size="8" text-anchor="middle">DataSource</text>
+
+          <rect x="310" y="140" width="110" height="40" rx="6" class="mask-bg"/>
+          <rect x="310" y="140" width="110" height="40" rx="6" fill="rgba(80,30,120,0.4)" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="365" y="165" class="text-primary" font-size="8" text-anchor="middle">DeepSeekClient</text>
+
+          <rect x="440" y="140" width="120" height="40" rx="6" class="mask-bg"/>
+          <rect x="440" y="140" width="120" height="40" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="500" y="165" class="text-primary" font-size="8" text-anchor="middle">PromptAssembler</text>
+
+          <rect x="580" y="140" width="110" height="40" rx="6" class="mask-bg"/>
+          <rect x="580" y="140" width="110" height="40" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="635" y="165" class="text-primary" font-size="8" text-anchor="middle">JsonValidator</text>
+
+          <rect x="710" y="140" width="110" height="40" rx="6" class="mask-bg"/>
+          <rect x="710" y="140" width="110" height="40" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="765" y="165" class="text-primary" font-size="8" text-anchor="middle">PendingWriter</text>
+
+          <!-- Row 2 -->
+          <rect x="120" y="220" width="130" height="40" rx="6" class="mask-bg"/>
+          <rect x="120" y="220" width="130" height="40" rx="6" fill="rgba(72,30,100,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+          <text x="185" y="245" class="text-primary" font-size="8" text-anchor="middle">ExperienceReader</text>
+
+          <rect x="280" y="220" width="130" height="40" rx="6" class="mask-bg"/>
+          <rect x="280" y="220" width="130" height="40" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+          <text x="345" y="245" class="text-primary" font-size="8" text-anchor="middle">EventBus</text>
+
+          <rect x="440" y="220" width="130" height="40" rx="6" class="mask-bg"/>
+          <rect x="440" y="220" width="130" height="40" rx="6" fill="rgba(251,146,60,0.3)" stroke="#fb923c" stroke-width="1.5"/>
+          <text x="505" y="245" class="text-primary" font-size="8" text-anchor="middle">SessionTokenLedger</text>
+
+          <rect x="600" y="220" width="140" height="40" rx="6" class="mask-bg"/>
+          <rect x="600" y="220" width="140" height="40" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="670" y="245" class="text-primary" font-size="8" text-anchor="middle">NotificationService</text>
+
+          <rect x="300" y="300" width="140" height="40" rx="6" class="mask-bg"/>
+          <rect x="300" y="300" width="140" height="40" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="370" y="325" class="text-primary" font-size="8" text-anchor="middle">PositionTracker</text>
+
+          <rect x="480" y="300" width="120" height="40" rx="6" class="mask-bg"/>
+          <rect x="480" y="300" width="120" height="40" rx="6" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="540" y="325" class="text-primary" font-size="8" text-anchor="middle">route_strategy</text>
+
+          <!-- Consumers -->
+          <rect x="200" y="380" width="200" height="50" rx="8" class="mask-bg"/>
+          <rect x="200" y="380" width="200" height="50" rx="8" fill="rgba(20,50,62,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+          <text x="300" y="405" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">MainWindow</text>
+          <text x="300" y="420" class="text-secondary" font-size="7" text-anchor="middle">消费全部 ctx 依赖</text>
+
+          <rect x="500" y="380" width="200" height="50" rx="8" class="mask-bg"/>
+          <rect x="500" y="380" width="200" height="50" rx="8" fill="rgba(18,72,55,0.4)" stroke="#34d399" stroke-width="1.5"/>
+          <text x="600" y="405" class="text-primary" font-size="9" font-weight="600" text-anchor="middle">TwoStageOrchestrator</text>
+          <text x="600" y="420" class="text-secondary" font-size="7" text-anchor="middle">每次分析临时构建</text>
+
+          <!-- Lines from AppContext -->
+          <line x1="450" y1="100" x2="105" y2="140" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="235" y2="140" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="365" y2="140" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="500" y2="140" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="635" y2="140" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="765" y2="140" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="185" y2="220" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="345" y2="220" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="505" y2="220" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="670" y2="220" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="450" y1="100" x2="370" y2="300" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)"/>
+          <line x1="300" y1="430" x2="450" y2="100" stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,4"/>
+          <line x1="600" y1="380" x2="500" y2="180" stroke="#34d399" stroke-width="1" stroke-dasharray="4,4"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot" style="background:#22d3ee"></div><h3>技术栈</h3></div>
+        <ul>
+          <li>- Python 3.11+ / PyQt6 / pyqtgraph</li>
+          <li>- pandas / numpy / pydantic / jsonschema</li>
+          <li>- OpenAI SDK（DeepSeek 等兼容网关）</li>
+          <li>- MetaTrader5 / tvdatafeed</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot" style="background:#34d399"></div><h3>核心约束</h3></div>
+        <ul>
+          <li>- 不截图识图，送结构化 K 线文本</li>
+          <li>- 不连接券商，不执行下单</li>
+          <li>- Stage2 校验失败不重调 API</li>
+          <li>- 源码开发跳过许可激活</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot" style="background:#a78bfa"></div><h3>关键路径</h3></div>
+        <ul>
+          <li>- 入口：pa_agent/main.py</li>
+          <li>- 装配：app_context.py</li>
+          <li>- 流水线：orchestrator/two_stage.py</li>
+          <li>- 策略：prompt_engineering/*.txt</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">PA_Agent 项目交接文档 · docs/architecture.html · 2026-06-14</footer>
+
+  <script>
+    function toggleTheme() {
+      const html = document.documentElement;
+      const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('pa-agent-arch-theme', next);
+    }
+    function showTab(name) {
+      document.querySelectorAll('.diagram').forEach(d => d.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('tab-' + name).classList.add('active');
+      event.target.classList.add('active');
+    }
+    const saved = localStorage.getItem('pa-agent-arch-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+  </script>
+</body>
+</html>
