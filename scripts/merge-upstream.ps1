@@ -1,4 +1,4 @@
-# Merge upstream/main into trading-agent (Trading Agent fork workflow).
+# Merge upstream/main into main (Trading Agent fork workflow).
 param(
     [switch]$NoTest,
     [switch]$NoPush
@@ -8,8 +8,8 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot\..
 
 $branch = (git branch --show-current).Trim()
-if ($branch -ne "trading-agent") {
-    Write-Host "当前分支: $branch（期望 trading-agent）" -ForegroundColor Yellow
+if ($branch -ne "main") {
+    Write-Host "当前分支: $branch（期望 main）" -ForegroundColor Yellow
     $ans = Read-Host "是否继续 merge? (y/N)"
     if ($ans -notmatch '^[yY]') { exit 1 }
 }

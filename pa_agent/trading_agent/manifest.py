@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Always keep our version when merging upstream/main into trading-agent.
+# Always keep our version when merging upstream/main into main.
 MERGE_OURS_GLOBS: tuple[str, ...] = (
     "pa_agent/trading_agent/**",
     "pa_agent/licensing/**",
