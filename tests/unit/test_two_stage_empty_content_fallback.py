@@ -41,3 +41,28 @@ def test_retries_without_thinking_when_content_empty() -> None:
     assert '"cycle_position"' in out.content
     assert out.raw.get("empty_content_fallback") is True
     assert out.usage.completion_tokens == 10
+
+
+def test_retries_without_thinking_when_json_truncated() -> None:
+    client = MagicMock()
+    truncated = '{"decision":{"order_type":"不下单","reason":"等待'
+    client.stream_chat.side_effect = [
+        _reply(truncated, "long reasoning that consumed output budget"),
+        _reply('{"decision":{"order_type":"不下单","reason":"等待信号"}}'),
+    ]
+
+    out = _stream_stage_with_empty_content_fallback(
+        client,
+        [{"role": "user", "content": "hi"}],
+        stage="stage2",
+        thinking=True,
+        reasoning_effort="max",
+        cancel_token=None,
+        on_reasoning_token=None,
+        on_content_token=None,
+    )
+
+    assert client.stream_chat.call_count == 2
+    assert client.stream_chat.call_args_list[1].kwargs["thinking"] is False
+    assert out.raw.get("fallback_reason") == "truncated_json_after_thinking"
+    assert '"order_type"' in out.content

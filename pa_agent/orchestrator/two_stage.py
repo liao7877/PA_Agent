@@ -23,6 +23,7 @@ from __future__ import annotations
 STAGE2_VALIDATION_AUTO_RETRY = False
 
 import dataclasses
+import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -55,13 +56,11 @@ def _latency_ms_label(latency_ms: object) -> str:
 _FALLBACK_STREAM_CHUNK = 48
 
 
-def _json_truncation_hint(content: str, err: ValidationError) -> str | None:
-    """Detect incomplete JSON (stream stopped mid-object) vs a stray syntax typo."""
-    if err.category != "a":
-        return None
-    stripped = (content or "").strip()
+def _json_unclosed_depth(text: str) -> int:
+    """Return unclosed ``{`` depth for object-shaped text (0 if balanced)."""
+    stripped = (text or "").strip()
     if not stripped.startswith("{"):
-        return None
+        return 0
     depth = 0
     in_string = False
     escape = False
@@ -80,6 +79,30 @@ def _json_truncation_hint(content: str, err: ValidationError) -> str | None:
             depth += 1
         elif ch == "}":
             depth -= 1
+    return depth
+
+
+def _looks_like_truncated_json(text: str) -> bool:
+    """True when content looks like JSON cut off mid-stream (thinking ate tokens)."""
+    stripped = (text or "").strip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        json.loads(stripped)
+        return False
+    except json.JSONDecodeError:
+        depth = _json_unclosed_depth(stripped)
+        return depth > 0 or not stripped.rstrip().endswith("}")
+
+
+def _json_truncation_hint(content: str, err: ValidationError) -> str | None:
+    """Detect incomplete JSON (stream stopped mid-object) vs a stray syntax typo."""
+    if err.category != "a":
+        return None
+    stripped = (content or "").strip()
+    if not stripped.startswith("{"):
+        return None
+    depth = _json_unclosed_depth(stripped)
     if depth > 0 or not stripped.rstrip().endswith("}"):
         return (
             f"阶段 JSON 正文约 {len(stripped)} 字符，在输出过程中被截断"
@@ -366,7 +389,8 @@ def _stream_stage_with_empty_content_fallback(
         reasoning_effort=reasoning_effort,
     )
     resolved = resolve_stage_json_text(reply.content, reply.reasoning_content)
-    if resolved.strip():
+    truncated = bool(resolved.strip()) and _looks_like_truncated_json(resolved)
+    if resolved.strip() and not truncated:
         if resolved != (reply.content or "").strip():
             return _reply_with_resolved_content(
                 reply,
@@ -378,9 +402,13 @@ def _stream_stage_with_empty_content_fallback(
     if not thinking:
         return reply
 
+    fallback_reason = (
+        "truncated_json_after_thinking" if truncated else "empty_content_after_thinking"
+    )
     logger.warning(
-        "Stage %s: empty JSON after thinking (effort=%s); retrying once with thinking disabled",
+        "Stage %s: %s (effort=%s); retrying once with thinking disabled",
         stage,
+        "truncated JSON after thinking" if truncated else "empty JSON after thinking",
         reasoning_effort,
     )
     retry = client.stream_chat(
@@ -400,7 +428,7 @@ def _stream_stage_with_empty_content_fallback(
     return _merge_stage_replies(
         reply,
         retry,
-        fallback_reason="empty_content_after_thinking",
+        fallback_reason=fallback_reason,
     )
 
 
