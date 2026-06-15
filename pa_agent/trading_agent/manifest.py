@@ -29,6 +29,7 @@ MERGE_OURS_GLOBS: tuple[str, ...] = (
     "docs/详细规格说明书.md",
     "docs/文件索引.md",
     "docs/上游合并策略.md",
+    "docs/Trading-Agent开发与上游合并操作手册.md",
     ".kiro/specs/trading-agent/**",
     "config/license_client.example.json",
     "scripts/merge-upstream.ps1",

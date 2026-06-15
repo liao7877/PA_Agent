@@ -416,7 +416,8 @@ PA_Agent/
 | `[docs/配置指南.md](docs/配置指南.md)` | settings.json 配置说明 |
 | `[docs/项目交接文档.md](docs/项目交接文档.md)` | 开发者项目交接总览 |
 | `[docs/详细规格说明书.md](docs/详细规格说明书.md)` | 技术开发规格（SRS） |
-| `[docs/上游合并策略.md](docs/上游合并策略.md)` | 上游合并流程（trading-agent 分支） |
+| `[docs/Trading-Agent开发与上游合并操作手册.md](docs/Trading-Agent开发与上游合并操作手册.md)` | **开发与合并上游完整 SOP（人类 + Agent）** |
+| `[docs/上游合并策略.md](docs/上游合并策略.md)` | 上游合并策略摘要 |
 | `[docs/文件索引.md](docs/文件索引.md)` | 按模块的文件职责索引 |
 | `[docs/图表K线与分析快照说明.md](docs/图表K线与分析快照说明.md)` | 图表 K 线与分析快照行为说明        |
 | `[docs/获取数据功能说明.md](docs/获取数据功能说明.md)`  | 数据获取功能详细说明               |

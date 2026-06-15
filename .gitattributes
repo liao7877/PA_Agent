@@ -31,6 +31,7 @@ docs/项目交接文档.md merge=ours
 docs/详细规格说明书.md merge=ours
 docs/文件索引.md merge=ours
 docs/上游合并策略.md merge=ours
+docs/Trading-Agent开发与上游合并操作手册.md merge=ours
 .kiro/specs/trading-agent/** merge=ours
 config/license_client.example.json merge=ours
 scripts/merge-upstream.ps1 merge=ours
