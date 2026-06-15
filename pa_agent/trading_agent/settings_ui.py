@@ -146,6 +146,9 @@ class TradingAgentSettingsExtension:
         self._notify_manage_check = QCheckBox("持仓管理调整（移动止盈/止损）")
         notification_form.addRow("场景 · 持仓调整:", self._notify_manage_check)
 
+        self._notify_order_cancelled_check = QCheckBox("撤销尚未成交的计划单")
+        notification_form.addRow("场景 · 撤单:", self._notify_order_cancelled_check)
+
         self._notify_no_trade_check = QCheckBox("观望/不下单结论也通知")
         notification_form.addRow("场景 · 观望:", self._notify_no_trade_check)
 
@@ -206,6 +209,9 @@ class TradingAgentSettingsExtension:
             )
             self._notify_exit_check.setChecked(bool(getattr(n, "notify_exit", True)))
             self._notify_manage_check.setChecked(bool(getattr(n, "notify_manage", True)))
+            self._notify_order_cancelled_check.setChecked(
+                bool(getattr(n, "notify_order_cancelled", True))
+            )
             self._notify_no_trade_check.setChecked(
                 bool(getattr(n, "notify_no_trade", False))
             )
@@ -244,6 +250,7 @@ class TradingAgentSettingsExtension:
         n.notify_entry_filled = self._notify_entry_filled_check.isChecked()
         n.notify_exit = self._notify_exit_check.isChecked()
         n.notify_manage = self._notify_manage_check.isChecked()
+        n.notify_order_cancelled = self._notify_order_cancelled_check.isChecked()
         n.notify_no_trade = self._notify_no_trade_check.isChecked()
         n.notify_error = self._notify_error_check.isChecked()
         n.notify_api_error = self._notify_api_error_check.isChecked()

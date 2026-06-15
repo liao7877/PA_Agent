@@ -18,8 +18,18 @@ def dispatch_decision_notification(window: Any, record: Any) -> None:
     notifier = getattr(window._ctx, "notifier", None)  # noqa: SLF001
     if notifier is None or getattr(window, "_demo_mode", False):  # noqa: SLF001
         return
+    active_position = None
     try:
-        notifier.notify_record(record)
+        meta = getattr(record, "meta", None)
+        symbol = getattr(meta, "symbol", "") if meta else ""
+        timeframe = getattr(meta, "timeframe", "") if meta else ""
+        tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
+        if tracker is not None and symbol and timeframe:
+            active_position = tracker.get_active(symbol, timeframe)
+    except Exception:  # noqa: BLE001
+        active_position = None
+    try:
+        notifier.notify_record(record, active_position=active_position)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Decision notification dispatch failed: %s", exc)
 
@@ -70,15 +80,24 @@ def update_position_from_record(window: Any, record: Any) -> None:
             record_id = getattr(meta, "timestamp_local_iso", None)
             current_price = None
             fill_bar_ts = None
+            placement_ref_high = None
+            placement_ref_low = None
             kline_data = getattr(record, "kline_data", None) or []
             if kline_data:
+                head = kline_data[0]
                 try:
-                    current_price = float(kline_data[0].get("close"))
+                    current_price = float(head.get("close"))
                 except (TypeError, ValueError, AttributeError):
                     current_price = None
+                try:
+                    placement_ref_high = float(head.get("high"))
+                    placement_ref_low = float(head.get("low"))
+                except (TypeError, ValueError, AttributeError):
+                    placement_ref_high = None
+                    placement_ref_low = None
                 from pa_agent.data.bar_close_wait import bar_ts_open_ms
 
-                fill_bar_ts = bar_ts_open_ms(kline_data[0])
+                fill_bar_ts = bar_ts_open_ms(head)
             if exc_info:
                 from pa_agent.ai.stage2_normalizer import normalize_stage2
 
@@ -96,6 +115,8 @@ def update_position_from_record(window: Any, record: Any) -> None:
                 record_id=record_id,
                 current_price=current_price,
                 fill_bar_ts=fill_bar_ts,
+                placement_ref_high=placement_ref_high,
+                placement_ref_low=placement_ref_low,
             )
         sync_chart_active_position(window, symbol, timeframe)
     except Exception as exc:  # noqa: BLE001
@@ -114,33 +135,51 @@ def sync_chart_active_position(window: Any, symbol: str, timeframe: str) -> None
         chart.set_active_position(position.model_dump(mode="json"))
 
 
+def _bar_high_low_ts(bar: object) -> tuple[float, float, int | None] | None:
+    """Extract high/low and open ts from a KlineBar or snapshot dict."""
+    high = getattr(bar, "high", None)
+    low = getattr(bar, "low", None)
+    if high is None and isinstance(bar, dict):
+        high = bar.get("high")
+        low = bar.get("low")
+    if high is None or low is None:
+        return None
+    try:
+        from pa_agent.data.bar_close_wait import bar_ts_open_ms
+
+        return float(high), float(low), bar_ts_open_ms(bar)
+    except (TypeError, ValueError):
+        return None
+
+
 def check_position_on_tick(window: Any, bars: Any) -> None:
+    """Track active positions on each live data refresh from the chart feed."""
     tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
     if tracker is None or getattr(window, "_demo_mode", False) or not bars:  # noqa: SLF001
         return
     symbol = window._symbol_combo.currentText().strip()  # noqa: SLF001
     timeframe = window._tf_combo.currentText()  # noqa: SLF001
-    if tracker.get_active(symbol, timeframe) is None:
+    position = tracker.get_active(symbol, timeframe)
+    if position is None:
         return
-    from pa_agent.data.bar_close_wait import bar_ts_open_ms, newest_closed_bar_for_tick
 
-    closed_bar = newest_closed_bar_for_tick(list(bars))
-    if closed_bar is None:
+    bars_list = list(bars)
+
+    # Forward-track with the newest bar (K0 when forming) on every live data refresh.
+    tick_bar = bars_list[0]
+    if tick_bar is None:
         return
-    high = getattr(closed_bar, "high", None)
-    low = getattr(closed_bar, "low", None)
-    if high is None and isinstance(closed_bar, dict):
-        high = closed_bar.get("high")
-        low = closed_bar.get("low")
-    if high is None or low is None:
+    hlt = _bar_high_low_ts(tick_bar)
+    if hlt is None:
         return
+    high, low, bar_ts = hlt
     try:
         tracker.on_tick(
             symbol,
             timeframe,
             high=high,
             low=low,
-            bar_ts=bar_ts_open_ms(closed_bar),
+            bar_ts=bar_ts,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Position tick check failed: %s", exc)

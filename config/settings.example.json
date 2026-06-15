@@ -38,6 +38,7 @@
     "notify_entry_filled": true,
     "notify_exit": true,
     "notify_manage": true,
+    "notify_order_cancelled": true,
     "notify_no_trade": false,
     "notify_error": false,
     "notify_api_error": false,

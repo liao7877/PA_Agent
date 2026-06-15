@@ -132,6 +132,7 @@ class NotificationSettings(BaseModel):
     notify_entry_filled: bool = True
     notify_exit: bool = True
     notify_manage: bool = True
+    notify_order_cancelled: bool = True
     notify_no_trade: bool = False
     notify_error: bool = False
     notify_api_error: bool = False

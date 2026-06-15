@@ -76,12 +76,20 @@ class NotificationService:
             )
         )
 
-    def notify_record(self, record: Any) -> None:
+    def notify_record(
+        self,
+        record: Any,
+        *,
+        active_position: Any | None = None,
+    ) -> None:
         """Convenience: classify an ``AnalysisRecord`` and dispatch.
 
         Handles the NEW_ORDER / NO_TRADE / ERROR scenes derived from a single
         analysis run. ENTRY_FILLED / EXIT / MANAGE come from the position
         tracker via :meth:`notify`.
+
+        When *active_position* is set, suppresses duplicate cards for hold /
+        maintain-pending / modify / cancel rounds (those use tracker notifications).
         """
         cfg = self._notification_cfg()
         if cfg is None or not getattr(cfg, "enabled", False):
@@ -128,6 +136,15 @@ class NotificationService:
                     )
                     return
             if not decision:
+                return
+            record_id = getattr(meta, "timestamp_local_iso", None) if meta else None
+            from pa_agent.positions.decision_fields import should_notify_analysis_decision
+
+            if not should_notify_analysis_decision(
+                decision,
+                active_position,
+                record_id=record_id,
+            ):
                 return
             stage1 = getattr(record, "stage1_diagnosis", None)
             self.notify(

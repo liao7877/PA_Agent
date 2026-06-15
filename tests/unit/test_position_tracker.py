@@ -141,6 +141,8 @@ def test_market_short_not_stopped_on_entry_bar_same_bar(store, notifier):
         symbol="X",
         timeframe="15m",
         fill_bar_ts=entry_ts,
+        placement_ref_high=4298.0,
+        placement_ref_low=4277.0,
         decision={
             "decision": {
                 "order_type": "市价单",
@@ -229,7 +231,7 @@ def test_filled_position_adjust_action_updates_sl_and_notifies(store, notifier):
     assert not any(m.event.value == "exit" for m in notifier.messages)
 
 
-def test_filled_position_adjust_action_without_prices_notifies_advisory(store, notifier):
+def test_filled_position_adjust_action_without_prices_does_not_notify(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
@@ -244,9 +246,7 @@ def test_filled_position_adjust_action_without_prices_notifies_advisory(store, n
         },
     )
     assert pos is not None
-    managed = [m for m in notifier.messages if m.event.value == "manage"]
-    assert managed
-    assert "97" in managed[-1].text
+    assert not any(m.event.value == "manage" for m in notifier.messages)
 
 
 def test_filled_position_no_trade_without_close_phrase_does_not_exit(store, notifier):
@@ -277,6 +277,46 @@ def test_planned_cancelled_by_no_trade(store, notifier):
     )
     assert pos is None
     assert tracker.get_active("X", "15m") is None
+    cancelled = [m for m in notifier.messages if m.event.value == "order_cancelled"]
+    assert cancelled
+
+
+def test_planned_cancelled_when_ai_uses_close_action(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    pos = tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "position_action": "平仓",
+                "reasoning": "结构失效，撤销挂单。",
+            }
+        },
+    )
+    assert pos is None
+    assert any(m.event.value == "order_cancelled" for m in notifier.messages)
+
+
+def test_planned_hold_keeps_order_without_cancel_notify(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    pos = tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "position_action": "持有",
+                "reasoning": "继续等待价格回撤至挂单价。",
+            }
+        },
+    )
+    assert pos is not None
+    assert pos.status is PositionStatus.PLANNED
+    assert tracker.get_active("X", "15m") is not None
+    assert not any(m.event.value == "order_cancelled" for m in notifier.messages)
 
 
 def test_reversal_closes_and_opens_opposite(store, notifier):
@@ -345,10 +385,120 @@ def test_breakout_long_triggers_on_high_break(store, notifier):
             "stop_loss_price": 100.0,
         }
     }
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=breakout)
-    # Bar does not touch 105 with limit logic (low=100 high=104) but breaks above 105? no
-    tracker.on_tick("X", "15m", high=104.0, low=100.0)
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=breakout,
+        fill_bar_ts=2_000,
+        placement_ref_high=104.0,
+        placement_ref_low=100.0,
+    )
+    # K1 closed bar (before placement bar) already broke 105 — must not retro-fill.
+    tracker.on_tick("X", "15m", high=106.0, low=101.0, bar_ts=1_000)
     assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
-    tracker.on_tick("X", "15m", high=106.0, low=101.0)
+    # Placement bar breaks above entry after order was placed.
+    tracker.on_tick("X", "15m", high=106.0, low=101.0, bar_ts=2_000)
     assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
     assert any(m.event.value == "entry_filled" for m in notifier.messages)
+
+
+def test_breakout_not_filled_when_price_already_through_at_placement(store, notifier):
+    """Breakout level already traded through on K0 when decision lands — no false fill."""
+    tracker = PositionTracker(store=store, notifier=notifier)
+    breakout = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 105.0,
+            "take_profit_price": 115.0,
+            "stop_loss_price": 100.0,
+        }
+    }
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=breakout,
+        fill_bar_ts=2_000,
+        placement_ref_high=106.0,
+        placement_ref_low=100.0,
+    )
+    pos = tracker.get_active("X", "15m")
+    assert pos.status is PositionStatus.PLANNED
+    assert pos.entry_missed is True
+    tracker.on_tick("X", "15m", high=107.0, low=101.0, bar_ts=2_000)
+    tracker.on_tick("X", "15m", high=108.0, low=102.0, bar_ts=3_000)
+    assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
+    assert not any(m.event.value == "entry_filled" for m in notifier.messages)
+
+
+def test_filled_take_profit_on_forming_bar_realtime(store, notifier):
+    """TP fires on live K0 update — no need to wait for bar close."""
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    tracker.on_tick("X", "15m", high=100.0, low=100.0, bar_ts=1_000)
+    tracker.on_tick("X", "15m", high=110.5, low=105.0, bar_ts=2_000)
+    assert tracker.get_active("X", "15m") is None
+    exits = [m for m in notifier.messages if m.event.value == "exit"]
+    assert exits and "止盈" in exits[-1].text
+
+
+def test_filled_stop_loss_on_forming_bar_realtime(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    tracker.on_tick("X", "15m", high=100.0, low=100.0, bar_ts=1_000)
+    tracker.on_tick("X", "15m", high=98.0, low=94.5, bar_ts=2_000)
+    assert tracker.get_active("X", "15m") is None
+    exits = [m for m in notifier.messages if m.event.value == "exit"]
+    assert exits and "止损" in exits[-1].text
+
+
+def test_planned_fill_on_forming_bar_realtime_update(store, notifier):
+    """Plan order tracks the live forming bar — no need to wait for bar close."""
+    tracker = PositionTracker(store=store, notifier=notifier)
+    breakout = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 105.0,
+            "take_profit_price": 115.0,
+            "stop_loss_price": 100.0,
+        }
+    }
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=breakout,
+        fill_bar_ts=2_000,
+        placement_ref_high=104.0,
+        placement_ref_low=100.0,
+    )
+    tracker.on_tick("X", "15m", high=105.2, low=101.0, bar_ts=2_000)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+    assert any(m.event.value == "entry_filled" for m in notifier.messages)
+
+
+def test_limit_not_filled_on_k1_touch_before_placement(store, notifier):
+    """K1 already dipped to limit price before the pending order existed."""
+    tracker = PositionTracker(store=store, notifier=notifier)
+    limit = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 100.0,
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+        }
+    }
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=limit,
+        fill_bar_ts=2_000,
+        placement_ref_high=102.0,
+        placement_ref_low=101.0,
+    )
+    tracker.on_tick("X", "15m", high=101.0, low=99.5, bar_ts=1_000)
+    assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
+    assert not any(m.event.value == "entry_filled" for m in notifier.messages)
+    tracker.on_tick("X", "15m", high=101.0, low=99.5, bar_ts=2_000)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED

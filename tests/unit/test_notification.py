@@ -137,6 +137,11 @@ def test_format_entry_exit_manage():
         stop_loss_price=2350,
     )
     assert managed.event is NotificationEvent.MANAGE
+    cancelled = formatter.format_order_cancelled(
+        symbol="XAUUSD", timeframe="15m", direction="做多",
+        order_type="限价单", entry_price=2350,
+    )
+    assert cancelled.event is NotificationEvent.ORDER_CANCELLED
 
 
 # ── Service toggle filtering ──────────────────────────────────────────────────
@@ -175,6 +180,21 @@ def test_scene_toggle_off_blocks_that_scene():
     assert svc.dispatched == []
     svc.notify(NotificationMessage(NotificationEvent.NEW_ORDER, "t", "b"))
     assert len(svc.dispatched) == 1
+
+
+def test_order_cancelled_toggle_separate_from_manage():
+    s = _settings_with(
+        enabled=True,
+        dingtalk_webhook="https://x",
+        notify_manage=False,
+        notify_order_cancelled=True,
+    )
+    svc = _RecordingService(s)
+    svc.notify(NotificationMessage(NotificationEvent.ORDER_CANCELLED, "撤单", "body"))
+    assert len(svc.dispatched) == 1
+    svc.dispatched.clear()
+    svc.notify(NotificationMessage(NotificationEvent.MANAGE, "调整", "body"))
+    assert svc.dispatched == []
 
 
 def test_no_channel_configured_skips():

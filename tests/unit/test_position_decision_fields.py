@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from pa_agent.positions.decision_fields import (
     is_actionable_trade_decision,
+    is_planned_order_cancel,
     is_position_adjust,
     is_position_close,
+    is_position_hold,
     position_advice_text,
     should_apply_position_despite_validation,
+    should_notify_analysis_decision,
 )
+from pa_agent.positions.model import PositionState, PositionStatus
 
 
 def test_position_action_adjust():
@@ -89,3 +93,50 @@ def test_position_advice_prefers_structured_field():
         "reasoning": "很长的分析理由……",
     }
     assert position_advice_text(inner) == "将止损上移至 4335。"
+
+
+def test_should_notify_only_for_fresh_entry_record():
+    decision = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 100.0,
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+        }
+    }
+    pos = PositionState(
+        symbol="X",
+        timeframe="15m",
+        order_direction="做多",
+        order_type="限价单",
+        entry_price=100.0,
+        status=PositionStatus.PLANNED,
+        opened_at_record_id="rec-1",
+    )
+    assert should_notify_analysis_decision(decision, pos, record_id="rec-1")
+    assert not should_notify_analysis_decision(decision, pos, record_id="rec-2")
+    assert should_notify_analysis_decision(decision, None, record_id="rec-2")
+
+
+def test_should_not_notify_hold_round_with_active_position():
+    hold = {"decision": {"order_type": "不下单", "position_action": "持有"}}
+    pos = PositionState(
+        symbol="X",
+        timeframe="15m",
+        order_direction="做多",
+        order_type="限价单",
+        entry_price=100.0,
+        status=PositionStatus.PLANNED,
+        opened_at_record_id="rec-1",
+    )
+    assert not should_notify_analysis_decision(hold, pos, record_id="rec-2")
+
+
+def test_is_planned_order_cancel_recognizes_ai_intents():
+    assert is_planned_order_cancel({"order_type": "不下单"})
+    assert is_planned_order_cancel({"order_type": "不下单", "position_action": None})
+    assert is_planned_order_cancel({"order_type": "不下单", "position_action": "平仓"})
+    assert not is_planned_order_cancel({"order_type": "不下单", "position_action": "持有"})
+    assert not is_planned_order_cancel({"order_type": "不下单", "position_action": "调整"})
+    assert not is_planned_order_cancel({"order_type": "限价单", "entry_price": 1.0})
