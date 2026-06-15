@@ -20,7 +20,7 @@
 | **你的主线** | 在 **`main`** 分支（或其 `feat/*` 子分支）上改代码 |
 | **不要改** | 远程 `upstream/main`（勿 push）；不要向 `archive/*` 提交 |
 | **定制代码位置** | 优先 `pa_agent/trading_agent/`、`licensing/`、`notification/`、`positions/` |
-| **提示词** | `prompt_engineering/**` **永远跟上游**（B 类），不要擅自改 |
+| **提示词** | `prompt_engineering/**` **默认跟上游**（B 类）；**例外**见 [§5.1.1 已知提示词定制](#511-已知提示词定制b-类例外) |
 | **禁止** | 整文件用 backup 覆盖 `main_window.py` / `two_stage.py`；不要删除 `enrich_app_context` 接线 |
 
 ### 任务路由
@@ -42,8 +42,9 @@
 [ ] 4. git merge upstream/main -m "merge upstream/main YYYY-MM-DD"
 [ ] 5. 若冲突：
         - A 类路径 → 保留我方（通常 .gitattributes 已自动处理）
-        - B 类 prompt_engineering/** → 保留上游
+        - B 类 prompt_engineering/** → 默认保留上游；§5.1.1 所列文件保留我方
         - C 类 → 按 §5 逐文件人工合并，禁止整文件覆盖
+[ ] 5b. 合并后核对提示词定制：rg "盈亏比上限 1\.5|首选目标不超过 1\.5R" prompt_engineering/  （应无输出）
 [ ] 6. 确认接线仍在：
         - app_context.py 末尾 enrich_app_context(ctx)
         - main_window.py 中 ChartLiveController + wire_main_window/wire_after_sidebar
@@ -237,7 +238,26 @@ git push origin archive/upstream-main
 
 #### B 类 — 保留上游（`merge=theirs`）
 
-- `prompt_engineering/**` — 提示词**以上游为准**
+- `prompt_engineering/**` — 提示词**默认以上游为准**
+- **例外**：见下 §5.1.1；涉及盈亏比/§10.3 的定制须保留我方
+
+#### 5.1.1 已知提示词定制（B 类例外）
+
+`main` 相对 `upstream/main` **刻意保留**的提示词改动（2026-06-15）。合并后若被上游覆盖，**恢复我方版本**（勿用 `main_backup` 整目录覆盖）。
+
+| 文件 | 段落 | 与上游差异 | 保留原因 |
+|------|------|------------|----------|
+| `prompt_engineering/二元决策.txt` | §10.3、紧凑通道专项 | 上游将盈亏比硬上限 **1.5:1**；我方为 **结构驱动、不设上限**，强趋势 2R+，弱行情 1R～1.5R，底线 **>1:1**，方程不通过则 reject | 盈亏比应由关键价位/支撑阻力等市场结构决定 |
+| `prompt_engineering/文件17-止损和止盈与仓位管理.txt` | 文件头「盈亏比原则」 | 与 §10.3 对齐的补充说明 | 与 `文件17` 内 2R/3R、结构目标优先一致 |
+
+**合并后核对**：
+
+```powershell
+rg "盈亏比上限 1\.5|首选目标不超过 1\.5R" prompt_engineering/
+# 无输出 = 定制仍在
+```
+
+**Agent 规则**：仅上表文件在冲突时选 **ours**；其余 `prompt_engineering/**` 仍选 **theirs**。
 
 #### C 类 — 必须人工合并（看 diff 接逻辑）
 
@@ -269,7 +289,8 @@ git push origin archive/upstream-main
 |----------|------|
 | 用 `main_backup` 整文件覆盖 C 类 | 丢失上游新功能 |
 | 删除 `trading_agent` 包，逻辑塞回 main_window | 下次合并更痛 |
-| 合并时保留旧版 `prompt_engineering` | 与上游 Schema 脱节 |
+| 合并时用 backup **整目录**覆盖 `prompt_engineering` | 丢失上游大量提示词更新；应仅按 §5.1.1 恢复定制段落 |
+| 合并后未核对 §5.1.1，§10.3 被上游 1.5 上限覆盖 | 盈亏比逻辑退回工程护栏，与 Brooks 结构优先冲突 |
 | 向 `upstream` 远程 push | 无权限且破坏协作假设 |
 | 冲突未清完就 commit | 运行时崩溃 |
 
@@ -329,4 +350,4 @@ merge upstream/main YYYY-MM-DD
 
 ---
 
-*文档版本：2026-06-15 · 生产分支：`main`*
+*文档版本：2026-06-15 · 生产分支：`main` · 含 §5.1.1 提示词定制例外*
