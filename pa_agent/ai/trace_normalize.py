@@ -512,7 +512,8 @@ def normalize_trace_item(
             # Fuzzy partial answers (部分→中性) only in lenient mode.
             node_specific = bool(_NODE_ANSWER_BY_ID.get(nid))
             generic_hit = ans in _GENERIC_ANSWER or ans.lower() in _GENERIC_ANSWER
-            if generic_hit or node_specific or lenient:
+            composite_fix = new_ans != ans
+            if generic_hit or node_specific or lenient or composite_fix:
                 if new_ans != ans:
                     logger.debug(
                         "trace answer %r -> %r (node %s branch=%s)",

@@ -132,9 +132,19 @@ def _is_opencode_go(base_url: str) -> bool:
     return "opencode.ai" in url and "/zen/go" in url
 
 
+def _is_deepseek_proxy_gateway(base_url: str) -> bool:
+    """Third-party gateways that forward to DeepSeek and enforce its token caps."""
+    url = (base_url or "").lower()
+    return "newapi" in url or "raycloud.cn" in url
+
+
 def _uses_deepseek_api_limits(base_url: str) -> bool:
     """Gateways whose upstream enforces DeepSeek max_tokens / thinking rules."""
-    return _is_deepseek_native(base_url) or _is_opencode_go(base_url)
+    return (
+        _is_deepseek_native(base_url)
+        or _is_opencode_go(base_url)
+        or _is_deepseek_proxy_gateway(base_url)
+    )
 
 
 def _is_qclaw_openclaw_agent(settings: AIProviderSettings) -> bool:
@@ -232,6 +242,22 @@ _EFFORT_TO_ADAPTIVE_OUTPUT: dict[str, str] = {
 def _adaptive_output_effort(reasoning_effort: str | None) -> str:
     key = (reasoning_effort or "medium").strip().lower()
     return _EFFORT_TO_ADAPTIVE_OUTPUT.get(key, "medium")
+
+
+def _use_top_level_reasoning_effort(
+    settings: AIProviderSettings,
+    extra_body: dict[str, Any],
+) -> bool:
+    """DeepSeek/Claude adaptive routes encode effort in extra_body, not top-level kwarg."""
+    model = settings.model or ""
+    if _is_deepseek_model(model) or _uses_deepseek_api_limits(settings.base_url):
+        return False
+    thinking_type = (extra_body.get("thinking") or {}).get("type")
+    if thinking_type == "adaptive":
+        return False
+    if _model_uses_claude_adaptive(model):
+        return False
+    return True
 
 
 # Sent to OpenAI-compatible gateways; upstream may clamp below these values.
@@ -505,7 +531,7 @@ class DeepSeekClient:
         }
         if extra_body:
             create_kwargs["extra_body"] = extra_body
-        if _effort is not None:
+        if _effort is not None and _use_top_level_reasoning_effort(self._settings, extra_body):
             create_kwargs["reasoning_effort"] = _effort
         # When thinking mode is OFF, set temperature=0 for maximum instruction-following
         # fidelity and JSON format compliance.  Thinking mode is incompatible with
@@ -644,13 +670,16 @@ class DeepSeekClient:
         _max_tokens = _completion_max_tokens(
             self._settings, extra_body=extra_body, effort=_effort
         )
+        _adaptive_effort = (extra_body.get("output_config") or {}).get("effort")
 
         self._log.info(
             "DeepSeekClient.stream_chat: model=%s thinking=%s reasoning_effort=%s "
-            "max_tokens=%s system_hoisted=%s msgs=%d",
+            "adaptive_effort=%s top_level_effort=%s max_tokens=%s system_hoisted=%s msgs=%d",
             self._settings.model,
             _thinking_on,
             _effort,
+            _adaptive_effort,
+            _effort if _use_top_level_reasoning_effort(self._settings, extra_body) else None,
             _max_tokens,
             bool(system_param),
             len(api_messages),
@@ -688,7 +717,7 @@ class DeepSeekClient:
             }
             if extra_body:
                 stream_kwargs["extra_body"] = extra_body
-            if _effort is not None:
+            if _effort is not None and _use_top_level_reasoning_effort(self._settings, extra_body):
                 stream_kwargs["reasoning_effort"] = _effort
 
             try:

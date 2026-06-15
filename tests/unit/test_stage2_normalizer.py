@@ -846,3 +846,51 @@ def test_normalize_stage2_skip_next_bar_ui_path_omits_injection() -> None:
     out = normalize_stage2(obj, skip_next_bar=True)
     assert "next_bar_prediction" not in out
     assert isinstance(out.get("next_cycle_prediction"), dict)
+
+
+def test_normalizes_watch_points_objects_and_infers_order_direction() -> None:
+    obj = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": None,
+            "entry_price": 100.0,
+            "take_profit_price": 107.5,
+            "stop_loss_price": 95.0,
+            "reasoning": "test",
+            "diagnosis_confidence": 60,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 55,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 50,
+            "estimated_win_rate_reasoning": None,
+            "key_factors": [],
+            "watch_points": [
+                {"trigger": "回撤至100", "action": "做多"},
+                "plain string",
+            ],
+            "risk_assessment": "t",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "broad_channel",
+            "direction": "bullish",
+            "key_signals": [],
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "10.3", "outcome": "trade", "label": "test"},
+        "next_cycle_prediction": {
+            "cycle": "broad_channel",
+            "direction": "bullish",
+            "probabilities": {"broad_channel": 40, "trading_range": 30, "normal_channel": 15, "trending_tr": 10, "spike": 5},
+            "unpredictable": False,
+            "reasoning": "x",
+            "features_used": ["stage1_diagnosis"],
+            "predictable": True,
+        },
+    }
+    out = normalize_stage2(obj, skip_next_bar=True)
+    dec = out["decision"]
+    assert dec["order_direction"] == "做多"
+    assert dec["estimated_win_rate_reasoning"] == ""
+    assert dec["watch_points"][0] == "回撤至100；做多"
+    assert dec["watch_points"][1] == "plain string"
+    assert "predictable" not in out["next_cycle_prediction"]

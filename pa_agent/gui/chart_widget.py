@@ -162,6 +162,12 @@ class ChartWidget(pg.PlotWidget):
             self._pending_decision = None
             return
 
+        # Tracked position lines take precedence — avoid double labels at same price.
+        if self._active_position is not None:
+            self._overlay.clear_lines(self)
+            self._update_direction_marker()
+            return
+
         entry = decision.get("entry_price")
         tp = decision.get("take_profit_price")
         sl = decision.get("stop_loss_price")
@@ -189,6 +195,7 @@ class ChartWidget(pg.PlotWidget):
             self._position_overlay.clear_lines(self)
             return
         self._active_position = dict(position)
+        self._overlay.clear_lines(self)
         self._draw_active_position()
 
     def clear_active_position(self) -> None:

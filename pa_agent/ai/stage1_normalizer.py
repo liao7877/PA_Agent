@@ -36,6 +36,8 @@ _BAR_ROLE_ALIASES: dict[str, str] = {
     "retest": "test",
     "failure": "trap",
     "failed": "trap",
+    "signal_failed": "trap",
+    "reversal_attempt": "signal",
     "exhaustion": "climax",
     "trend": "trend_bull",  # ambiguous → default bullish
     "趋势阳线": "trend_bull",
@@ -65,6 +67,7 @@ _SIGNAL_BAR_QUALITY_ALIASES: dict[str, str] = {
     "poor": "weak",
     "good": "strong",
     "bad": "invalid",
+    "failed": "invalid",
     # "valid" means "signal meets criteria" but is not a quality descriptor
     "valid": "medium",
     "invalid": "invalid",
@@ -117,6 +120,12 @@ _BAR_TYPE_ALIASES: dict[str, str] = {
     "trendbear": "trend_bear",
     "outsidebull": "outside_bull",
     "outsidebear": "outside_bear",
+    "inside_bear": "outside_bear",
+    "inside_bull": "outside_bull",
+    "doji_upper_shadow": "doji",
+    "doji_lower_shadow": "doji",
+    "doji_upper": "doji",
+    "doji_lower": "doji",
 }
 
 
@@ -211,6 +220,60 @@ def _normalize_strategy_file_names(files: Any) -> list[str]:
         if name and name not in out:
             out.append(name)
     return out
+
+
+def _remap_invalid_bar_labels(out: dict[str, Any]) -> None:
+    """K0 is the unclosed bar and not in the frame; remap to K1 when the model cites it."""
+    summary = out.get("bar_by_bar_summary")
+    if not isinstance(summary, list):
+        return
+    for item in summary:
+        if not isinstance(item, dict):
+            continue
+        bar = str(item.get("bar", "") or "").strip().upper()
+        if bar == "K0":
+            item["bar"] = "K1"
+            logger.debug("Remapped bar_by_bar_summary bar K0 -> K1")
+
+
+def _normalize_bar_by_bar_follow_through(out: dict[str, Any]) -> None:
+    """Ensure each summary item has a valid follow_through enum."""
+    summary = out.get("bar_by_bar_summary")
+    if not isinstance(summary, list):
+        return
+    for item in summary:
+        if not isinstance(item, dict):
+            continue
+        ft = item.get("follow_through")
+        if ft is None or (isinstance(ft, str) and not ft.strip()):
+            seq = _summary_bar_seq(item.get("bar"))
+            item["follow_through"] = "pending" if seq == 1 else "no"
+            logger.debug(
+                "Filled bar_by_bar_summary[%s].follow_through -> %s",
+                item.get("bar"),
+                item["follow_through"],
+            )
+
+
+def _normalize_bar_analysis_defaults(out: dict[str, Any]) -> None:
+    bar_analysis = out.get("bar_analysis")
+    if not isinstance(bar_analysis, dict):
+        return
+    est = bar_analysis.get("entry_setup_type")
+    if est is None or (isinstance(est, str) and not est.strip()):
+        bar_analysis["entry_setup_type"] = "none"
+        logger.debug("Filled bar_analysis.entry_setup_type null -> none")
+    ft = bar_analysis.get("follow_through")
+    if ft is None or (isinstance(ft, str) and not ft.strip()):
+        bar_analysis["follow_through"] = "pending"
+        logger.debug("Filled bar_analysis.follow_through -> pending")
+
+
+def _ensure_gate_result(out: dict[str, Any]) -> None:
+    gr = out.get("gate_result")
+    if gr is None or (isinstance(gr, str) and not str(gr).strip()):
+        out["gate_result"] = "unknown"
+        logger.debug("Filled missing gate_result -> unknown")
 
 
 def _normalize_bar_by_bar_roles(out: dict[str, Any]) -> None:
@@ -551,10 +614,14 @@ def normalize_stage1(
     ensure_detected_patterns_coherent(out)
 
     _hoist_bar_by_bar_summary(out)
+    _remap_invalid_bar_labels(out)
     normalize_stage1_traces(out, normalization_mode=normalization_mode)
+    _ensure_gate_result(out)
     _normalize_bar_by_bar_roles(out)
     _normalize_bar_by_bar_context_effects(out)
+    _normalize_bar_by_bar_follow_through(out)
     _normalize_bar_types(out)
+    _normalize_bar_analysis_defaults(out)
     _normalize_signal_bar_object(out)
     _normalize_signal_bar_quality(out)
     _normalize_transition_risk(out)

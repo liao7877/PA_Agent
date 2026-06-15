@@ -330,7 +330,9 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "key_factors": [],
     "watch_points": [],
     "risk_assessment": "",
-    "invalidation_condition": ""
+    "invalidation_condition": "",
+    "position_action": "持有|调整|平仓|null（无持仓/无计划单管理时为 null）",
+    "position_advice": ""
   },
   "diagnosis_summary": {
     "cycle_position": "",
@@ -968,10 +970,20 @@ class PromptAssembler:
 
     # ── Stage 1 ───────────────────────────────────────────────────────────────
 
-    def build_stage1(self, frame: KlineFrame, *, analysis_mode: str = "original") -> list[dict]:
+    def build_stage1(
+        self,
+        frame: KlineFrame,
+        *,
+        analysis_mode: str = "original",
+        active_position: Any | None = None,
+    ) -> list[dict]:
         """Build the message list for Stage 1 (market diagnosis)."""
         system_content = self._build_stage1_system_prompt()
-        user_content = self._build_stage1_user_prompt(frame, analysis_mode=analysis_mode)
+        user_content = self._build_stage1_user_prompt(
+            frame,
+            analysis_mode=analysis_mode,
+            active_position=active_position,
+        )
 
         return [
             {"role": "system", "content": system_content},
@@ -1009,6 +1021,7 @@ class PromptAssembler:
         *,
         analysis_mode: str = "original",
         provider_settings: Any | None = None,
+        active_position: Any | None = None,
     ) -> list[dict]:
         """Build Stage 1 as a continuation-based incremental update.
 
@@ -1091,6 +1104,7 @@ class PromptAssembler:
             previous_record,
             new_bar_count,
             analysis_mode=analysis_mode,
+            active_position=active_position,
         )
 
         return [
@@ -1193,8 +1207,15 @@ class PromptAssembler:
             logger.warning("_render_program_prefill_hint failed: %s", exc)
             return ""
 
-    def _build_stage1_user_prompt(self, frame: KlineFrame, *, analysis_mode: str = "original") -> str:
+    def _build_stage1_user_prompt(
+        self,
+        frame: KlineFrame,
+        *,
+        analysis_mode: str = "original",
+        active_position: Any | None = None,
+    ) -> str:
         """Build the Stage 1 task turn; stage-specific rules stay out of system."""
+        position_note = self._render_stage1_position_note(active_position)
         pattern_block = self._stage1_pattern_supplement()
         # In original mode the AI must reason independently — do NOT inject the
         # program prefill hint, as it would prime the model to skip those nodes.
@@ -1210,6 +1231,7 @@ class PromptAssembler:
         feature_table = self._render_kline_feature_table(frame)
         n_bars = len(frame.bars)
         return (
+            f"{position_note}"
             "## 阶段一任务\n\n"
             "你现在只执行阶段一：市场诊断与闸门判断。不要评估具体下单、止损、止盈或仓位。\n\n"
             f"{stage1_context}\n\n"
@@ -1320,6 +1342,7 @@ class PromptAssembler:
         new_bar_count: int,
         *,
         analysis_mode: str = "original",
+        active_position: Any | None = None,
     ) -> str:
         """Build the incremental continuation user turn (message [3] in 4-message mode).
 
@@ -1342,7 +1365,9 @@ class PromptAssembler:
             "stage2_decision": previous_record.stage2_decision or {},
             "strategy_files_used": previous_record.strategy_files_used or [],
         }
+        position_note = PromptAssembler._render_stage1_position_note(active_position)
         return (
+            f"{position_note}"
             "## 阶段一增量更新任务\n\n"
             "上方是你上一轮完成的阶段一诊断。现在基于新增 K 线，更新诊断与闸门判断。\n"
             "完整 K 线数据已包含在上方阶段一用户消息中（K线序号已重新编号，"
@@ -1583,6 +1608,31 @@ class PromptAssembler:
         )
 
     @staticmethod
+    def _render_stage1_position_note(active_position: Any | None) -> str:
+        """Brief Stage-1 context when a plan or fill is already tracked."""
+        if not active_position:
+            return ""
+        if hasattr(active_position, "model_dump"):
+            data = active_position.model_dump(mode="json")
+        elif isinstance(active_position, dict):
+            data = dict(active_position)
+        else:
+            return ""
+        status = str(data.get("status", ""))
+        if status not in ("planned", "filled"):
+            return ""
+        status_zh = {"planned": "计划单", "filled": "持仓"}.get(status, status)
+        direction = data.get("order_direction") or "—"
+        entry = data.get("fill_price") if status == "filled" else data.get("entry_price")
+        order_type = data.get("order_type") or "—"
+        return (
+            f"## 当前跟踪状态（{status_zh}）\n\n"
+            f"品种已有 **{status_zh}**：{order_type} {direction} @ {entry}。"
+            f"阶段一仍只做市场诊断与闸门；**持仓/挂单管理决策在阶段二**。"
+            f"诊断时请考虑该仓位/挂单的方向与失效条件是否仍成立。\n\n"
+        )
+
+    @staticmethod
     def _render_active_position(active_position: Any | None) -> str:
         """Render a position-management block when a position is currently held."""
         if not active_position:
@@ -1607,6 +1657,7 @@ class PromptAssembler:
         sl = data.get("stop_loss_price")
         compact = {
             "status": status,
+            "order_type": data.get("order_type"),
             "order_direction": direction,
             "entry_price": entry,
             "take_profit_price": tp,
@@ -1628,8 +1679,14 @@ class PromptAssembler:
         else:
             instruction = (
                 "**注意：当前已有一个尚未成交的计划单（等待价格触及入场价）。**\n"
-                "如本轮判断该计划仍然有效，可维持或微调入场/止盈/止损；"
-                "如判断该计划已失效，请输出 order_type=不下单 并说明理由（程序将撤销该计划单）。\n"
+                "本轮阶段二的任务是『计划单管理』，不是重新评估全新入场。\n"
+                "必须在 decision 中明确管理意图（程序据此执行）：\n"
+                "1. 继续挂着：输出与计划同向的 order_type（限价/突破）及三价（可微调 entry/TP/SL），"
+                "或 order_type=不下单 且 position_action=「持有」；\n"
+                "2. 撤销挂单：order_type=不下单，position_action 填 null，程序将删除该计划单；\n"
+                "3. 微调挂单：同向 order_type + 新的 entry/TP/SL（程序会更新计划单）；\n"
+                "4. 方向反转：输出反向 order_type + 三价，程序将替换原计划单。\n"
+                "无持仓/无计划单时 position_action 必须为 null。\n"
             )
 
         return (

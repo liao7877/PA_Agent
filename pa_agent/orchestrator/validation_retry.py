@@ -102,13 +102,26 @@ def validate_with_retry(
             )
 
         attempt += 1
-        logger.info(
-            "%s validation failed (category=%s), retry %d/%d",
+        logger.warning(
+            "%s validation retry %d/%d (category=%s): %s",
             stage,
-            err.category,
             attempt,
             max_attempts,
+            err.category,
+            err.message,
         )
+        if err.invalid_fields:
+            logger.warning(
+                "%s retry invalid_fields: %s",
+                stage,
+                "; ".join(str(f) for f in err.invalid_fields[:8]),
+            )
+        if err.missing_fields:
+            logger.warning(
+                "%s retry missing_fields: %s",
+                stage,
+                ", ".join(str(f) for f in err.missing_fields[:8]),
+            )
 
         previous_raw = content
         previous_obj = parse_previous_for_cheat(previous_raw)

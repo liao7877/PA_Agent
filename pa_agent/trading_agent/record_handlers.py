@@ -112,10 +112,6 @@ def sync_chart_active_position(window: Any, symbol: str, timeframe: str) -> None
         chart.set_active_position(None)
     else:
         chart.set_active_position(position.model_dump(mode="json"))
-        from pa_agent.positions.model import PositionStatus
-
-        if position.status == PositionStatus.FILLED:
-            chart.clear_decision_overlay()
 
 
 def check_position_on_tick(window: Any, bars: Any) -> None:

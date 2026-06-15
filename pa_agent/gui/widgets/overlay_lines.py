@@ -67,9 +67,9 @@ class OverlayLines:
         self._plot = plot
 
         specs = [
-            (entry, _COLOR_ENTRY, "Entry"),
-            (tp, _COLOR_TP, "TP"),
-            (sl, _COLOR_SL, "SL"),
+            (entry, _COLOR_ENTRY, "入场"),
+            (tp, _COLOR_TP, "止盈"),
+            (sl, _COLOR_SL, "止损"),
         ]
 
         style = pg.QtCore.Qt.PenStyle.SolidLine if solid else pg.QtCore.Qt.PenStyle.DashLine
@@ -85,7 +85,7 @@ class OverlayLines:
             )
             prefix = f"{label_prefix} " if label_prefix else ""
             label = pg.TextItem(
-                text=f"{prefix}{label_text}: {price:.5g}",
+                text=f"{prefix}{label_text}  {price:.5g}",
                 color=color,
                 anchor=(0.0, 0.5),
             )
@@ -106,9 +106,14 @@ class OverlayLines:
         """Remove all managed lines and labels from the plot."""
         if self._range_conn is not None:
             try:
-                plot.getViewBox().sigRangeChanged.disconnect(self._range_conn)
+                self._range_conn.disconnect()
             except Exception:  # noqa: BLE001
-                pass
+                try:
+                    plot.getViewBox().sigRangeChanged.disconnect(
+                        self._update_label_positions
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             self._range_conn = None
 
         for item in self._items:

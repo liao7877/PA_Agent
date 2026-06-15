@@ -312,3 +312,44 @@ def test_fill_incremental_delta_from_risk_warning() -> None:
     assert len(delta["summary"]) >= 16
     assert "direction" in delta["changed_fields"]
     assert "cycle_position" in delta["changed_fields"]
+
+
+def test_normalizes_log_aliases_inside_bear_signal_failed_and_gate_result() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "gate_result": None,
+        "bar_analysis": {
+            **VALID_STAGE1.get("bar_analysis", {}),
+            "entry_setup_type": None,
+            "signal_bar": {"bar": "K2", "quality": "failed", "reason": "x"},
+        },
+        "bar_by_bar_summary": [
+            {
+                "bar": "K0",
+                "role": "signal_failed",
+                "bar_type": "inside_bear",
+                "context_effect": "neutral",
+                "trapped_side": "none",
+                "reason": "x",
+            },
+            {
+                "bar": "K2",
+                "role": "reversal_attempt",
+                "bar_type": "doji_upper_shadow",
+                "context_effect": "neutral",
+                "trapped_side": "none",
+                "reason": "y",
+            },
+        ],
+    }
+    out = normalize_stage1(raw)
+    assert out["gate_result"] == "unknown"
+    assert out["bar_analysis"]["entry_setup_type"] == "none"
+    assert out["bar_analysis"]["signal_bar"]["quality"] == "invalid"
+    items = {str(i["bar"]): i for i in out["bar_by_bar_summary"]}
+    assert items["K1"]["role"] == "trap"
+    assert items["K1"]["bar_type"] == "outside_bear"
+    assert items["K1"]["follow_through"] == "pending"
+    assert items["K2"]["role"] == "signal"
+    assert items["K2"]["bar_type"] == "doji"
+    assert items["K2"]["follow_through"] == "no"

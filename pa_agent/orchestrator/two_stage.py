@@ -589,9 +589,14 @@ class TwoStageOrchestrator:
                 incremental_new_bar_count,
                 analysis_mode=analysis_mode,
                 provider_settings=getattr(self._settings, "provider", None),
+                active_position=active_position,
             )
         else:
-            messages_s1 = self._assembler.build_stage1(frame, analysis_mode=analysis_mode)
+            messages_s1 = self._assembler.build_stage1(
+                frame,
+                analysis_mode=analysis_mode,
+                active_position=active_position,
+            )
 
         # ── Step 5: Call AI for Stage 1 ───────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -1017,6 +1022,7 @@ class TwoStageOrchestrator:
                 "decision_stance": record.meta.decision_stance,
                 "stage1_json": stage1_json,
                 "skip_next_bar": not _enable_next_bar,
+                "active_position": active_position,
             },
             call_api=_call_s2_retry,
             provider_settings=getattr(self._settings, "provider", None),

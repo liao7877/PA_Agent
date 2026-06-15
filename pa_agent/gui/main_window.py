@@ -957,7 +957,7 @@ class MainWindow(QMainWindow):
         Called from worker thread; use invokeMethod to update GUI on main thread.
         """
         from PyQt6.QtCore import Qt, QMetaObject, Q_ARG
-        timeframe = self._tf_combo.currentText() if hasattr(self, "_tf_combo") else ""
+        timeframe = self._resolved_timeframe() if hasattr(self, "_tf_combo") else "15m"
         msg = f"TV 自动探测 {label} {timeframe}…"
         # Update status bar on main thread to avoid race with other updates
         QMetaObject.invokeMethod(
@@ -1000,7 +1000,7 @@ class MainWindow(QMainWindow):
         # Stop any running refresh and immediately restart so the new exchange
         # takes effect without requiring the user to click "获取数据" again.
         self._stop_refresh_loop()
-        timeframe = self._tf_combo.currentText()
+        timeframe = self._resolved_timeframe(self._tf_combo.currentText())
         ex_show = ex_val or "自动"
         if data_source is not None and getattr(data_source, "_connected", False):
             try:
@@ -1082,6 +1082,13 @@ class MainWindow(QMainWindow):
                 self._tf_combo.setCurrentText(current)
             else:
                 self._tf_combo.setCurrentText(items[0])
+        elif self._tf_combo.count() == 0:
+            settings = getattr(self._ctx, "settings", None)
+            fallback = "15m"
+            if settings is not None:
+                fallback = getattr(settings.general, "last_timeframe", "") or "15m"
+            self._tf_combo.addItem(fallback)
+            self._tf_combo.setCurrentText(fallback)
         self._tf_combo.blockSignals(False)
 
     def _ensure_tradingview_reachable(self) -> bool:
@@ -1168,7 +1175,7 @@ class MainWindow(QMainWindow):
                     self._tv_exchange_combo.blockSignals(False)
 
             symbol = self._symbol_combo.currentText().strip()
-            timeframe = self._tf_combo.currentText()
+            timeframe = self._resolved_timeframe(self._tf_combo.currentText())
 
             mt5_path = ""
             ctx_settings = getattr(self._ctx, "settings", None)
@@ -1253,6 +1260,21 @@ class MainWindow(QMainWindow):
             return
         self._pending_symbol_switch = None
         self._on_symbol_or_tf_changed(pending[0], pending[1])
+
+    def _resolved_timeframe(self, timeframe: str | None = None) -> str:
+        """Return a non-empty timeframe (combo → settings → 15m)."""
+        text = (timeframe or "").strip()
+        if not text and hasattr(self, "_tf_combo"):
+            text = self._tf_combo.currentText().strip()
+        if text:
+            return text
+        settings = getattr(self._ctx, "settings", None)
+        if settings is not None:
+            fallback = getattr(settings.general, "last_timeframe", "") or "15m"
+            text = str(fallback).strip()
+            if text:
+                return text
+        return "15m"
 
     def _status_message_after_symbol_switch(self, symbol: str, timeframe: str) -> str:
         """Status bar text after symbol/tf change (TV shows resolved feed, not raw typing)."""
@@ -1469,7 +1491,7 @@ class MainWindow(QMainWindow):
 
         if not bars:
             return 0
-        timeframe = self._tf_combo.currentText()
+        timeframe = self._resolved_timeframe(self._tf_combo.currentText())
         symbol = self._symbol_combo.currentText().strip()
         if has_forming_bar_at_head(
             bars,
@@ -1504,7 +1526,7 @@ class MainWindow(QMainWindow):
             return False
         if closed < bar_count:
             return False
-        timeframe = self._tf_combo.currentText()
+        timeframe = self._resolved_timeframe(self._tf_combo.currentText())
         symbol = self._symbol_combo.currentText().strip()
         from pa_agent.data.bar_close_wait import has_forming_bar_at_head
 
@@ -1867,11 +1889,12 @@ class MainWindow(QMainWindow):
                 self._submit_btn.setText("提交分析")
             if data_source is not None:
                 self._apply_tv_exchange_to_source(data_source)
+                resolved_tf = self._resolved_timeframe(new_tf)
                 try:
-                    data_source.subscribe(new_symbol, new_tf)
+                    data_source.subscribe(new_symbol, resolved_tf)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "subscribe(%s, %s) failed: %s", new_symbol, new_tf, exc
+                        "subscribe(%s, %s) failed: %s", new_symbol, resolved_tf, exc
                     )
                     self._status_bar.showMessage(f"订阅失败：{exc}")
 
@@ -1879,7 +1902,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_chart_widget"):
                 self._chart_widget.reset()
                 self._chart_widget.request_fit_on_next_render()
-            self._sync_chart_active_position(new_symbol, new_tf)
+            self._sync_chart_active_position(new_symbol, self._resolved_timeframe(new_tf))
 
             # ── Step 5: Destroy FreeChatSession, disable Tab2 input ───────────
             self._free_chat_session = None
@@ -2782,7 +2805,7 @@ class MainWindow(QMainWindow):
         self._cancel_analysis_worker()
 
         symbol = self._symbol_combo.currentText().strip()
-        timeframe = self._tf_combo.currentText()
+        timeframe = self._resolved_timeframe(self._tf_combo.currentText())
         bar_count = self._analysis_bar_count()
 
         if self._wait_close_checkbox.isChecked():
@@ -3347,6 +3370,10 @@ class MainWindow(QMainWindow):
             if strip is not None:
                 strip.reset()
 
+        record = getattr(self, "_last_analysis_record", None)
+        if record is not None:
+            self._dispatch_decision_notification(record)
+
     def _build_exception_debug_bundle(
         self,
         exc_info: dict,
@@ -3571,6 +3598,8 @@ class MainWindow(QMainWindow):
         if not self._ui_is_alive():
             return
         self._last_analysis_record = record
+        self._update_position_from_record(record)
+
         import json as _json
 
         exc_info = getattr(record, "exception", None)
@@ -3816,8 +3845,7 @@ class MainWindow(QMainWindow):
                     "total_output": completion_tokens,
                 })
 
-        self._update_position_from_record(record)
-        self._dispatch_decision_notification(record)
+        # position sync + notification already handled at the top of this handler
 
     def _bind_decision_tree(
         self,
@@ -4165,7 +4193,7 @@ class MainWindow(QMainWindow):
             return
 
         symbol = self._symbol_combo.currentText().strip() if hasattr(self, "_symbol_combo") else ""
-        timeframe = self._tf_combo.currentText() if hasattr(self, "_tf_combo") else ""
+        timeframe = self._resolved_timeframe() if hasattr(self, "_tf_combo") else "15m"
         if not symbol or not timeframe:
             self._submit_btn.setText("提交分析")
             self._incremental_available = False
@@ -4230,7 +4258,7 @@ class MainWindow(QMainWindow):
 
         n = bar_count if bar_count is not None else self._analysis_bar_count()
         symbol = self._symbol_combo.currentText().strip()
-        timeframe = self._tf_combo.currentText()
+        timeframe = self._resolved_timeframe(self._tf_combo.currentText())
         now_ms = self._reference_now_ms()
         if not bars_raw:
             return None

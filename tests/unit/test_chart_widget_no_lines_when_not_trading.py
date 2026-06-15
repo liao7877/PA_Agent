@@ -34,6 +34,17 @@ def _count_infinite_lines(plot_widget) -> int:
     )
 
 
+def _count_text_items(plot_widget) -> int:
+    """Count TextItem labels currently in the plot."""
+    import pyqtgraph as pg
+
+    return sum(
+        1
+        for item in plot_widget.getPlotItem().items
+        if isinstance(item, pg.TextItem)
+    )
+
+
 class TestNoLinesWhenNotTrading:
     """ChartWidget must not show InfiniteLine items for '不下单' decisions."""
 
@@ -154,3 +165,28 @@ class TestNoLinesWhenNotTrading:
         chart_widget.clear_decision_overlay()
         assert _count_infinite_lines(chart_widget) == 0
         assert chart_widget._pending_decision is None
+
+    def test_active_position_replaces_decision_overlay_without_duplicates(
+        self, chart_widget
+    ):
+        """Decision lines must not stack on top of tracked position lines."""
+        trading_decision = {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 4340.0,
+            "take_profit_price": 4350.0,
+            "stop_loss_price": 4333.0,
+        }
+        chart_widget.set_decision(trading_decision)
+        assert _count_infinite_lines(chart_widget) == 3
+        assert _count_text_items(chart_widget) == 3
+
+        chart_widget.set_active_position({
+            "status": "planned",
+            "entry_price": 4340.0,
+            "take_profit_price": 4350.0,
+            "stop_loss_price": 4333.0,
+        })
+
+        assert _count_infinite_lines(chart_widget) == 3
+        assert _count_text_items(chart_widget) == 3

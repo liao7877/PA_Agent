@@ -354,6 +354,11 @@ _DECISION_BASE: dict = {
         "watch_points": {"type": "array", "items": {"type": "string"}},
         "risk_assessment": {"type": "string"},
         "invalidation_condition": {"type": ["string", "null"]},
+        "position_action": {
+            "type": ["string", "null"],
+            "enum": ["持有", "调整", "平仓", None],
+        },
+        "position_advice": {"type": ["string", "null"]},
     },
     "allOf": [
         # 不下单 → all price fields and direction must be null

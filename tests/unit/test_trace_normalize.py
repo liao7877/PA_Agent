@@ -84,6 +84,19 @@ def test_node_63_composite_boundary_answer() -> None:
     assert item["branch"] == "lower"
 
 
+def test_composite_paren_answer_strict_mode() -> None:
+    """Regression: 是（偏多） must split to canonical 是 in strict mode."""
+    item = {
+        "node_id": "3",
+        "question": "趋势是否明确？",
+        "answer": "是（偏多）",
+        "reason": "x",
+        "bar_range": "K5-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "是"
+
+
 def test_node_62_trending_tr_answer() -> None:
     item = {
         "node_id": "6.2",

@@ -291,3 +291,64 @@ def test_reversal_closes_and_opens_opposite(store, notifier):
     assert pos.order_direction == "做空"
     assert pos.status is PositionStatus.PLANNED
     assert any(m.event.value == "exit" for m in notifier.messages)
+
+
+def test_planned_entry_and_tp_sl_updated(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    updated = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 101.0,
+            "take_profit_price": 112.0,
+            "stop_loss_price": 96.0,
+        }
+    }
+    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=updated)
+    assert pos is not None
+    assert pos.status is PositionStatus.PLANNED
+    assert pos.entry_price == 101.0
+    assert pos.take_profit_price == 112.0
+    assert pos.stop_loss_price == 96.0
+    assert any(m.event.value == "manage" for m in notifier.messages)
+
+
+def test_planned_reversal_replaces_without_exit_notify(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    short = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做空",
+            "entry_price": 95.0,
+            "take_profit_price": 85.0,
+            "stop_loss_price": 100.0,
+        }
+    }
+    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=short)
+    assert pos is not None
+    assert pos.order_direction == "做空"
+    assert pos.order_type == "突破单"
+    assert pos.status is PositionStatus.PLANNED
+    assert not any(m.event.value == "exit" for m in notifier.messages)
+
+
+def test_breakout_long_triggers_on_high_break(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    breakout = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 105.0,
+            "take_profit_price": 115.0,
+            "stop_loss_price": 100.0,
+        }
+    }
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=breakout)
+    # Bar does not touch 105 with limit logic (low=100 high=104) but breaks above 105? no
+    tracker.on_tick("X", "15m", high=104.0, low=100.0)
+    assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
+    tracker.on_tick("X", "15m", high=106.0, low=101.0)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+    assert any(m.event.value == "entry_filled" for m in notifier.messages)

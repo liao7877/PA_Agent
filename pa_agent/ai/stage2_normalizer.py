@@ -69,6 +69,15 @@ _TERMINAL_OUTCOME_ALIASES: dict[str, str] = {
     "reject": "reject",
     "trade": "trade",
     "proceed": "proceed",
+    # AI 误把 position_action 写入 terminal.outcome
+    "持有": "wait",
+    "调整": "wait",
+    "平仓": "wait",
+    "hold": "wait",
+    "adjust": "wait",
+    "close": "wait",
+    "manage": "wait",
+    "management": "wait",
 }
 
 _ENTRY_BAR_FRESHNESS_ALIASES: dict[str, str] = {
@@ -239,6 +248,82 @@ def _normalize_second_entry(second_entry: dict[str, Any]) -> bool:
     return True
 
 
+def _infer_order_direction(
+    out: dict[str, Any],
+    *,
+    stage1_json: dict[str, Any] | None = None,
+) -> str | None:
+    """Infer 做多/做空 from diagnosis or stage1 when the model left order_direction null."""
+    diag = out.get("diagnosis_summary")
+    if isinstance(diag, dict):
+        d = str(diag.get("direction", "") or "").strip().lower()
+        if d == "bullish":
+            return "做多"
+        if d == "bearish":
+            return "做空"
+    s1 = stage1_json or {}
+    d = str(s1.get("direction", "") or "").strip().lower()
+    if d == "bullish":
+        return "做多"
+    if d == "bearish":
+        return "做空"
+    return None
+
+
+def _normalize_watch_points(decision: dict[str, Any]) -> bool:
+    """Coerce watch_points to string[] (models sometimes emit objects)."""
+    wps = decision.get("watch_points")
+    if not isinstance(wps, list):
+        decision["watch_points"] = []
+        return True
+    changed = False
+    normalized: list[str] = []
+    for item in wps:
+        if isinstance(item, str):
+            normalized.append(item)
+        elif isinstance(item, dict):
+            parts = [
+                str(v).strip()
+                for v in item.values()
+                if v is not None and str(v).strip()
+            ]
+            normalized.append("；".join(parts) if parts else str(item))
+            changed = True
+        elif item is not None:
+            normalized.append(str(item))
+            changed = True
+    if changed or normalized != wps:
+        decision["watch_points"] = normalized
+        return True
+    return False
+
+
+def _normalize_decision_required_strings(
+    decision: dict[str, Any],
+    *,
+    stage1_json: dict[str, Any] | None = None,
+    out: dict[str, Any] | None = None,
+) -> bool:
+    """Fill null decision fields that schema rejects on active order paths."""
+    changed = False
+    order_type = str(decision.get("order_type", "") or "").strip()
+    if order_type and order_type != "不下单":
+        raw_dir = decision.get("order_direction")
+        if raw_dir is None or (isinstance(raw_dir, str) and not raw_dir.strip()):
+            inferred = _infer_order_direction(out or {}, stage1_json=stage1_json)
+            if inferred:
+                decision["order_direction"] = inferred
+                logger.debug("Inferred order_direction null -> %r", inferred)
+                changed = True
+        ewr = decision.get("estimated_win_rate_reasoning")
+        if ewr is None:
+            decision["estimated_win_rate_reasoning"] = ""
+            changed = True
+    if _normalize_watch_points(decision):
+        changed = True
+    return changed
+
+
 def _normalize_order_direction_value(raw: object) -> str | None:
     if raw is None:
         return None
@@ -326,6 +411,16 @@ def _normalize_stage2_enum_aliases(out: dict[str, Any]) -> bool:
             decision["order_direction"] = mapped_dir
             logger.debug("order_direction %r -> %r", raw_dir, mapped_dir)
             changed = True
+        elif (
+            order_type
+            and order_type != "不下单"
+            and (raw_dir is None or (isinstance(raw_dir, str) and not raw_dir.strip()))
+        ):
+            inferred = _infer_order_direction(out)
+            if inferred:
+                decision["order_direction"] = inferred
+                logger.debug("order_direction null -> %r (inferred)", inferred)
+                changed = True
 
     bar_analysis = out.get("bar_analysis")
     if isinstance(bar_analysis, dict):
@@ -345,6 +440,14 @@ def _normalize_stage2_enum_aliases(out: dict[str, Any]) -> bool:
             raw_outcome, order_type=order_type
         )
         if mapped_outcome and mapped_outcome != raw_outcome:
+            # Recover position_action when model confuses it with terminal.outcome.
+            if isinstance(decision, dict) and raw_outcome is not None:
+                from pa_agent.positions.decision_fields import normalize_position_action
+
+                pa = normalize_position_action(raw_outcome)
+                if pa and not normalize_position_action(decision.get("position_action")):
+                    decision["position_action"] = pa
+                    changed = True
             terminal["outcome"] = mapped_outcome
             logger.debug("terminal.outcome %r -> %r", raw_outcome, mapped_outcome)
             changed = True
@@ -714,6 +817,19 @@ def _normalize_next_cycle_prediction(prediction: dict[str, Any]) -> None:
     direction = prediction.get("direction")
     if direction is not None and not isinstance(direction, str):
         prediction["direction"] = None
+
+    # Strip extra keys not allowed by the schema (e.g. predictable).
+    _ALLOWED_CYCLE_KEYS = frozenset({
+        "cycle", "direction", "probabilities", "reasoning", "unpredictable", "features_used",
+    })
+    extra_keys = [k for k in list(prediction.keys()) if k not in _ALLOWED_CYCLE_KEYS]
+    if extra_keys:
+        for k in extra_keys:
+            del prediction[k]
+        logger.debug(
+            "next_cycle_prediction: removed extra keys not allowed by schema: %s",
+            extra_keys,
+        )
 
 
 def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
@@ -1294,5 +1410,11 @@ def normalize_stage2(
     pred_c = out.get("next_cycle_prediction")
     if isinstance(pred_c, dict):
         _normalize_next_cycle_prediction(pred_c)
+
+    decision = out.get("decision")
+    if isinstance(decision, dict):
+        _normalize_decision_required_strings(
+            decision, stage1_json=stage1_json, out=out
+        )
 
     return out

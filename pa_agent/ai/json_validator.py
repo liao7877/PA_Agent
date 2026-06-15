@@ -376,6 +376,7 @@ class JsonValidator:
         incremental_new_bar_count: int = 0,
         incremental_previous_stage1: dict[str, Any] | None = None,
         skip_next_bar: bool = False,
+        active_position: Any | None = None,
     ) -> dict[str, Any]:
         """Apply the same post-parse normalization as :meth:`validate`."""
         norm_mode = getattr(self._validation, "normalization_mode", "strict")
@@ -415,6 +416,7 @@ class JsonValidator:
         incremental_new_bar_count: int = 0,
         incremental_previous_stage1: dict[str, Any] | None = None,
         skip_next_bar: bool = False,
+        active_position: Any | None = None,
     ) -> Result:
         """Validate *raw_text* against the schema for *stage*.
 
@@ -497,6 +499,7 @@ class JsonValidator:
             incremental_new_bar_count=incremental_new_bar_count,
             incremental_previous_stage1=incremental_previous_stage1,
             skip_next_bar=False if stage == "stage2" else skip_next_bar,
+            active_position=active_position,
         )
         norm_mode = getattr(self._validation, "normalization_mode", "strict")
 
@@ -599,6 +602,9 @@ class JsonValidator:
             for msg in self._check_next_cycle_prediction(obj):
                 invalid.append(msg)
 
+            for msg in self._check_position_management(obj, active_position):
+                invalid.append(f"position:{msg}")
+
             for msg in self._check_trade_metrics(
                 obj,
                 decision_stance=decision_stance,
@@ -689,6 +695,37 @@ class JsonValidator:
                     },
                 }
         return None
+
+    @staticmethod
+    def _check_position_management(
+        obj: dict,
+        active_position: Any | None,
+    ) -> list[str]:
+        """Require position_action when managing an existing filled position."""
+        if active_position is None:
+            return []
+        if hasattr(active_position, "model_dump"):
+            data = active_position.model_dump(mode="json")
+        elif isinstance(active_position, dict):
+            data = active_position
+        else:
+            return []
+        if str(data.get("status", "")) != "filled":
+            return []
+        decision = obj.get("decision")
+        if not isinstance(decision, dict):
+            return []
+        order_type = str(decision.get("order_type") or "")
+        if order_type != "不下单":
+            return []
+        from pa_agent.positions.decision_fields import get_position_action
+
+        if get_position_action(decision) is None:
+            return [
+                "filled position requires position_action "
+                "(持有|调整|平仓) when order_type=不下单"
+            ]
+        return []
 
     @staticmethod
     def _check_breakout_order_basis(obj: dict) -> dict | None:

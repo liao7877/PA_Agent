@@ -152,7 +152,6 @@ class PositionTracker:
         *,
         current_price: float | None = None,
     ) -> Optional[PositionState]:
-        # 1) 方向反转 → 先平再开反向计划单
         new_dir = is_long_direction(inner.get("order_direction"))
         cur_dir = existing.is_long
         reversed_dir = (
@@ -162,14 +161,23 @@ class PositionTracker:
             and new_dir != cur_dir
         )
 
-        if existing.status == PositionStatus.FILLED and reversed_dir:
-            exit_px = self._resolve_exit_price(existing, current_price)
-            self._close(
-                existing,
-                exit_price=exit_px,
-                reason="ai_close",
-                notify_reason="AI 建议平仓（方向反转）",
-            )
+        # 1) 方向反转 → 已持仓先平再开；计划单直接替换
+        if reversed_dir:
+            if existing.status == PositionStatus.FILLED:
+                exit_px = self._resolve_exit_price(existing, current_price)
+                self._close(
+                    existing,
+                    exit_price=exit_px,
+                    reason="ai_close",
+                    notify_reason="AI 建议平仓（方向反转）",
+                )
+            else:
+                self._store.clear_active(existing.symbol, existing.timeframe)
+                logger.info(
+                    "Planned position replaced (direction reversal): %s %s",
+                    existing.symbol,
+                    existing.timeframe,
+                )
             return self._open_planned(
                 symbol=existing.symbol,
                 timeframe=existing.timeframe,
@@ -195,16 +203,16 @@ class PositionTracker:
                         existing.symbol, existing.timeframe)
             return None
 
-        # 3) TP/SL 调整（持仓管理）；position_action=调整 或同向下单三价变化
-        new_tp = _to_float(inner.get("take_profit_price"))
-        new_sl = _to_float(inner.get("stop_loss_price"))
-        changes: list[str] = []
-        if new_tp is not None and new_tp != existing.take_profit_price:
-            changes.append(f"止盈 {existing.take_profit_price}→{new_tp}")
-            existing.take_profit_price = new_tp
-        if new_sl is not None and new_sl != existing.stop_loss_price:
-            changes.append(f"止损 {existing.stop_loss_price}→{new_sl}")
-            existing.stop_loss_price = new_sl
+        # 3) 同向可交易决策 → 更新入场/类型/止盈止损（计划单与持仓均适用）
+        if order_type in _ORDER_TYPES:
+            changes = self._apply_price_field_updates(existing, inner)
+            if changes:
+                self._store.upsert_active(existing)
+                self._notify_manage(existing, "；".join(changes))
+                return existing
+
+        # 4) 仅 TP/SL 调整（持仓管理，order_type=不下单）
+        changes = self._apply_tp_sl_updates(existing, inner)
         if changes:
             self._store.upsert_active(existing)
             self._notify_manage(existing, "；".join(changes))
@@ -219,6 +227,39 @@ class PositionTracker:
                     advisory_only=True,
                 )
         return existing
+
+    def _apply_tp_sl_updates(
+        self, existing: PositionState, inner: dict
+    ) -> list[str]:
+        changes: list[str] = []
+        new_tp = _to_float(inner.get("take_profit_price"))
+        new_sl = _to_float(inner.get("stop_loss_price"))
+        if new_tp is not None and new_tp != existing.take_profit_price:
+            changes.append(f"止盈 {existing.take_profit_price}→{new_tp}")
+            existing.take_profit_price = new_tp
+        if new_sl is not None and new_sl != existing.stop_loss_price:
+            changes.append(f"止损 {existing.stop_loss_price}→{new_sl}")
+            existing.stop_loss_price = new_sl
+        return changes
+
+    def _apply_price_field_updates(
+        self, existing: PositionState, inner: dict
+    ) -> list[str]:
+        changes: list[str] = []
+        if existing.status == PositionStatus.PLANNED:
+            new_entry = _to_float(inner.get("entry_price"))
+            if new_entry is not None and new_entry != existing.entry_price:
+                changes.append(f"入场 {existing.entry_price}→{new_entry}")
+                existing.entry_price = new_entry
+            new_type = str(inner.get("order_type") or "").strip()
+            if new_type and new_type != existing.order_type:
+                changes.append(f"类型 {existing.order_type}→{new_type}")
+                existing.order_type = new_type
+        new_inv = inner.get("invalidation_condition")
+        if new_inv and new_inv != existing.invalidation_condition:
+            existing.invalidation_condition = str(new_inv)
+        changes.extend(self._apply_tp_sl_updates(existing, inner))
+        return changes
 
     # ── Tick-based detection ───────────────────────────────────────────────
     def on_tick(
@@ -244,7 +285,7 @@ class PositionTracker:
             return position
 
         if position.status == PositionStatus.PLANNED:
-            if self._price_touched(position.entry_price, hi, lo):
+            if self._entry_triggered(position, hi, lo):
                 position.status = PositionStatus.FILLED
                 position.filled_at_ms = _now_ms()
                 position.fill_price = position.entry_price
@@ -289,6 +330,19 @@ class PositionTracker:
     @staticmethod
     def _price_touched(price: float, high: float, low: float) -> bool:
         return low <= price <= high
+
+    @staticmethod
+    def _entry_triggered(position: PositionState, high: float, low: float) -> bool:
+        """Detect planned-order fill: limit = touch; breakout = directional break."""
+        price = position.entry_price
+        long = position.is_long
+        order_type = str(position.order_type or "")
+        if order_type == "突破单":
+            if long is True:
+                return high >= price
+            if long is False:
+                return low <= price
+        return PositionTracker._price_touched(price, high, low)
 
     @staticmethod
     def _stop_hit(long: bool | None, sl: float, high: float, low: float) -> bool:
