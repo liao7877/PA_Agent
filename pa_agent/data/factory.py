@@ -63,7 +63,7 @@ def default_symbol_for_kind(kind: str | None) -> str:
     return _DEFAULT_SYMBOLS[normalize_data_source_kind(kind)]
 
 
-def create_data_source(kind: str | None) -> DataSource:
+def create_data_source(kind: str | None, *, mt5_terminal_path: str = "") -> DataSource:
     """Instantiate a fresh data source for *kind* (not connected)."""
     normalized = normalize_data_source_kind(kind)
     if normalized == "tradingview":
@@ -84,4 +84,4 @@ def create_data_source(kind: str | None) -> DataSource:
         return YFinanceSource()
     from pa_agent.data.mt5 import MT5Source
 
-    return MT5Source()
+    return MT5Source(terminal_path=mt5_terminal_path)

@@ -1,4 +1,4 @@
-﻿"""Main application window for PA Agent."""
+"""Main application window for PA Agent."""
 from __future__ import annotations
 
 import logging
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Zombie timeout in milliseconds (5 seconds)
 _WORKER_JOIN_TIMEOUT_MS = 5000
+_MIN_CLOSED_BARS_FOR_ANALYSIS = 20
 
 
 def _qobject_alive(obj: QObject | None) -> bool:
@@ -98,7 +99,7 @@ class _AnalysisWorker(QThread):
 
     finished = pyqtSignal(dict)
     record_ready = pyqtSignal(object)   # emits the full AnalysisRecord
-    error_occurred = pyqtSignal(str)    # unhandled worker/orchestrator failure
+    error_occurred = pyqtSignal(object)    # unhandled worker/orchestrator failure
     status_update = pyqtSignal(str)
     reasoning_token = pyqtSignal(str, str)   # (stage, chunk)
     content_token = pyqtSignal(str, str)     # (stage, chunk)
@@ -113,6 +114,7 @@ class _AnalysisWorker(QThread):
         cancel_token: Any,
         previous_record: Any = None,
         incremental_new_bar_count: int | None = None,
+        active_position: Any = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -121,6 +123,7 @@ class _AnalysisWorker(QThread):
         self._cancel_token = cancel_token
         self._previous_record = previous_record
         self._incremental_new_bar_count = incremental_new_bar_count
+        self._active_position = active_position
 
     def run(self) -> None:
         from pa_agent.util.threading import OrchestratorEvent
@@ -177,6 +180,7 @@ class _AnalysisWorker(QThread):
                 on_stage2_files=on_stage2_files,
                 previous_record=self._previous_record,
                 incremental_new_bar_count=self._incremental_new_bar_count,
+                active_position=self._active_position,
             )
             decision = record.stage2_decision or {}
         except Exception as exc:  # noqa: BLE001
@@ -187,7 +191,7 @@ class _AnalysisWorker(QThread):
                 logger.error("Analysis worker error: %s", exc, exc_info=True)
             decision = {}
             record = None  # type: ignore[assignment]
-            self.error_occurred.emit(str(exc))
+            self.error_occurred.emit(exc)
 
         if record is not None:
             self.record_ready.emit(record)
@@ -199,12 +203,17 @@ class _AnalysisWorker(QThread):
 class MainWindow(QMainWindow):
     """Top-level workbench: chart + AI sidebar (analysis / raw / decision)."""
 
-    def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        ctx: AppContext,
+        parent: QWidget | None = None,
+        license_validator: Any = None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle(
-            "PA Agent — Trading Terminal（分析仅供参考，不构成投资建议）"
-        )
         self.resize(1440, 900)
+        from pa_agent.trading_agent.chart_live import ChartLiveController
+
+        self._chart_live = ChartLiveController(self)
         self._ctx = ctx
         self._worker: _AnalysisWorker | None = None
         self._analysis_worker_id: object | None = None
@@ -226,6 +235,8 @@ class MainWindow(QMainWindow):
         self._incremental_available: bool = False  # drives submit button label
         self._keep_analysis_last_closed_ts: int | None = None  # tracks last closed bar for keep-analysis
         self._keep_analysis_submit_closed_ts: int | None = None  # closed bar ts at analysis submit time
+        self._pending_from_keep_analysis: bool = False
+        self._keep_analysis_outside_window: bool = False
         self._free_chat_session: Any = None
         self._last_stage1_diagnosis: dict | None = None
         self._last_analysis_record: Any = None
@@ -251,6 +262,10 @@ class MainWindow(QMainWindow):
         self._connect_event_bus()
         self._update_ai_mode_label()
         self._sync_submit_button_state()
+        from pa_agent.trading_agent.window_hooks import wire_main_window, wire_after_sidebar
+
+        wire_main_window(self, license_validator)
+        wire_after_sidebar(self)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -514,6 +529,12 @@ class MainWindow(QMainWindow):
         self._keep_analysis_checkbox.stateChanged.connect(self._on_keep_analysis_checkbox_changed)
         ctrl_layout.addWidget(self._keep_analysis_checkbox)
 
+        self._keep_analysis_status_label = QLabel("")
+        self._keep_analysis_status_label.setObjectName("keepAnalysisStatusLabel")
+        self._keep_analysis_status_label.setMinimumWidth(140)
+        self._keep_analysis_status_label.hide()
+        ctrl_layout.addWidget(self._keep_analysis_status_label)
+
         # Reset persisted keep_analysis flag so future restarts also start unchecked
         if _settings is not None:
             try:
@@ -521,13 +542,7 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
 
-        self._resume_chart_btn = QPushButton("图表实时更新")
-        self._resume_chart_btn.setEnabled(False)
-        self._resume_chart_btn.setToolTip(
-            "恢复 K 线实时刷新；最右侧未收盘 K 线为浅色空心 K 线，不参与 AI 分析"
-        )
-        self._resume_chart_btn.clicked.connect(self._on_resume_chart_refresh)
-        ctrl_layout.addWidget(self._resume_chart_btn)
+        self._chart_live.install_button(ctrl_layout)
 
         self._fit_chart_btn = QPushButton("恢复图表")
         self._fit_chart_btn.setToolTip(
@@ -1155,7 +1170,11 @@ class MainWindow(QMainWindow):
             symbol = self._symbol_combo.currentText().strip()
             timeframe = self._tf_combo.currentText()
 
-            new_source = create_data_source(kind)
+            mt5_path = ""
+            ctx_settings = getattr(self._ctx, "settings", None)
+            if ctx_settings is not None:
+                mt5_path = getattr(ctx_settings.general, "mt5_terminal_path", "") or ""
+            new_source = create_data_source(kind, mt5_terminal_path=mt5_path)
             # Wire auto-probe status callback for TV
             from pa_agent.data.tradingview import TradingViewSource
             if isinstance(new_source, TradingViewSource):
@@ -1342,21 +1361,19 @@ class MainWindow(QMainWindow):
                     flow.set_step_status(idx, "idle")
 
     def _set_chart_refresh_paused(self, paused: bool) -> None:
-        """Pause or resume live chart updates from RefreshLoop."""
-        self._chart_refresh_paused = paused
-        btn = getattr(self, "_resume_chart_btn", None)
-        if btn is not None:
-            btn.setEnabled(paused)
+        self._chart_live.paused = paused
 
-    def _on_resume_chart_refresh(self) -> None:
-        """User requested live chart updates again."""
-        if not self._chart_refresh_paused:
-            return
-        # 恢复图表前先刷新哨兵，防止立即触发持续跟踪分析
-        self._refresh_keep_analysis_sentinel()
-        self._set_chart_refresh_paused(False)
-        self._status_bar.showMessage("图表已恢复实时更新")
-        self._refresh_chart_once()
+    def _chart_live_updates_enabled(self) -> bool:
+        return self._chart_live.enabled()
+
+    def _auto_resume_chart_after_analysis_enabled(self) -> bool:
+        return self._chart_live.auto_resume_after_analysis_enabled()
+
+    def _maybe_auto_resume_chart_after_analysis(self) -> bool:
+        return self._chart_live.maybe_auto_resume_after_analysis()
+
+    def _chart_wants_forming_bar(self) -> bool:
+        return self._chart_live.wants_forming_bar()
 
     def _on_fetch_data_clicked(self) -> None:
         """Start (or restart) continuous data refresh for the current symbol/timeframe."""
@@ -1430,24 +1447,6 @@ class MainWindow(QMainWindow):
             chart.fit_view()
             self._status_bar.showMessage("图表已恢复默认缩放")
 
-    def _auto_resume_chart_after_analysis_enabled(self) -> bool:
-        settings = getattr(self._ctx, "settings", None)
-        if settings is None:
-            return True
-        return bool(getattr(settings.general, "auto_resume_chart_after_analysis", False))
-
-    def _maybe_auto_resume_chart_after_analysis(self) -> bool:
-        """Resume live chart refresh after analysis if settings allow."""
-        if getattr(self, "_demo_mode", False):
-            return False
-        if not self._auto_resume_chart_after_analysis_enabled():
-            return False
-        if not self._chart_refresh_paused:
-            return False
-        self._set_chart_refresh_paused(False)
-        self._refresh_chart_once()
-        return True
-
     def _refresh_chart_once(self) -> None:
         """Apply one immediate chart refresh (e.g. after resuming)."""
         frame = self._pull_chart_frame_from_source()
@@ -1458,24 +1457,57 @@ class MainWindow(QMainWindow):
         # otherwise the chart can remain panned/zoomed away from the newest bars.
         chart.set_frame_now(frame, fit_view=True)
 
-    def _chart_wants_forming_bar(self) -> bool:
-        """Show semi-virtual forming bar on chart when live refresh is active."""
-        return not self._chart_refresh_paused
-
     def _reference_now_ms(self) -> int:
         """Broker/server time when available (MT5), else local — for forming-bar semantics."""
         from pa_agent.data.bar_close_wait import reference_now_ms
 
         return reference_now_ms(data_source=getattr(self._ctx, "data_source", None))
 
-    def _bars_sufficient_for_analysis(self, bars: list[Any], bar_count: int) -> bool:
-        """True when *bars* can build an analysis frame of *bar_count* closed bars."""
+    def _closed_bars_available(self, bars: list[Any]) -> int:
+        """Count newest-first bars that are treated as closed (exclude forming head)."""
         from pa_agent.data.bar_close_wait import has_forming_bar_at_head
 
-        if not bars or len(bars) < bar_count:
+        if not bars:
+            return 0
+        timeframe = self._tf_combo.currentText()
+        symbol = self._symbol_combo.currentText().strip()
+        if has_forming_bar_at_head(
+            bars,
+            timeframe,
+            symbol=symbol,
+            now_ms=self._reference_now_ms(),
+        ):
+            return max(0, len(bars) - 1)
+        return len(bars)
+
+    def _bars_insufficient_message(self, bars: list[Any], bar_count: int) -> str:
+        """Human-readable reason when submit/snapshot cannot start analysis."""
+        closed = self._closed_bars_available(bars)
+        if closed < _MIN_CLOSED_BARS_FOR_ANALYSIS:
+            return (
+                f"已收盘K线不足{_MIN_CLOSED_BARS_FOR_ANALYSIS}根（当前约{closed}根），"
+                "请等待图表刷新后再提交"
+            )
+        if closed < bar_count:
+            return (
+                f"数据不足：需要至少{bar_count}根已收盘K线（当前约{closed}根），"
+                "请等待图表刷新后再提交"
+            )
+        return "数据不足，请等待图表刷新后再提交"
+
+    def _bars_sufficient_for_analysis(self, bars: list[Any], bar_count: int) -> bool:
+        """True when *bars* can build an analysis frame of *bar_count* closed bars."""
+        if not bars:
+            return False
+        closed = self._closed_bars_available(bars)
+        if closed < _MIN_CLOSED_BARS_FOR_ANALYSIS:
+            return False
+        if closed < bar_count:
             return False
         timeframe = self._tf_combo.currentText()
         symbol = self._symbol_combo.currentText().strip()
+        from pa_agent.data.bar_close_wait import has_forming_bar_at_head
+
         if has_forming_bar_at_head(
             bars,
             timeframe,
@@ -1546,26 +1578,13 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Followup chart pull failed: %s", exc)
 
-        if display_frame is not None and chart is not None:
-            from pa_agent.data.snapshot import frame_is_pure_closed, frames_equal_for_chart
-
-            current = chart.displayed_frame()
-            if not (
-                export_frame is not None
-                and current is not None
-                and frame_is_pure_closed(current)
-                and frames_equal_for_chart(current, export_frame)
-            ):
-                chart.set_frame_now(export_frame or display_frame)
-            self._last_refresh_ts = _time.monotonic()
-        elif chart is not None:
-            display_frame = chart.displayed_frame()
-            export_frame = display_frame
-
-        self._set_chart_refresh_paused(True)
-        self._update_refresh_elapsed()
-        if getattr(self, "_status_bar", None) is not None:
-            self._status_bar.showMessage("追问：已刷新并冻结图表，K线与屏幕一致")
+        live_on = self._chart_live.enabled()
+        self._chart_live.apply_followup_snapshot(
+            display_frame=display_frame,
+            export_frame=export_frame,
+            chart=chart,
+            last_refresh_ts_setter=lambda ts: setattr(self, "_last_refresh_ts", ts),
+        )
 
         if export_frame is None:
             export_frame = display_frame
@@ -1693,6 +1712,76 @@ class MainWindow(QMainWindow):
 
         # 保持分析：检测是否有新K线收盘，若有则自动触发分析
         self._check_keep_analysis(bars)
+        self._check_position_on_tick(bars)
+
+    def _dispatch_decision_notification(self, record: Any) -> None:
+        from pa_agent.trading_agent.record_handlers import dispatch_decision_notification
+
+        dispatch_decision_notification(self, record)
+
+    def _update_position_from_record(self, record: Any) -> None:
+        from pa_agent.trading_agent.record_handlers import update_position_from_record
+
+        update_position_from_record(self, record)
+
+    def _sync_chart_active_position(self, symbol: str, timeframe: str) -> None:
+        from pa_agent.trading_agent.record_handlers import sync_chart_active_position
+
+        sync_chart_active_position(self, symbol, timeframe)
+
+    def _check_position_on_tick(self, bars: Any) -> None:
+        from pa_agent.trading_agent.record_handlers import check_position_on_tick
+
+        check_position_on_tick(self, bars)
+
+    def _has_active_position(self, symbol: str, timeframe: str) -> bool:
+        from pa_agent.trading_agent.record_handlers import has_active_position
+
+        return has_active_position(self, symbol, timeframe)
+
+    def _keep_analysis_tracking_allowed(
+        self, symbol: str, timeframe: str
+    ) -> bool:
+        from pa_agent.trading_agent.record_handlers import keep_analysis_tracking_allowed
+
+        return keep_analysis_tracking_allowed(self, symbol, timeframe)
+
+    def _update_keep_analysis_status_display(self) -> None:
+        lbl = getattr(self, "_keep_analysis_status_label", None)
+        cb = getattr(self, "_keep_analysis_checkbox", None)
+        if lbl is None or cb is None:
+            return
+        from pa_agent.config.tracking_schedule import keep_analysis_status_text
+
+        symbol = self._symbol_combo.currentText().strip()
+        tf = self._tf_combo.currentText()
+        waiting = bool(
+            self._pending_submit_after_close
+            and getattr(self, "_pending_from_keep_analysis", False)
+        )
+        visible, text, tooltip = keep_analysis_status_text(
+            keep_analysis_enabled=cb.isChecked(),
+            settings=getattr(self._ctx, "settings", None),
+            has_active_position=self._has_active_position(symbol, tf),
+            analysis_in_progress=bool(self._analysis_in_progress),
+            waiting_bar_close=waiting,
+            data_source=getattr(self._ctx, "data_source", None),
+        )
+        if not visible:
+            lbl.hide()
+            lbl.setText("")
+            return
+        lbl.setText(text)
+        lbl.setToolTip(tooltip)
+        if text.startswith("非跟踪时段"):
+            lbl.setProperty("status", "paused")
+        elif "分析进行中" in text or "等待K线" in text:
+            lbl.setProperty("status", "busy")
+        else:
+            lbl.setProperty("status", "active")
+        lbl.style().unpolish(lbl)
+        lbl.style().polish(lbl)
+        lbl.show()
 
     def _on_symbol_or_tf_changed(self, new_symbol: str, new_tf: str) -> None:
         """Handle symbol or timeframe combo box change.
@@ -1790,6 +1879,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_chart_widget"):
                 self._chart_widget.reset()
                 self._chart_widget.request_fit_on_next_render()
+            self._sync_chart_active_position(new_symbol, new_tf)
 
             # ── Step 5: Destroy FreeChatSession, disable Tab2 input ───────────
             self._free_chat_session = None
@@ -1974,6 +2064,7 @@ class MainWindow(QMainWindow):
         self._pending_submit_symbol = ""
         self._pending_submit_timeframe = ""
         self._pending_submit_bar_count = 0
+        self._pending_from_keep_analysis = False
         self._update_submit_button_state()
         self._update_wait_close_countdown_display()
 
@@ -1992,6 +2083,17 @@ class MainWindow(QMainWindow):
             symbol=symbol,
             now_ms=self._reference_now_ms(),
         ):
+            return
+        from_keep = bool(getattr(self, "_pending_from_keep_analysis", False))
+        if from_keep and not self._keep_analysis_tracking_allowed(symbol, timeframe):
+            self._clear_pending_bar_close_wait()
+            logger.info(
+                "持续跟踪：K线已收盘但跟踪时段外，推迟至进入时段后分析（%s %s）",
+                symbol,
+                timeframe,
+            )
+            self._keep_analysis_outside_window = True
+            self._update_keep_analysis_status_display()
             return
         bar_count = self._pending_submit_bar_count
         force_incremental = self._pending_force_incremental
@@ -2014,6 +2116,7 @@ class MainWindow(QMainWindow):
             bar_count,
             force_incremental=force_incremental,
             snapshot_bars=bars,
+            from_keep_analysis=from_keep,
         )
 
     def _arm_wait_for_bar_close(
@@ -2023,6 +2126,7 @@ class MainWindow(QMainWindow):
         bar_count: int,
         *,
         force_incremental: bool = False,
+        from_keep_analysis: bool = False,
     ) -> bool:
         """Wait until bars[0] ts_open changes, then call _start_analysis."""
         from datetime import datetime
@@ -2050,6 +2154,13 @@ class MainWindow(QMainWindow):
             now_ms=self._reference_now_ms(),
         )
         if forming_ts is None:
+            if from_keep_analysis and not self._keep_analysis_tracking_allowed(
+                symbol, timeframe
+            ):
+                logger.info("持续跟踪：最新K线已收盘但跟踪时段外，推迟分析")
+                self._keep_analysis_outside_window = True
+                self._update_keep_analysis_status_display()
+                return False
             submit_hint = "提交增量分析" if force_incremental else "提交分析"
             self._status_bar.showMessage(f"最新K线已收盘，正在{submit_hint}…")
             self._start_analysis(
@@ -2063,6 +2174,7 @@ class MainWindow(QMainWindow):
 
         self._pending_submit_after_close = True
         self._pending_force_incremental = force_incremental
+        self._pending_from_keep_analysis = from_keep_analysis
         self._wait_forming_ts = forming_ts
         self._last_forming_ts_open = forming_ts
         self._pending_submit_symbol = symbol.strip()
@@ -2087,6 +2199,7 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 f"等待当前K线收盘…（{ts_hint}，收盘后将自动{submit_hint}）"
             )
+        self._update_keep_analysis_status_display()
         return True
 
     def _on_demo_mode_button(self) -> None:
@@ -2161,6 +2274,7 @@ class MainWindow(QMainWindow):
             if self._pending_submit_after_close:
                 self._clear_pending_bar_close_wait()
             self._status_bar.showMessage("持续跟踪分析已关闭")
+        self._update_keep_analysis_status_display()
 
     def _refresh_keep_analysis_sentinel(self) -> None:
         """Sync keep-analysis sentinel after analysis completes.
@@ -2269,27 +2383,35 @@ class MainWindow(QMainWindow):
                 return
 
             closed_ts = int(ts_open)
+            symbol = self._symbol_combo.currentText().strip()
+            tf = self._tf_combo.currentText()
+            tracking_allowed = self._keep_analysis_tracking_allowed(symbol, tf)
+
             if self._keep_analysis_last_closed_ts is None:
-                # First tick after enabling — record sentinel and immediately arm
-                # a wait for the *current* forming bar to close so the first
-                # analysis starts as soon as the bar in progress finishes, rather
-                # than waiting for an additional bar after that.
                 self._keep_analysis_last_closed_ts = closed_ts
                 logger.info(
                     "持续跟踪分析：哨兵初始化 closed_ts=%s，立即 arm 等待当前K线收盘",
                     closed_ts,
                 )
-                symbol = self._symbol_combo.currentText().strip()
-                tf = self._tf_combo.currentText()
                 bar_count = self._analysis_bar_count()
+                if not tracking_allowed:
+                    self._keep_analysis_outside_window = True
+                    logger.info("持续跟踪：当前在跟踪时段外，待进入时段后再分析")
+                    self._update_keep_analysis_status_display()
+                    return
                 if (
                     not self._analysis_in_progress
                     and not self._pending_submit_after_close
                     and self._bars_sufficient_for_analysis(bars, bar_count)
                 ):
                     self._arm_wait_for_bar_close(
-                        symbol, tf, bar_count, force_incremental=False
+                        symbol,
+                        tf,
+                        bar_count,
+                        force_incremental=False,
+                        from_keep_analysis=True,
                     )
+                self._update_keep_analysis_status_display()
                 return
 
             if closed_ts == self._keep_analysis_last_closed_ts:
@@ -2298,9 +2420,13 @@ class MainWindow(QMainWindow):
 
             # New bar has closed — update sentinel and trigger analysis
             self._keep_analysis_last_closed_ts = closed_ts
+            if not tracking_allowed:
+                self._keep_analysis_outside_window = True
+                logger.info("持续跟踪：新K线收盘但跟踪时段外，推迟分析")
+                self._update_keep_analysis_status_display()
+                return
+            self._keep_analysis_outside_window = False
             logger.info("保持分析：检测到新K线收盘（ts_open=%s），自动触发分析", closed_ts)
-            symbol = self._symbol_combo.currentText().strip()
-            tf = self._tf_combo.currentText()
             bar_count = self._analysis_bar_count()
             if self._bars_sufficient_for_analysis(bars, bar_count):
                 # A bar just closed — submit analysis immediately with the
@@ -2309,7 +2435,9 @@ class MainWindow(QMainWindow):
                 # bar period on top of the AI latency, which is undesirable.
                 logger.info("持续跟踪分析：直接提交分析（bars 已足够）")
                 self._start_analysis_with_bars(
-                    symbol, tf, bar_count, bars, force_incremental=False
+                    symbol, tf, bar_count, bars,
+                    force_incremental=False,
+                    from_keep_analysis=True,
                 )
             else:
                 logger.warning(
@@ -2318,6 +2446,7 @@ class MainWindow(QMainWindow):
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("_check_keep_analysis error: %s", exc, exc_info=True)
+        self._update_keep_analysis_status_display()
 
     def _start_demo_mode(self, mode: str) -> None:
         """Load a pending JSON record and replay it through the UI."""
@@ -2626,6 +2755,9 @@ class MainWindow(QMainWindow):
 
     def _begin_submit_analysis(self, *, force_incremental: bool) -> None:
         """Shared entry for normal and forced-incremental submit buttons."""
+        from pa_agent.trading_agent.licensing_ui import require_license_for_submit
+
+        require_license_for_submit(self)
         if not self._can_submit():
             return
 
@@ -2678,6 +2810,7 @@ class MainWindow(QMainWindow):
         *,
         force_incremental: bool = False,
         snapshot_bars: Any = None,
+        from_keep_analysis: bool = False,
     ) -> None:
         """Build snapshot and run two-stage analysis (after optional bar-close wait)."""
         if snapshot_bars is None:
@@ -2698,6 +2831,7 @@ class MainWindow(QMainWindow):
             bar_count,
             snapshot_bars,
             force_incremental=force_incremental,
+            from_keep_analysis=from_keep_analysis,
         )
 
     def _start_analysis_async_fetch(
@@ -2739,7 +2873,9 @@ class MainWindow(QMainWindow):
                 return
             self._snapshot_fetch_worker = None
             if not self._bars_sufficient_for_analysis(bars, bar_count):
-                self._status_bar.showMessage("数据不足，请等待图表刷新后再提交")
+                msg = self._bars_insufficient_message(bars, bar_count)
+                self._status_bar.showMessage(msg)
+                self._notify_stream_user("K线数据不足", msg)
                 return
             self._last_frame_ready_bars = list(bars)
             self._start_analysis_with_bars(
@@ -2756,7 +2892,9 @@ class MainWindow(QMainWindow):
             if not _qobject_alive(self):
                 return
             self._snapshot_fetch_worker = None
-            self._status_bar.showMessage(msg or "获取K线失败")
+            fail_msg = msg or "获取K线失败"
+            self._status_bar.showMessage(fail_msg)
+            self._notify_stream_user("获取K线失败", fail_msg)
 
         worker.bars_ready.connect(_on_bars)
         worker.failed.connect(_on_fail)
@@ -2770,6 +2908,7 @@ class MainWindow(QMainWindow):
         snapshot_bars: Any,
         *,
         force_incremental: bool = False,
+        from_keep_analysis: bool = False,
     ) -> None:
         """Continue analysis once K-line bars are available (caller thread = UI)."""
         self._sync_buffer_from_snapshot_bars(snapshot_bars)
@@ -2777,7 +2916,13 @@ class MainWindow(QMainWindow):
             symbol, timeframe, bar_count, bars_raw=snapshot_bars
         )
         if frame is None:
-            self._status_bar.showMessage("数据不足，请等待图表刷新后再提交")
+            bars_hint = (
+                self._bars_insufficient_message(list(snapshot_bars or []), bar_count)
+                if snapshot_bars
+                else "数据不足，请等待图表刷新后再提交"
+            )
+            self._status_bar.showMessage(bars_hint)
+            self._notify_stream_user("无法开始分析", bars_hint)
             return
 
         # Store frame so _on_analysis_finished can access it for trade logging
@@ -2785,7 +2930,9 @@ class MainWindow(QMainWindow):
 
         orchestrator = self._build_orchestrator()
         if orchestrator is None:
-            self._status_bar.showMessage("编排器未就绪，请检查设置")
+            msg = "编排器未就绪，请检查设置"
+            self._status_bar.showMessage(msg)
+            self._notify_stream_user("无法开始分析", msg)
             return
 
         previous_record, incremental_new_bar_count, incremental_detail = (
@@ -2838,6 +2985,14 @@ class MainWindow(QMainWindow):
         worker_id = object()
         self._analysis_worker_id = worker_id
 
+        active_position = None
+        tracker = getattr(self._ctx, "position_tracker", None)
+        if tracker is not None:
+            try:
+                active_position = tracker.get_active(symbol, timeframe)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Active position lookup failed: %s", exc)
+
         # Start worker in its own QThread (worker IS a QThread subclass)
         self._worker = _AnalysisWorker(
             orchestrator=orchestrator,
@@ -2845,6 +3000,7 @@ class MainWindow(QMainWindow):
             cancel_token=self._cancel_token,
             previous_record=previous_record,
             incremental_new_bar_count=incremental_new_bar_count,
+            active_position=active_position,
             parent=None,
         )
         def _on_worker_finished(decision: dict) -> None:
@@ -2867,10 +3023,7 @@ class MainWindow(QMainWindow):
             self._worker.reasoning_token.connect(panel.on_reasoning_token)
             self._worker.content_token.connect(panel.on_content_token)
 
-        # Freeze on closed-only frame; immediate redraw so chart matches the AI table.
-        self._chart_widget.set_frame_now(frame, fit_view=True)
-
-        self._set_chart_refresh_paused(True)
+        self._chart_live.on_analysis_start(frame)
 
         self._analysis_in_progress = True
         self._last_analysis_had_error = False
@@ -2894,6 +3047,7 @@ class MainWindow(QMainWindow):
         if settings is not None:
             stance_raw = getattr(settings.general, "decision_stance", "balanced")
         stance_label = stance_label_zh(stance_raw)
+        chart_hint = self._chart_live.status_hint()
         if incremental_new_bar_count is not None:
             prefix = "强制增量分析中" if force_incremental else "增量分析中"
             if incremental_new_bar_count > 0:
@@ -2901,20 +3055,25 @@ class MainWindow(QMainWindow):
             else:
                 detail = "无新增K线，基于上一轮结论复核"
             self._status_bar.showMessage(
-                f"{prefix}…（倾向:{stance_label}，{detail}，图表已冻结）"
+                f"{prefix}…（倾向:{stance_label}，{detail}，{chart_hint}）"
             )
             logger.info("Incremental submit: %s", detail)
         else:
             self._status_bar.showMessage(
-                f"分析中…（倾向:{stance_label}，图表已冻结，K1=最新已收盘K线）"
+                f"分析中…（倾向:{stance_label}，{chart_hint}，K1=最新已收盘K线）"
             )
         self._decision_badge.setText("分析中…")
         self._ai_sidebar.focus_stream()
 
         panel = getattr(self, "_stream_panel", None)
         if panel is not None:
-            panel.clear()
-            panel.on_analysis_started()
+            has_prior_output = bool(
+                getattr(panel, "_reasoning_edit", None)
+                and panel._reasoning_edit.toPlainText().strip()
+            )
+            panel.on_analysis_started(
+                preserve_output=from_keep_analysis and has_prior_output
+            )
         debug = getattr(self, "_debug_widget", None)
         if debug is not None:
             debug.clear()
@@ -3344,11 +3503,21 @@ class MainWindow(QMainWindow):
         if box.clickedButton() == btn_open:
             self._open_settings_dialog()
 
-    def _on_analysis_error(self, message: str) -> None:
+    def _on_analysis_error(self, exc_info: object) -> None:
         """Unhandled exception in the analysis worker thread."""
         if not self._ui_is_alive():
             return
         self._last_analysis_had_error = True
+        message = str(exc_info)
+        if isinstance(exc_info, BaseException):
+            from pa_agent.trading_agent.record_handlers import notify_api_failure_if_needed
+
+            notify_api_failure_if_needed(
+                self, exc_info, context="analysis/worker"
+            )
+        panel = getattr(self, "_stream_panel", None)
+        if panel is not None:
+            panel.show_error_banner("程序异常", message)
         debug = getattr(self, "_debug_widget", None)
         if debug is not None:
             debug.add_turn({
@@ -3359,6 +3528,15 @@ class MainWindow(QMainWindow):
                 "validation_info": message,
             })
         self._prompt_debug_report_for_bug_fix("分析过程发生程序异常", message)
+
+    def _notify_stream_user(self, title: str, detail: str = "") -> None:
+        """Show a message on the live stream tab and bring it to front."""
+        sidebar = getattr(self, "_ai_sidebar", None)
+        if sidebar is not None:
+            sidebar.focus_stream()
+        panel = getattr(self, "_stream_panel", None)
+        if panel is not None:
+            panel.show_error_banner(title, detail)
 
     def _on_retry_occurred(self, stage: str) -> None:
         """Handle retry event: if cancel_keep_analysis_on_retry is enabled, disable keep_analysis."""
@@ -3637,6 +3815,9 @@ class MainWindow(QMainWindow):
                     "total_cached_input": cached_tokens,
                     "total_output": completion_tokens,
                 })
+
+        self._update_position_from_record(record)
+        self._dispatch_decision_notification(record)
 
     def _bind_decision_tree(
         self,

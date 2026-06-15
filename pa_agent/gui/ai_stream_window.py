@@ -77,6 +77,7 @@ class AIStreamPanel(QWidget):
         self._sending = False
         self._red_warned = False
         self._settings: Optional["Settings"] = None
+        self._notifier: object | None = None
 
         self._stage: str = ""
         self._reasoning_chars = 0
@@ -230,6 +231,9 @@ class AIStreamPanel(QWidget):
         self._apply_stream_font()
         self._refresh_mode_label()
 
+    def bind_notifier(self, notifier: object | None) -> None:
+        self._notifier = notifier
+
     def _refresh_mode_label(self) -> None:
         if self._settings is None:
             self._mode_label.setText("")
@@ -264,6 +268,11 @@ class AIStreamPanel(QWidget):
             self._mode_label.setText(
                 f"PackyAPI: 思考={thinking} · effort="
                 f"{p.reasoning_effort if p.thinking else '—'} · {p.model}"
+            )
+        elif "agnes-ai.com" in base:
+            thinking = "开" if p.thinking else "关"
+            self._mode_label.setText(
+                f"Agnes: 思考={thinking} · enable_thinking · {p.model}"
             )
         else:
             self._mode_label.setText(
@@ -465,11 +474,41 @@ class AIStreamPanel(QWidget):
             self._phase_label.setText("等待分析…")
         self._update_stats()
 
-    def on_analysis_started(self) -> None:
+    def on_analysis_started(self, *, preserve_output: bool = False) -> None:
         self.set_input_enabled(False)
         self._session = None
         self._cancel_token = None
-        self.clear()
+        if preserve_output:
+            self.begin_new_round()
+        else:
+            self.clear()
+
+    def begin_new_round(self) -> None:
+        """Start a new analysis round while keeping prior output visible."""
+        if self._reasoning_edit.toPlainText().strip():
+            self._reasoning_edit.appendPlainText(
+                "\n" + "═" * 48 + "\n【新一轮持续跟踪分析】\n"
+            )
+        self._stage = ""
+        self._reasoning_chars = 0
+        self._content_chars = 0
+        self._finalized_stages.clear()
+        self._stage_chars.clear()
+        self._stage_attempts.clear()
+        self._stage_headers_written.clear()
+        self._content_headers_written.clear()
+        self._phase_label.setText("等待分析…")
+        self._update_stats()
+
+    def show_error_banner(self, title: str, detail: str = "") -> None:
+        """Show a visible failure / notice block in the live stream pane."""
+        if self._reasoning_edit.toPlainText().strip():
+            self._reasoning_edit.appendPlainText("\n" + "═" * 48 + "\n")
+        self._reasoning_edit.appendPlainText(f"【{title}】\n")
+        if detail:
+            self._reasoning_edit.appendPlainText(detail.strip() + "\n")
+        self._reasoning_edit.moveCursor(QTextCursor.MoveOperation.End)
+        self._reasoning_edit.ensureCursorVisible()
 
     def on_record_saved(self) -> None:
         self.set_input_enabled(True)
@@ -635,6 +674,16 @@ class AIStreamPanel(QWidget):
     def _on_reply_error(self, msg: str) -> None:
         self._append_reasoning(f"\n[错误] {msg}\n")
         self._end_stage("追问（失败）")
+        notifier = self._notifier
+        if notifier is not None and hasattr(notifier, "notify_api_failure"):
+            try:
+                notifier.notify_api_failure(
+                    message=msg,
+                    stage="free_chat",
+                    source="追问",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Free-chat API failure notification skipped: %s", exc)
 
     def _on_worker_done(self) -> None:
         self._sending = False

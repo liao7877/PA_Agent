@@ -88,6 +88,55 @@ def _is_deepseek_model(model: str) -> bool:
     return "deepseek" in m
 
 
+def _is_openai_gpt_reasoning_model(model: str) -> bool:
+    """OpenAI reasoning models (GPT-5.x, o-series) use top-level reasoning_effort."""
+    m = (model or "").lower()
+    if m.startswith(("o1", "o3", "o4")):
+        return True
+    return "gpt-5" in m
+
+
+# GPT-5.5 / GPT-5 family: 128K max output tokens (OpenAI model page).
+_OPENAI_GPT_MAX_OUTPUT_TOKENS = 128_000
+
+# Map UI/settings effort to OpenAI Chat Completions reasoning_effort values.
+_OPENAI_GPT_EFFORT_MAP: dict[str, str] = {
+    "none": "none",
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "xhigh",
+    "xhigh": "xhigh",
+}
+
+
+def _map_effort_to_openai_gpt(effort: str | None) -> str:
+    """Convert internal effort (incl. max) to OpenAI GPT reasoning_effort."""
+    key = (effort or "medium").strip().lower()
+    return _OPENAI_GPT_EFFORT_MAP.get(key, "medium")
+
+
+def _extract_reasoning_text(obj: Any) -> str:
+    """Read reasoning from message/delta (reasoning_content or reasoning)."""
+    for attr in ("reasoning_content", "reasoning"):
+        val = getattr(obj, attr, None)
+        if val:
+            return str(val)
+    return ""
+
+
+def _is_opencode_go(base_url: str) -> bool:
+    """OpenCode Zen Go plan — routes to DeepSeek with the same API limits."""
+    url = (base_url or "").lower()
+    return "opencode.ai" in url and "/zen/go" in url
+
+
+def _uses_deepseek_api_limits(base_url: str) -> bool:
+    """Gateways whose upstream enforces DeepSeek max_tokens / thinking rules."""
+    return _is_deepseek_native(base_url) or _is_opencode_go(base_url)
+
+
 def _is_qclaw_openclaw_agent(settings: AIProviderSettings) -> bool:
     """True when requests go through QClaw's public-gateway OpenClaw Agent."""
     from pa_agent.ai.qclaw_connector import detect_qclaw, is_openclaw_model
@@ -137,6 +186,11 @@ def _is_packyapi(base_url: str) -> bool:
     return "packyapi.com" in (base_url or "").lower()
 
 
+def _is_agnes_ai(base_url: str) -> bool:
+    """Agnes AI (Sapiens) OpenAI-compatible gateway."""
+    return "agnes-ai.com" in (base_url or "").lower()
+
+
 def _is_minimax(base_url: str) -> bool:
     """MiniMax (api.minimax.io) OpenAI-compatible gateway."""
     url = (base_url or "").lower()
@@ -147,6 +201,8 @@ def _is_minimax(base_url: str) -> bool:
 _PACKY_CLAUDE_MAX_OUTPUT_TOKENS = 128_000
 # DeepSeek API: max_tokens must be in [1, 393216].
 _DEEPSEEK_MAX_OUTPUT_TOKENS = 393_216
+# Agnes-2.0-Flash: official max output ~65.5K tokens.
+_AGNES_MAX_OUTPUT_TOKENS = 65_500
 
 
 def _model_uses_claude_adaptive(model: str) -> bool:
@@ -247,10 +303,14 @@ def _provider_max_output_tokens(settings: AIProviderSettings) -> int:
     model = (settings.model or "").lower()
     if _is_packyapi(settings.base_url) and "claude" in model:
         return _PACKY_CLAUDE_MAX_OUTPUT_TOKENS
-    if _is_deepseek_native(settings.base_url):
+    if _is_openai_gpt_reasoning_model(model):
+        return _OPENAI_GPT_MAX_OUTPUT_TOKENS
+    if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
         return _DEEPSEEK_MAX_OUTPUT_TOKENS
     if _is_mimo(settings):
         return mimo_max_output_tokens(settings.model)
+    if _is_agnes_ai(settings.base_url):
+        return _AGNES_MAX_OUTPUT_TOKENS
     return _PRACTICAL_UNLIMITED_MAX_TOKENS
 
 
@@ -276,7 +336,13 @@ def _resolve_thinking_params(
     _effort = reasoning_effort if reasoning_effort is not None else settings.reasoning_effort
     model = settings.model or ""
 
-    if _is_deepseek_native(settings.base_url) or _is_deepseek_model(model):
+    if _is_openai_gpt_reasoning_model(model):
+        # OpenAI GPT-5.x / o-series: reasoning_effort only (no extra_body.thinking).
+        if not _thinking:
+            return {}, "none"
+        return {}, _map_effort_to_openai_gpt(_effort)
+
+    if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
         # DeepSeek v4+ requires thinking.type=adaptive + output_config.effort;
         # the old "enabled"/"disabled" values are no longer accepted.
         # Also covers DeepSeek models proxied through non-native gateways (e.g. QClaw).
@@ -318,6 +384,13 @@ def _resolve_thinking_params(
 
     if not _thinking:
         return {}, None
+
+    if _is_agnes_ai(settings.base_url):
+        # Agnes OpenAI route: enable_thinking in chat_template_kwargs (not reasoning_effort).
+        return (
+            {"chat_template_kwargs": {"enable_thinking": True}},
+            None,
+        )
 
     max_out = _completion_max_tokens(
         settings, extra_body={}, effort=_effort
@@ -454,7 +527,7 @@ class DeepSeekClient:
 
         msg = response.choices[0].message
         content = msg.content or ""
-        reasoning_content = getattr(msg, "reasoning_content", None) or ""
+        reasoning_content = _extract_reasoning_text(msg)
         # MiniMax with reasoning_split=True may also use reasoning_details
         if not reasoning_content:
             details = getattr(msg, "reasoning_details", None)
@@ -655,7 +728,7 @@ class DeepSeekClient:
                 # reasoning_content arrives first (thinking phase), then content
                 # MiniMax with reasoning_split=True uses delta.reasoning_details[].text
                 # instead of delta.reasoning_content.
-                r = getattr(delta, "reasoning_content", None)
+                r = _extract_reasoning_text(delta) or None
                 if not r:
                     # MiniMax streaming: reasoning_details is a list of dicts
                     details = getattr(delta, "reasoning_details", None)

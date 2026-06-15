@@ -1,0 +1,5 @@
+{
+  "online_enabled": false,
+  "server_url": "https://your-license-server.example.com",
+  "client_api_key": ""
+}

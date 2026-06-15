@@ -1047,18 +1047,12 @@ class DecisionFlowVizPanel(QWidget):
         self._scene.clear()
 
         exc = getattr(record, "exception", None) or {}
-        failed_check = exc.get("failed_check", "") if isinstance(exc, dict) else ""
-        message = exc.get("message", "") if isinstance(exc, dict) else ""
+        if isinstance(exc, dict):
+            from pa_agent.ai.validation_messages import format_preflight_failure
 
-        check_label_map = {
-            "bars_empty_or_bad_ohlc": "K线数据为空或OHLC异常",
-            "bar_count_lt_20": "已收盘K线不足20根",
-            "indicators_all_nan": "EMA20/ATR14全为NaN（指标预热不足）",
-        }
-        check_zh = check_label_map.get(failed_check, failed_check or "数据不足")
-        text = f"数据不足，无法分析\n\n原因：{check_zh}"
-        if message:
-            text += f"\n\n详情：{message[:120]}"
+            text = "数据不足，无法分析\n\n" + format_preflight_failure(exc)
+        else:
+            text = "数据不足，无法分析"
 
         hint = _EmptyHint(text)
         hint.setPos(-200, 60)

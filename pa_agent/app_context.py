@@ -25,6 +25,8 @@ class AppContext:
     pending_writer: Any = None    # PendingWriter
     exp_reader: Any = None        # ExperienceReader
     ledger: Any = None            # SessionTokenLedger
+    notifier: Any = None          # NotificationService
+    position_tracker: Any = None  # PositionTracker
 
     @classmethod
     def bootstrap(cls) -> "AppContext":
@@ -71,7 +73,8 @@ class AppContext:
         ds_kind = normalize_data_source_kind(
             getattr(settings.general, "last_data_source", "mt5")
         )
-        data_source = create_data_source(ds_kind)
+        mt5_path = getattr(settings.general, "mt5_terminal_path", "") or ""
+        data_source = create_data_source(ds_kind, mt5_terminal_path=mt5_path)
 
         # Subscribe to the last-used symbol/timeframe from settings
         try:
@@ -124,7 +127,7 @@ class AppContext:
             warn_pct=settings.general.context_warning_threshold_pct,
         )
 
-        return cls(
+        ctx = cls(
             settings=settings,
             logger=app_logger,
             event_bus=event_bus,
@@ -137,3 +140,7 @@ class AppContext:
             exp_reader=exp_reader,
             ledger=ledger,
         )
+        # Trading Agent: notification + position tracker (see trading_agent/bootstrap.py)
+        from pa_agent.trading_agent.bootstrap import enrich_app_context
+
+        return enrich_app_context(ctx)

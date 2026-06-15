@@ -412,6 +412,12 @@ PA_Agent/
 | `[PA_Agent使用文档.md](PA_Agent使用文档.md)`      | 完整操作界面说明                   |
 | `[分析速度优化操作指南.md](分析速度优化操作指南.md)` | 分析速度优化（4 套方案 + 速查决策树）   |
 | `[MAC版本智能体部署方法.txt](MAC版本智能体部署方法.txt)` | macOS 自动化部署指南          |
+| `[docs/使用指南.md](docs/使用指南.md)` | 终端用户操作指南 |
+| `[docs/配置指南.md](docs/配置指南.md)` | settings.json 配置说明 |
+| `[docs/项目交接文档.md](docs/项目交接文档.md)` | 开发者项目交接总览 |
+| `[docs/详细规格说明书.md](docs/详细规格说明书.md)` | 技术开发规格（SRS） |
+| `[docs/上游合并策略.md](docs/上游合并策略.md)` | 上游合并流程（trading-agent 分支） |
+| `[docs/文件索引.md](docs/文件索引.md)` | 按模块的文件职责索引 |
 | `[docs/图表K线与分析快照说明.md](docs/图表K线与分析快照说明.md)` | 图表 K 线与分析快照行为说明        |
 | `[docs/获取数据功能说明.md](docs/获取数据功能说明.md)`  | 数据获取功能详细说明               |
 | `[config/README.md](config/README.md)`       | 配置文件字段完整说明               |
@@ -494,15 +500,3 @@ pip install -e ".[dev]"
 ---
 
 本项目采用 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 发布。
-
----
-
-## 打赏与支持
-
-如果你觉得这个程序对你有帮助的话，可以打赏激励作者继续优化程序，感谢你的支持和鼓励！
-
-（作者会优先解决打赏人的问题，因为人太多了！回复不过来！）
-
-<p align="center">
-  <img src="1d935cac3a4a4575bb3e34beda997633.jpeg" alt="打赏二维码" width="420" />
-</p>

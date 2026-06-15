@@ -141,6 +141,27 @@ def _strip_fences(text: str) -> str:
     return _repair_unescaped_quotes(_repair_semicolon_separator(_extract_outer_json_object(t)))
 
 
+def resolve_stage_json_text(
+    content: str | None,
+    reasoning_content: str | None = None,
+) -> str:
+    """Pick JSON text for stage validation: content first, then reasoning fallback."""
+    text = (content or "").strip()
+    if text:
+        return text
+    reasoning = (reasoning_content or "").strip()
+    if "{" not in reasoning:
+        return text
+    candidate = _strip_fences(reasoning)
+    if candidate.startswith("{"):
+        logger.info(
+            "Recovered stage JSON from reasoning_content (%d chars; content was empty)",
+            len(candidate),
+        )
+        return candidate
+    return text
+
+
 def format_model_json_for_context(raw_text: str) -> str | None:
     """Extract JSON from model output and return pretty-printed text for prompts."""
     stripped = _strip_fences(raw_text or "")

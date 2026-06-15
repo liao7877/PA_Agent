@@ -22,7 +22,26 @@
     "decision_flow_default_zoom_pct": 500,
     "stream_pane_font_pt": 11,
     "chart_seq_label_font_pt": 7,
-    "auto_resume_chart_after_analysis": true
+    "auto_resume_chart_after_analysis": true,
+    "mt5_terminal_path": "",
+    "keep_analysis_time_window_enabled": false,
+    "keep_analysis_time_start": "09:00",
+    "keep_analysis_time_end": "23:00",
+    "keep_analysis_bypass_with_position": true
+  },
+  "notification": {
+    "enabled": false,
+    "dingtalk_webhook": "",
+    "dingtalk_secret": "",
+    "wechat_webhook": "",
+    "notify_new_order": true,
+    "notify_entry_filled": true,
+    "notify_exit": true,
+    "notify_manage": true,
+    "notify_no_trade": false,
+    "notify_error": false,
+    "notify_api_error": false,
+    "request_timeout_s": 10
   },
   "prompt": {
     "stage2_load_full_strategy_library": false,

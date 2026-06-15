@@ -213,3 +213,33 @@ def forming_bar_has_closed(
     ):
         return True
     return int(bars_newest_first[0].ts_open) != int(waited_ts_open)
+
+
+def newest_closed_bar_for_tick(bars_newest_first: list) -> object | None:
+    """Newest closed bar for SL/TP checks — never the index-0 forming bar."""
+    if not bars_newest_first:
+        return None
+    head = bars_newest_first[0]
+    closed = getattr(head, "closed", None)
+    if closed is None and isinstance(head, dict):
+        closed = head.get("closed", True)
+    if closed is False:
+        return bars_newest_first[1] if len(bars_newest_first) > 1 else None
+    return head
+
+
+def bar_ts_open_ms(bar: object) -> int | None:
+    """Extract bar open timestamp in ms from KlineBar or snapshot dict."""
+    if bar is None:
+        return None
+    ts = getattr(bar, "ts_open", None)
+    if ts is None and isinstance(bar, dict):
+        ts = bar.get("ts_open")
+    if ts is None:
+        return None
+    try:
+        from pa_agent.data.datetime_ts import ts_open_to_ms
+
+        return int(ts_open_to_ms(ts))
+    except (TypeError, ValueError):
+        return None

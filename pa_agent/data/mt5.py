@@ -45,6 +45,27 @@ _TF_MAP: dict[str, str] = {
 }
 
 
+def resolve_mt5_terminal_executable(path: str) -> str | None:
+    """Resolve user config to ``terminal64.exe`` path for ``mt5.initialize(path=...)``."""
+    from pathlib import Path
+
+    raw = (path or "").strip().strip('"').strip("'")
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_file() and p.suffix.lower() == ".exe":
+        return str(p)
+    if p.is_dir():
+        for name in ("terminal64.exe", "terminal.exe"):
+            candidate = p / name
+            if candidate.is_file():
+                return str(candidate)
+        return None
+    if raw.lower().endswith(".exe"):
+        return raw if Path(raw).is_file() else None
+    return None
+
+
 class MT5Source(DataSource):
     """Live K-line data from MetaTrader 5 terminal.
 
@@ -52,10 +73,11 @@ class MT5Source(DataSource):
     MT5 terminal must be open and logged in before calling connect().
     """
 
-    def __init__(self) -> None:
+    def __init__(self, terminal_path: str = "") -> None:
         self._symbol: str = ""
         self._timeframe: str = ""
         self._connected: bool = False
+        self._terminal_path = terminal_path
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -68,12 +90,21 @@ class MT5Source(DataSource):
                 "MetaTrader5 package not installed — run: pip install MetaTrader5"
             ) from exc
 
-        if not mt5.initialize():
+        exe = resolve_mt5_terminal_executable(self._terminal_path)
+        init_kwargs: dict[str, str] = {}
+        if exe:
+            init_kwargs["path"] = exe
+            logger.info("MT5 initialize with terminal path: %s", exe)
+
+        if not mt5.initialize(**init_kwargs):
             error = mt5.last_error()
-            raise DataSourceTransientError(
+            hint = (
                 f"MT5 initialize() failed: {error}. "
                 "Make sure MetaTrader 5 terminal is open and logged in."
             )
+            if exe:
+                hint += f" (path={exe})"
+            raise DataSourceTransientError(hint)
 
         info = mt5.terminal_info()
         if info is not None:

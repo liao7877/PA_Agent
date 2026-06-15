@@ -17,7 +17,9 @@ PROMPT_DIR: Path = PROJECT_ROOT / "prompt_engineering"
 PA_AGENT_DIR: Path = PROJECT_ROOT
 
 # ── Runtime write directories ─────────────────────────────────────────────────
-RECORDS_PENDING_DIR: Path = PROJECT_ROOT / "records" / "pending"
+RECORDS_DIR: Path = PROJECT_ROOT / "records"
+RECORDS_PENDING_DIR: Path = RECORDS_DIR / "pending"
+POSITIONS_JSON_PATH: Path = RECORDS_DIR / "positions.json"
 EXPERIENCE_DIR: Path = PROJECT_ROOT / "experience"
 CONFIG_DIR: Path = PROJECT_ROOT / "config"
 LOGS_DIR: Path = PROJECT_ROOT / "logs"

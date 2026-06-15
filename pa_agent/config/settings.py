@@ -92,6 +92,14 @@ class GeneralSettings(BaseModel):
     decision_confidence_threshold: int = Field(default=60, ge=0, le=100)
     #: 开启下根K线预期功能；关闭时不向模型请求该预测，节省 token
     enable_next_bar_prediction: bool = False
+    #: MT5 安装目录或 terminal64.exe 完整路径；留空则自动连接默认实例
+    mt5_terminal_path: str = ""
+    #: 持续跟踪仅在本机时段内自动分析
+    keep_analysis_time_window_enabled: bool = False
+    keep_analysis_time_start: str = "09:00"
+    keep_analysis_time_end: str = "23:00"
+    #: 有持仓时不受跟踪时段限制
+    keep_analysis_bypass_with_position: bool = True
 
     @field_validator("last_data_source", mode="before")
     @classmethod
@@ -112,6 +120,24 @@ class GeneralSettings(BaseModel):
         return v
 
 
+class NotificationSettings(BaseModel):
+    """Outbound notification channel and per-scene toggles."""
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    dingtalk_webhook: str = ""
+    dingtalk_secret: str = ""
+    wechat_webhook: str = ""
+    notify_new_order: bool = True
+    notify_entry_filled: bool = True
+    notify_exit: bool = True
+    notify_manage: bool = True
+    notify_no_trade: bool = False
+    notify_error: bool = False
+    notify_api_error: bool = False
+    request_timeout_s: int = Field(default=10, ge=3, le=120)
+
+
 class Settings(BaseModel):
     """Root settings object persisted to config/settings.json."""
     model_config = ConfigDict(extra="ignore")
@@ -120,6 +146,7 @@ class Settings(BaseModel):
     general: GeneralSettings = Field(default_factory=GeneralSettings)
     prompt: PromptSettings = Field(default_factory=PromptSettings)
     validation: ValidationSettings = Field(default_factory=ValidationSettings)
+    notification: NotificationSettings = Field(default_factory=NotificationSettings)
 
 
 def provider_api_key_configured(settings: Settings | None) -> bool:

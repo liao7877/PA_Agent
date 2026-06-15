@@ -1,6 +1,12 @@
 """Human-readable labels for validation error prefixes (P0-3)."""
 from __future__ import annotations
 
+PREFLIGHT_FAILED_CHECK_LABELS: dict[str, str] = {
+    "bars_empty_or_bad_ohlc": "K线数据为空或OHLC异常",
+    "bar_count_lt_20": "已收盘K线不足20根",
+    "indicators_all_nan": "EMA20/ATR14全为NaN（指标预热不足）",
+}
+
 _PREFIX_RULES: tuple[tuple[str, str], ...] = (
     ("gate:", "【闸门】"),
     ("gate_trace", "【闸门路径】"),
@@ -24,6 +30,18 @@ _PREFIX_RULES: tuple[tuple[str, str], ...] = (
     ("incremental", "【增量分析】"),
     ("provider:quota_exhausted", "【API 额度】"),
 )
+
+
+def format_preflight_failure(exc_info: dict) -> str:
+    """Short Chinese summary for insufficient_data exceptions."""
+    failed_check = str(exc_info.get("failed_check", "") or "")
+    label = PREFLIGHT_FAILED_CHECK_LABELS.get(failed_check, failed_check or "数据不足")
+    message = str(exc_info.get("message", "") or "").strip()
+    lines = [f"原因：{label}"]
+    if message and message not in label:
+        lines.append(message)
+    lines.append("请等待图表加载足够 K 线后重新提交（至少需要 20 根已收盘 K 线）。")
+    return "\n".join(lines)
 
 
 def format_validation_errors(

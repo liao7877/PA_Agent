@@ -1,0 +1,173 @@
+"""Notification dispatch and position tracking hooks for the main window."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def bind_stream_notifier(window: Any) -> None:
+    notifier = getattr(window._ctx, "notifier", None)  # noqa: SLF001
+    if notifier is not None:
+        window._ai_sidebar.bind_notifier(notifier)  # noqa: SLF001
+
+
+def dispatch_decision_notification(window: Any, record: Any) -> None:
+    notifier = getattr(window._ctx, "notifier", None)  # noqa: SLF001
+    if notifier is None or getattr(window, "_demo_mode", False):  # noqa: SLF001
+        return
+    try:
+        notifier.notify_record(record)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Decision notification dispatch failed: %s", exc)
+
+
+def notify_api_failure_if_needed(window: Any, exc: BaseException, *, context: str) -> None:
+    notifier = getattr(window._ctx, "notifier", None)  # noqa: SLF001
+    if notifier is None or not hasattr(notifier, "notify_api_failure"):
+        return
+    try:
+        from pa_agent.ai.api_health import is_api_error
+
+        if not is_api_error(exc):
+            return
+        source, _, stage = context.partition("/")
+        notifier.notify_api_failure(
+            message=str(exc),
+            source=source or "analysis",
+            stage=stage or "worker",
+        )
+    except Exception as notify_exc:  # noqa: BLE001
+        logger.warning("Analysis API failure notification skipped: %s", notify_exc)
+
+
+def update_position_from_record(window: Any, record: Any) -> None:
+    tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
+    if tracker is None or getattr(window, "_demo_mode", False):  # noqa: SLF001
+        return
+    try:
+        meta = getattr(record, "meta", None)
+        symbol = getattr(meta, "symbol", "") if meta else ""
+        timeframe = getattr(meta, "timeframe", "") if meta else ""
+        if not symbol or not timeframe:
+            return
+        decision = getattr(record, "stage2_decision", None)
+        exc_info = getattr(record, "exception", None)
+        from pa_agent.positions.decision_fields import (
+            should_apply_position_despite_validation,
+        )
+
+        apply_position = decision and (
+            not exc_info
+            or exc_info.get("position_apply_allowed")
+            or should_apply_position_despite_validation(
+                exc_info, stage2_decision=decision
+            )
+        )
+        if apply_position:
+            record_id = getattr(meta, "timestamp_local_iso", None)
+            current_price = None
+            fill_bar_ts = None
+            kline_data = getattr(record, "kline_data", None) or []
+            if kline_data:
+                try:
+                    current_price = float(kline_data[0].get("close"))
+                except (TypeError, ValueError, AttributeError):
+                    current_price = None
+                from pa_agent.data.bar_close_wait import bar_ts_open_ms
+
+                fill_bar_ts = bar_ts_open_ms(kline_data[0])
+            if exc_info:
+                from pa_agent.ai.stage2_normalizer import normalize_stage2
+
+                stage1_diag = getattr(record, "stage1_diagnosis", None)
+                decision = normalize_stage2(
+                    decision,
+                    normalization_mode="lenient",
+                    decision_stance=getattr(meta, "decision_stance", None),
+                    stage1_json=stage1_diag if isinstance(stage1_diag, dict) else None,
+                )
+            tracker.apply_decision(
+                symbol=symbol,
+                timeframe=timeframe,
+                decision=decision,
+                record_id=record_id,
+                current_price=current_price,
+                fill_bar_ts=fill_bar_ts,
+            )
+        sync_chart_active_position(window, symbol, timeframe)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Position update from record failed: %s", exc)
+
+
+def sync_chart_active_position(window: Any, symbol: str, timeframe: str) -> None:
+    tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
+    chart = getattr(window, "_chart_widget", None)  # noqa: SLF001
+    if tracker is None or chart is None:
+        return
+    position = tracker.get_active(symbol, timeframe)
+    if position is None:
+        chart.set_active_position(None)
+    else:
+        chart.set_active_position(position.model_dump(mode="json"))
+        from pa_agent.positions.model import PositionStatus
+
+        if position.status == PositionStatus.FILLED:
+            chart.clear_decision_overlay()
+
+
+def check_position_on_tick(window: Any, bars: Any) -> None:
+    tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
+    if tracker is None or getattr(window, "_demo_mode", False) or not bars:  # noqa: SLF001
+        return
+    symbol = window._symbol_combo.currentText().strip()  # noqa: SLF001
+    timeframe = window._tf_combo.currentText()  # noqa: SLF001
+    if tracker.get_active(symbol, timeframe) is None:
+        return
+    from pa_agent.data.bar_close_wait import bar_ts_open_ms, newest_closed_bar_for_tick
+
+    closed_bar = newest_closed_bar_for_tick(list(bars))
+    if closed_bar is None:
+        return
+    high = getattr(closed_bar, "high", None)
+    low = getattr(closed_bar, "low", None)
+    if high is None and isinstance(closed_bar, dict):
+        high = closed_bar.get("high")
+        low = closed_bar.get("low")
+    if high is None or low is None:
+        return
+    try:
+        tracker.on_tick(
+            symbol,
+            timeframe,
+            high=high,
+            low=low,
+            bar_ts=bar_ts_open_ms(closed_bar),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Position tick check failed: %s", exc)
+    sync_chart_active_position(window, symbol, timeframe)
+
+
+def has_active_position(window: Any, symbol: str, timeframe: str) -> bool:
+    if getattr(window, "_demo_mode", False):  # noqa: SLF001
+        return False
+    tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
+    if tracker is None:
+        return False
+    try:
+        return tracker.get_active(symbol, timeframe) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def keep_analysis_tracking_allowed(window: Any, symbol: str, timeframe: str) -> bool:
+    from pa_agent.config.tracking_schedule import keep_analysis_tracking_allowed
+
+    settings = getattr(window._ctx, "settings", None)  # noqa: SLF001
+    return keep_analysis_tracking_allowed(
+        settings,
+        has_active_position=has_active_position(window, symbol, timeframe),
+    )

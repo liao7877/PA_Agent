@@ -59,6 +59,8 @@ class ChartWidget(pg.PlotWidget):
         self._seq_labels: list[SeqLabelItem] = []
         self._ema_line: pg.PlotDataItem | None = None
         self._overlay = OverlayLines()
+        self._position_overlay = OverlayLines()
+        self._active_position: dict | None = None
         self._sr_items: list[pg.GraphicsItem] = []  # support/resistance level lines
         self._pending_decision: dict | None = None
         self._direction_items: list[pg.GraphicsItem] = []
@@ -179,6 +181,46 @@ class ChartWidget(pg.PlotWidget):
         self._overlay.clear_lines(self)
         self._clear_direction_marker()
         self._pending_decision = None
+
+    def set_active_position(self, position: dict | None) -> None:
+        """Draw persistent solid/dashed lines for a tracked position."""
+        if not position:
+            self._active_position = None
+            self._position_overlay.clear_lines(self)
+            return
+        self._active_position = dict(position)
+        self._draw_active_position()
+
+    def clear_active_position(self) -> None:
+        self._active_position = None
+        self._position_overlay.clear_lines(self)
+
+    def _draw_active_position(self) -> None:
+        position = self._active_position
+        if not position:
+            self._position_overlay.clear_lines(self)
+            return
+        entry = position.get("fill_price")
+        if entry is None:
+            entry = position.get("entry_price")
+        tp = position.get("take_profit_price")
+        sl = position.get("stop_loss_price")
+        if entry is None:
+            self._position_overlay.clear_lines(self)
+            return
+        status = position.get("status", "")
+        prefix = "持仓" if status == "filled" else "计划"
+        try:
+            self._position_overlay.set_lines(
+                self,
+                float(entry),
+                float(tp) if tp is not None else None,
+                float(sl) if sl is not None else None,
+                solid=(status == "filled"),
+                label_prefix=prefix,
+            )
+        except (TypeError, ValueError):
+            self._position_overlay.clear_lines(self)
 
     def set_support_resistance(self, levels: list) -> None:
         """Draw horizontal support/resistance lines from StructureLevel objects.
@@ -337,6 +379,7 @@ class ChartWidget(pg.PlotWidget):
     def reset(self) -> None:
         """Clear all chart items (candles, labels, EMA, overlay lines)."""
         self.clear_decision_overlay()
+        self.clear_active_position()
         self._clear_candles_and_labels()
         if self._ema_line is not None:
             self.removeItem(self._ema_line)
@@ -416,6 +459,11 @@ class ChartWidget(pg.PlotWidget):
             self.addItem(self._ema_line)
 
         self._update_direction_marker()
+
+        if self._active_position is not None:
+            self._draw_active_position()
+        elif self._pending_decision is not None:
+            self.set_decision(self._pending_decision)
 
         if self._fit_on_next_render:
             self._fit_on_next_render = False

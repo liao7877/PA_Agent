@@ -1,2 +1,40 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Git merge attributes for Trading Agent fork workflow.
+# One-time setup: .\scripts\setup-merge-drivers.ps1
+# See docs/上游合并策略.md
+
+# ── A 类：定制包与资产，冲突时保留我方 ─────────────────────────────
+pa_agent/trading_agent/** merge=ours
+pa_agent/licensing/** merge=ours
+pa_agent/notification/** merge=ours
+pa_agent/positions/** merge=ours
+pa_agent/config/tracking_schedule.py merge=ours
+pa_agent/util/local_tz.py merge=ours
+pa_agent/ai/api_health.py merge=ours
+build.bat merge=ours
+build_nuitka.bat merge=ours
+Trading_Agent.spec merge=ours
+LicenseIssuer.spec merge=ours
+tools/build_license_issuer.ps1 merge=ours
+tools/build_windows.ps1 merge=ours
+tools/build_windows_nuitka.ps1 merge=ours
+tools/installer.iss merge=ours
+tools/license_keygen.py merge=ours
+tools/license_issuer_gui.py merge=ours
+tools/license_server/** merge=ours
+tools/sync_embedded_pubkey.py merge=ours
+tools/verify_build_safe.ps1 merge=ours
+docs/打包与授权.md merge=ours
+docs/构建EXE.md merge=ours
+docs/配置指南.md merge=ours
+docs/使用指南.md merge=ours
+docs/项目交接文档.md merge=ours
+docs/详细规格说明书.md merge=ours
+docs/文件索引.md merge=ours
+docs/上游合并策略.md merge=ours
+.kiro/specs/trading-agent/** merge=ours
+config/license_client.example.json merge=ours
+scripts/merge-upstream.ps1 merge=ours
+scripts/setup-merge-drivers.ps1 merge=ours
+
+# ── B 类：跟上游走，冲突时保留上游 ─────────────────────────────────
+prompt_engineering/** merge=theirs
