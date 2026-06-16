@@ -7,7 +7,6 @@ from pa_agent.ai.json_validator import Ok, ValidationError
 from pa_agent.data.base import IndicatorBundle, KlineBar, KlineFrame
 from pa_agent.util.trade_metrics import (
     compute_risk_reward,
-    max_risk_reward_ratio,
     passes_trader_equation,
     validate_order_trade_metrics,
 )
@@ -142,8 +141,8 @@ def test_good_trade_passes_aggressive_stance() -> None:
     assert not validate_order_trade_metrics(decision, decision_stance="aggressive")
 
 
-def test_excessive_rr_rejected() -> None:
-    """2:1 reward exceeds the 1.5:1 cap."""
+def test_high_rr_passes_when_equation_ok() -> None:
+    """2:1 structure-driven target is allowed when trader equation passes."""
     decision = {
         "order_type": "限价单",
         "order_direction": "做多",
@@ -152,12 +151,10 @@ def test_excessive_rr_rejected() -> None:
         "stop_loss_price": 95.0,
         "estimated_win_rate": 55,
     }
-    errors = validate_order_trade_metrics(decision, decision_stance="aggressive")
-    assert errors
-    assert any("exceeds maximum" in e for e in errors)
+    assert not validate_order_trade_metrics(decision, decision_stance="aggressive")
     rr = compute_risk_reward(100.0, 110.0, 95.0, "做多")
     assert rr is not None
-    assert rr["ratio"] > max_risk_reward_ratio()
+    assert rr["ratio"] == 2.0
 
 
 def test_stage2_validator_coerces_bad_rr_to_no_order() -> None:

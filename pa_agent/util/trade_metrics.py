@@ -78,22 +78,14 @@ def format_estimated_win_rate_reasoning(decision: dict[str, Any]) -> str:
     return str(decision.get("estimated_win_rate_reasoning", "") or "").strip()
 
 
-# Lower cap: reward must be at least equal to risk (1:1) for any stance.
+# Lower floor: reward must exceed risk (>1:1) for any stance.
 MIN_RISK_REWARD_RATIO = 1.0
-
-# Upper cap: targets far beyond 1.5R usually imply unrealistically low win rates.
-MAX_RISK_REWARD_RATIO = 1.5
 
 
 def min_risk_reward_ratio(decision_stance: str | None = None) -> float:
     """Minimum reward:risk ratio required to place an order (same for all stances)."""
     _ = decision_stance  # kept for call-site compatibility
     return MIN_RISK_REWARD_RATIO
-
-
-def max_risk_reward_ratio() -> float:
-    """Maximum reward:risk ratio allowed for any order (win-rate realism cap)."""
-    return MAX_RISK_REWARD_RATIO
 
 
 def passes_trader_equation(
@@ -223,19 +215,11 @@ def validate_order_trade_metrics(
     risk = float(rr["risk"])
     reward = float(rr["reward"])
     min_rr = min_risk_reward_ratio(decision_stance)
-    max_rr = max_risk_reward_ratio()
 
     if ratio < min_rr:
         errors.append(
             f"decision prices: risk_reward {rr['ratio_text']} is below minimum "
             f"{min_rr:.2f}:1 for this stance; adjust take_profit/stop_loss or set "
-            "order_type=不下单 with 10.3=否"
-        )
-
-    if ratio > max_rr:
-        errors.append(
-            f"decision prices: risk_reward {rr['ratio_text']} exceeds maximum "
-            f"{max_rr:.2f}:1; move take_profit closer (higher win-rate target) or set "
             "order_type=不下单 with 10.3=否"
         )
 

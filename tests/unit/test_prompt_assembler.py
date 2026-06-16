@@ -345,6 +345,16 @@ def test_stage2_prompt_conservative_omits_balanced_only_hints(assembler: PromptA
     assert "次优但可执行" not in user
 
 
+def test_stage2_prompt_no_fixed_rr_upper_cap(assembler: PromptAssembler):
+    frame = _make_frame()
+    messages = assembler.build_stage2(frame, {}, [], [])
+    blob = messages[0]["content"] + messages[1]["content"]
+    assert "盈亏比上限" not in blob
+    assert "1.0–1.5" not in blob
+    assert "1.0-1.5" not in blob
+    assert "不设固定上限" in blob
+
+
 def test_incremental_stage1_prompt_includes_previous_record_and_new_bars(
     assembler: PromptAssembler,
 ):
