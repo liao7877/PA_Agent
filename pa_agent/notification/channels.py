@@ -98,13 +98,31 @@ class DingTalkChannel(Channel):
         sep = "&" if "?" in self._webhook else "?"
         return f"{self._webhook}{sep}timestamp={timestamp}&sign={sign}"
 
+    @staticmethod
+    def _action_card_text(message: NotificationMessage) -> str:
+        """Merge title into actionCard body.
+
+        DingTalk shows ``title`` in the chat list preview but only ``text`` when
+        the user opens the message — prepend the title so detail view matches.
+        """
+        title = (message.title or "").strip()
+        body = (message.text or "").strip()
+        if not title:
+            return body
+        if not body:
+            return f"### {title}"
+        first_line = body.split("\n", 1)[0].strip()
+        if first_line == title or first_line.lstrip("#").strip() == title:
+            return body
+        return f"### {title}\n\n{body}"
+
     def _build_request(self, message: NotificationMessage) -> urllib.request.Request:
         # ActionCard renders as a compact card in DingTalk (closer to the GUI panel).
         payload = {
             "msgtype": "actionCard",
             "actionCard": {
                 "title": message.title,
-                "text": message.text,
+                "text": self._action_card_text(message),
             },
         }
         return self._post_json(self._signed_url(), payload)

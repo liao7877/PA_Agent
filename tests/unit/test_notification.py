@@ -361,7 +361,17 @@ def test_dingtalk_payload_is_action_card():
     payload = json.loads(req.data.decode("utf-8"))
     assert payload["msgtype"] == "actionCard"
     assert payload["actionCard"]["title"] == "标题"
-    assert "正文内容" in payload["actionCard"]["text"]
+    text = payload["actionCard"]["text"]
+    assert "正文内容" in text
+    assert "标题" in text
+
+
+def test_dingtalk_action_card_text_includes_title_in_body():
+    text = DingTalkChannel._action_card_text(
+        NotificationMessage(NotificationEvent.ORDER_CANCELLED, "🚫 撤单 · XAUUSD 15m · 做多", "方向: 做多")
+    )
+    assert text.startswith("### 🚫 撤单 · XAUUSD 15m · 做多")
+    assert "方向: 做多" in text
 
 
 def test_dingtalk_signing_appends_params():
