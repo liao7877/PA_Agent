@@ -902,7 +902,7 @@ class DecisionFlowVizPanel(QWidget):
         """Scale applied after fitInView (1.0 = fit size; no upper cap—uses settings % / 100)."""
         if self._settings is None:
             return 5.0
-        pct = int(getattr(self._settings.general, "decision_flow_default_zoom_pct", 500))
+        pct = int(getattr(self._settings.general, "decision_flow_default_zoom_pct", 600))
         return max(0.25, pct / 100.0)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:  # noqa: N802
@@ -1026,6 +1026,12 @@ class DecisionFlowVizPanel(QWidget):
         QTimer.singleShot(180, panel.play_path)
         dlg.exec()
 
+    def refit_view(self) -> None:
+        """Re-apply default zoom (e.g. after user changes decision_flow_default_zoom_pct)."""
+        if self._last_trace_kw is None and not self._last_placed:
+            return
+        self._fit_scene(self._last_rect)
+
     def clear(self) -> None:
         self._stop_playback()
         self._last_trace_kw = None
@@ -1047,12 +1053,18 @@ class DecisionFlowVizPanel(QWidget):
         self._scene.clear()
 
         exc = getattr(record, "exception", None) or {}
-        if isinstance(exc, dict):
-            from pa_agent.ai.validation_messages import format_preflight_failure
+        failed_check = exc.get("failed_check", "") if isinstance(exc, dict) else ""
+        message = exc.get("message", "") if isinstance(exc, dict) else ""
 
-            text = "数据不足，无法分析\n\n" + format_preflight_failure(exc)
-        else:
-            text = "数据不足，无法分析"
+        check_label_map = {
+            "bars_empty_or_bad_ohlc": "K线数据为空或OHLC异常",
+            "bar_count_lt_20": "已收盘K线不足20根",
+            "indicators_all_nan": "EMA20/ATR14全为NaN（指标预热不足）",
+        }
+        check_zh = check_label_map.get(failed_check, failed_check or "数据不足")
+        text = f"数据不足，无法分析\n\n原因：{check_zh}"
+        if message:
+            text += f"\n\n详情：{message[:120]}"
 
         hint = _EmptyHint(text)
         hint.setPos(-200, 60)

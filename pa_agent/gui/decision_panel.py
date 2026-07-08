@@ -7,6 +7,7 @@ from typing import Any
 from pa_agent.util.trade_metrics import (
     compute_risk_reward,
     format_estimated_win_rate,
+    max_risk_reward_ratio,
     min_risk_reward_ratio,
     passes_trader_equation,
 )
@@ -270,9 +271,10 @@ class DecisionPanel(QWidget):
         prices_layout.setSpacing(16)
 
         self._entry_label = QLabel("入场  —")
-        self._tp_label = QLabel("止盈  —")
+        self._tp_label = QLabel("TP1  —")
+        self._tp2_label = QLabel("TP2  —")
         self._sl_label = QLabel("止损  —")
-        for lbl in (self._entry_label, self._tp_label, self._sl_label):
+        for lbl in (self._entry_label, self._tp_label, self._tp2_label, self._sl_label):
             lbl.setStyleSheet("font-size: 14px; color: #c9d1d9;")
             prices_layout.addWidget(lbl, stretch=1)
 
@@ -491,6 +493,7 @@ class DecisionPanel(QWidget):
             direction = decision.get("order_direction", "—")
             entry = decision.get("entry_price")
             tp = decision.get("take_profit_price")
+            tp2 = decision.get("take_profit_price_2")
             sl = decision.get("stop_loss_price")
 
             self._conclusion_label.setText(str(order_type))
@@ -507,7 +510,10 @@ class DecisionPanel(QWidget):
             self._entry_label.setText(
                 f"入场  {entry:.5g}" if entry is not None else "入场  —"
             )
-            self._tp_label.setText(f"止盈  {tp:.5g}" if tp is not None else "止盈  —")
+            self._tp_label.setText(f"TP1  {tp:.5g}" if tp is not None else "TP1  —")
+            self._tp2_label.setText(
+                f"TP2  {tp2:.5g}" if tp2 is not None else "TP2  —"
+            )
             self._sl_label.setText(f"止损  {sl:.5g}" if sl is not None else "止损  —")
             self._trade_prices_row.setVisible(True)
 
@@ -525,8 +531,10 @@ class DecisionPanel(QWidget):
                     and passes_trader_equation(win_pct, risk, reward)
                 )
                 min_rr = min_risk_reward_ratio(decision_stance)
+                max_rr = max_risk_reward_ratio()
                 metrics_ok = (
                     ratio >= min_rr
+                    and (max_rr is None or ratio <= max_rr)
                     and (eq_ok if win_pct is not None else True)
                 )
                 eq_note = ""

@@ -95,9 +95,9 @@ def update_position_from_record(window: Any, record: Any) -> None:
                 except (TypeError, ValueError, AttributeError):
                     placement_ref_high = None
                     placement_ref_low = None
-                from pa_agent.data.bar_close_wait import bar_ts_open_ms
+                from pa_agent.data.datetime_ts import ts_open_to_ms
 
-                fill_bar_ts = bar_ts_open_ms(head)
+                fill_bar_ts = int(ts_open_to_ms(head.get("ts_open")))
             if exc_info:
                 from pa_agent.ai.stage2_normalizer import normalize_stage2
 
@@ -145,9 +145,12 @@ def _bar_high_low_ts(bar: object) -> tuple[float, float, int | None] | None:
     if high is None or low is None:
         return None
     try:
-        from pa_agent.data.bar_close_wait import bar_ts_open_ms
+        from pa_agent.data.datetime_ts import ts_open_to_ms
 
-        return float(high), float(low), bar_ts_open_ms(bar)
+        ts_open = getattr(bar, "ts_open", None)
+        if ts_open is None and isinstance(bar, dict):
+            ts_open = bar.get("ts_open")
+        return float(high), float(low), int(ts_open_to_ms(ts_open))
     except (TypeError, ValueError):
         return None
 

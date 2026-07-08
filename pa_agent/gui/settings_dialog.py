@@ -26,6 +26,10 @@ from PyQt6.QtGui import QDesktopServices, QFont
 
 from pa_agent.config.settings import Settings, save_settings
 from pa_agent.config.paths import SETTINGS_JSON_PATH
+from pa_agent.ai.cursor_connector import (
+    is_openclaw_cs_model,
+    should_use_cursor_provider,
+)
 from pa_agent.ai.qclaw_connector import (
     detect_qclaw,
     is_openclaw_model,
@@ -162,6 +166,14 @@ class SettingsDialog(QDialog):
         self._refresh_interval_spin.setSuffix(" ms")
         general_form.addRow("刷新间隔:", self._refresh_interval_spin)
 
+        self._auto_resume_chart_check = QCheckBox("分析完成后自动恢复「图表实时更新」")
+        self._auto_resume_chart_check.setToolTip(
+            "提交分析时图表会暂停刷新并冻结为已收盘 K 线；"
+            "勾选后，分析结束（成功或校验失败但流程已跑完）将自动恢复实时刷新，"
+            "并重新显示最右侧未收盘空心 K 线。演示模式不受影响。"
+        )
+        general_form.addRow("图表:", self._auto_resume_chart_check)
+
         self._ta_settings.install_general_fields(general_form)
 
         self._keep_analysis_check = QCheckBox("有新K线收盘时自动开始新一轮分析")
@@ -280,6 +292,9 @@ class SettingsDialog(QDialog):
 
         self._analysis_bar_count_spin.setValue(g.analysis_bar_count)
         self._refresh_interval_spin.setValue(g.refresh_interval_ms)
+        self._auto_resume_chart_check.setChecked(
+            bool(getattr(g, "auto_resume_chart_after_analysis", False))
+        )
         self._ta_settings.load(self._settings)
         self._keep_analysis_check.setChecked(
             bool(getattr(g, "keep_analysis", False))
@@ -325,6 +340,8 @@ class SettingsDialog(QDialog):
     @staticmethod
     def _validate_provider_fields(model: str, base_url: str) -> str | None:
         """Return user-facing error text, or None if fields look consistent."""
+        if is_openclaw_cs_model(model) or should_use_cursor_provider(model, base_url):
+            return None
         if is_openclaw_model(model) or should_use_qclaw_provider(model, base_url):
             return None
         if is_openclaw_wb_model(model) or should_use_workbuddy_provider(model, base_url):
@@ -336,6 +353,7 @@ class SettingsDialog(QDialog):
                 "「模型」与「Base URL」似乎填反了：\n"
                 "• 模型应填模型名，如 deepseek-v4-pro 或 claude-sonnet-4-6\n"
                 "• 使用 QClaw 时模型填 openclaw（或 openclaw/main）\n"
+                "• 使用 Cursor 订阅时模型填 openclaw_cs\n"
                 "• 使用 WorkBuddy 时模型填 openclaw_wb\n"
                 "• Base URL 应填接口地址，如 https://api.deepseek.com"
             )
@@ -345,8 +363,9 @@ class SettingsDialog(QDialog):
             if detect_qclaw():
                 return (
                     "请填写 Base URL，或使用 QClaw/WorkBuddy：\n"
-                    "• 模型填 openclaw → 使用 QClaw（保存时自动配置本地网关）\n"
-                    "• 模型填 openclaw_wb → 使用 WorkBuddy（保存时自动配置）"
+                    "• 模型填 openclaw → QClaw\n"
+                    "• 模型填 openclaw_cs → Cursor 订阅（经 QClaw 网关）\n"
+                    "• 模型填 openclaw_wb → WorkBuddy"
                 )
             if detect_workbuddy():
                 return (
@@ -360,7 +379,16 @@ class SettingsDialog(QDialog):
             "PackyAPI 示例：https://www.packyapi.com/v1\n"
             "MiMo 示例：https://api.xiaomimimo.com/v1\n"
             "QClaw：模型填 openclaw 后点保存（自动配置本地网关）\n"
+            "Cursor：模型填 openclaw_cs 后点保存（经 QClaw 走 Cursor 订阅）\n"
             "WorkBuddy：模型填 openclaw_wb 后点保存（自动配置 WorkBuddy）"
+        )
+
+    def _apply_cursor_provider(self, *, preferred_model: str = "") -> str | None:
+        from pa_agent.ai.cursor_connector import apply_cursor_provider_to_settings
+
+        return apply_cursor_provider_to_settings(
+            self._settings,
+            preferred_model=preferred_model or None,
         )
 
     def _apply_qclaw_provider(self, *, preferred_model: str = "") -> str | None:
@@ -387,17 +415,27 @@ class SettingsDialog(QDialog):
 
         model = self._model_edit.text().strip()
         base_url = self._base_url_edit.text().strip()
+        api_key = self._api_key_edit.text().strip()
 
-        # QClaw (openclaw) before WorkBuddy — stale copilot base_url must not steal routing.
-        if should_use_qclaw_provider(model, base_url):
-            qclaw_err = self._apply_qclaw_provider(preferred_model=model)
-            if qclaw_err:
-                QMessageBox.warning(self, "QClaw 配置异常", qclaw_err)
-                return
-        elif should_use_workbuddy_provider(model, base_url):
+        # Explicit model aliases win over stale base_url (openclaw_wb before openclaw).
+        if is_openclaw_wb_model(model) or should_use_workbuddy_provider(model, base_url):
+            p.api_key = api_key
             wb_err = self._apply_workbuddy_provider(preferred_model=model)
             if wb_err:
                 QMessageBox.warning(self, "WorkBuddy 配置异常", wb_err)
+                return
+        elif is_openclaw_cs_model(model) or should_use_cursor_provider(model, base_url):
+            # Cursor route must keep the user-provided Cursor API key (crsr_...).
+            p.api_key = api_key
+            cs_err = self._apply_cursor_provider(preferred_model=model)
+            if cs_err:
+                QMessageBox.warning(self, "Cursor 配置异常", cs_err)
+                return
+        elif is_openclaw_model(model) or should_use_qclaw_provider(model, base_url):
+            p.api_key = api_key
+            qclaw_err = self._apply_qclaw_provider(preferred_model=model)
+            if qclaw_err:
+                QMessageBox.warning(self, "QClaw 配置异常", qclaw_err)
                 return
         else:
             field_err = self._validate_provider_fields(model, base_url)
@@ -407,13 +445,15 @@ class SettingsDialog(QDialog):
 
             p.model = model
             p.base_url = base_url
-            p.api_key = self._api_key_edit.text()
-            p.thinking = self._thinking_check.isChecked()
-            p.reasoning_effort = self._reasoning_effort_combo.currentText()  # type: ignore[assignment]
-            # context_window is no longer editable in UI; use code-level default
+            p.api_key = api_key
+
+        p.thinking = self._thinking_check.isChecked()
+        p.reasoning_effort = self._reasoning_effort_combo.currentText()  # type: ignore[assignment]
+        # context_window is no longer editable in UI; use code-level default
 
         g.analysis_bar_count = self._analysis_bar_count_spin.value()
         g.refresh_interval_ms = self._refresh_interval_spin.value()
+        g.auto_resume_chart_after_analysis = self._auto_resume_chart_check.isChecked()
         self._ta_settings.save(self._settings)
         g.keep_analysis = self._keep_analysis_check.isChecked()
         g.cancel_keep_analysis_on_retry = self._cancel_keep_on_retry_check.isChecked()
@@ -523,7 +563,7 @@ class SettingsDialog(QDialog):
             "获取无限Token方法需付费49.9元，付费后你将获得<br>"
             "Deepseek V4 Pro/GLM5.1/Kimi2.6等\"满血\"模型的无限分析方法<br>"
             "注意无限Token只支持使用这个分析软件<br>"
-            "如果你愿意付费，请联系QQ：564020069<br><br>"
+            "如果你愿意付费，请联系QQ：564020069（付费后提供远程协助部署安装服务）<br><br>"
             "如果你不愿意付费，你可以用自己的模型api，如果你不知道模型api是什么<br>"
             "可以直接跟龙虾说：<br>"
             "PA_Agent这个程序的模型api有什么作用，该怎么填？<br>"

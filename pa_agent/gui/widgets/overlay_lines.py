@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 # Line colors
 _COLOR_ENTRY = QColor(30, 144, 255)   # dodger blue
 _COLOR_TP = QColor(0, 200, 80)        # green
+_COLOR_TP2 = QColor(100, 220, 140)    # lighter green
 _COLOR_SL = QColor(220, 50, 50)       # red
 
 
@@ -45,17 +46,21 @@ class OverlayLines:
         tp: float | None,
         sl: float | None,
         *,
+        tp2: float | None = None,
         solid: bool = False,
         label_prefix: str = "",
         width: int = 1,
     ) -> None:
-        """Draw (or redraw) the three horizontal price lines.
+        """Draw (or redraw) the horizontal price lines.
 
         Clears any previously drawn lines first. Labels are anchored to the
         left edge of the current view and stay there on pan/zoom.
 
         Parameters
         ----------
+        tp2:
+            Optional second take-profit price. When provided, a ``止盈2``
+            line is drawn between the TP and SL lines.
         solid:
             Use a solid pen for held positions instead of dashed previews.
         label_prefix:
@@ -66,11 +71,13 @@ class OverlayLines:
         self.clear_lines(plot)
         self._plot = plot
 
-        specs = [
+        specs: list[tuple[float | None, QColor, str]] = [
             (entry, _COLOR_ENTRY, "入场"),
             (tp, _COLOR_TP, "止盈"),
             (sl, _COLOR_SL, "止损"),
         ]
+        if tp2 is not None:
+            specs.insert(2, (tp2, _COLOR_TP2, "止盈2"))
 
         style = pg.QtCore.Qt.PenStyle.SolidLine if solid else pg.QtCore.Qt.PenStyle.DashLine
 

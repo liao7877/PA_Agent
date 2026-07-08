@@ -19,14 +19,11 @@ venv/
 .env
 .env.*
 config/settings.json
-config/settings.json.backup-*
-config/settings.json.corrupted-*
 config/settings.local.json
 config/exception_state.json
 config/secret.key
 config/tv_symbol_aliases.json
-config/license_client.json
-tools/.license_keys/
+config/feishu.json
 *.pem
 *.key
 
@@ -48,7 +45,6 @@ _tmp_wb_asar/
 _tmp_auth.js
 auth.js
 index.js
-.workbuddy/
 
 # ── 根目录杂项：个人笔记、封面图、一次性脚本 ─────────────────────────────────
 /*.jpeg

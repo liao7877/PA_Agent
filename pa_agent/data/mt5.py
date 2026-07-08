@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pa_agent.data.base import (
     DataSource,
@@ -46,23 +47,19 @@ _TF_MAP: dict[str, str] = {
 
 
 def resolve_mt5_terminal_executable(path: str) -> str | None:
-    """Resolve user config to ``terminal64.exe`` path for ``mt5.initialize(path=...)``."""
-    from pathlib import Path
-
     raw = (path or "").strip().strip('"').strip("'")
     if not raw:
         return None
     p = Path(raw)
     if p.is_file() and p.suffix.lower() == ".exe":
-        return str(p)
+        return str(p.resolve())
     if p.is_dir():
         for name in ("terminal64.exe", "terminal.exe"):
             candidate = p / name
             if candidate.is_file():
-                return str(candidate)
-        return None
+                return str(candidate.resolve())
     if raw.lower().endswith(".exe"):
-        return raw if Path(raw).is_file() else None
+        return str(p.resolve()) if p.is_file() else None
     return None
 
 

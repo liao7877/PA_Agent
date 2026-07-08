@@ -274,6 +274,36 @@ def test_normalize_next_bar_prediction_features_used_min_set():
     assert pred["features_used"][0] == "stage1_diagnosis"
 
 
+def test_normalize_decision_reasoning_truncation() -> None:
+    """decision.reasoning > 280 chars gets truncated."""
+    from pa_agent.ai.stage2_normalizer import DECISION_REASONING_MAX_LEN, normalize_stage2
+
+    obj = {
+        "decision": {
+            "order_type": "不下单",
+            "order_direction": None,
+            "entry_price": None,
+            "take_profit_price": None,
+            "stop_loss_price": None,
+            "reasoning": "长" * 400,
+            "diagnosis_confidence": 60,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 40,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": None,
+            "estimated_win_rate_reasoning": None,
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "10.2", "outcome": "wait", "label": "wait"},
+    }
+    out = normalize_stage2(obj)
+    assert len(out["decision"]["reasoning"]) == DECISION_REASONING_MAX_LEN
+    assert out["decision"]["reasoning"].endswith("…")
+
+
 def test_normalize_next_bar_prediction_reasoning_truncation():
     """Reasoning > 1500 chars gets truncated with ellipsis."""
     pred = {
@@ -403,6 +433,7 @@ def test_coerce_no_order_when_metrics_fail_after_breakout_entry_snap() -> None:
             "entry_basis_extreme": "low",
             "entry_rule": "K2 low - 1 tick",
             "take_profit_price": 10.50,
+            "take_profit_price_2": 10.30,
             "stop_loss_price": 10.84,
             "reasoning": "test",
             "diagnosis_confidence": 72,
@@ -473,6 +504,7 @@ def test_coerce_decision_when_103_no_but_prices_remain() -> None:
             "entry_basis_extreme": "high",
             "entry_rule": "K1 高点上方 1 跳动",
             "take_profit_price": 10.94,
+            "take_profit_price_2": 11.00,
             "stop_loss_price": 10.81,
             "reasoning": "方程不通过但仍写突破单",
             "diagnosis_confidence": 58,
@@ -535,6 +567,7 @@ def test_trade_terminal_14_repaired_to_order_node() -> None:
             "entry_basis_extreme": None,
             "entry_rule": None,
             "take_profit_price": 90.0,
+            "take_profit_price_2": 84.0,
             "stop_loss_price": 107.0,
             "reasoning": "test",
             "diagnosis_confidence": 70,
@@ -635,6 +668,7 @@ def test_signal_bar_bumped_when_same_seq_as_entry() -> None:
             "entry_basis_extreme": "low",
             "entry_rule": "test",
             "take_profit_price": 3.20,
+            "take_profit_price_2": 3.00,
             "stop_loss_price": 3.6,
             "reasoning": "t",
             "diagnosis_confidence": 50,
@@ -848,49 +882,96 @@ def test_normalize_stage2_skip_next_bar_ui_path_omits_injection() -> None:
     assert isinstance(out.get("next_cycle_prediction"), dict)
 
 
-def test_normalizes_watch_points_objects_and_infers_order_direction() -> None:
-    obj = {
+def test_normalize_stage2_no_order_english_alias_passes_schema() -> None:
+    """Regression: OpenClaw emits order_type=no_order + terminal=wait."""
+    payload = {
         "decision": {
-            "order_type": "限价单",
+            "order_type": "no_order",
             "order_direction": None,
-            "entry_price": 100.0,
-            "take_profit_price": 107.5,
-            "stop_loss_price": 95.0,
-            "reasoning": "test",
-            "diagnosis_confidence": 60,
-            "diagnosis_confidence_reasoning": "t",
-            "trade_confidence": 55,
-            "trade_confidence_reasoning": "t",
-            "estimated_win_rate": 50,
-            "estimated_win_rate_reasoning": None,
-            "key_factors": [],
-            "watch_points": [
-                {"trigger": "回撤至100", "action": "做多"},
-                "plain string",
-            ],
-            "risk_assessment": "t",
+            "entry_price": None,
+            "take_profit_price": None,
+            "stop_loss_price": None,
+            "reasoning": "等待更好 setup",
+            "diagnosis_confidence": 70,
+            "trade_confidence": 65,
+            "estimated_win_rate": None,
+            "key_factors": ["边界不清晰"],
+            "watch_points": ["等待反弹"],
+            "risk_assessment": "过渡期风险偏高",
         },
         "diagnosis_summary": {
-            "cycle_position": "broad_channel",
-            "direction": "bullish",
+            "cycle_position": "trending_tr",
+            "direction": "bearish",
             "key_signals": [],
         },
-        "decision_trace": [],
-        "terminal": {"node_id": "10.3", "outcome": "trade", "label": "test"},
+        "bar_analysis": {
+            "always_in": "short",
+            "last_closed_bar": "K1",
+            "bar_type": "trend_bear",
+            "signal_bar": {
+                "bar": None,
+                "quality": "invalid",
+                "pattern": "no_signal",
+            },
+            "entry_bar": {
+                "strength": "not_triggered",
+                "follow_through": False,
+                "freshness": "pending",
+            },
+            "second_entry": {"is_second_entry": False, "type": "none"},
+        },
+        "decision_trace": [
+            {
+                "node_id": "10.1",
+                "question": "是否能明确止损？",
+                "answer": "no",
+                "reason": "无结构止损",
+                "bar_range": "K8-K1",
+                "skipped": False,
+            },
+            {
+                "node_id": "10.2",
+                "question": "止损是否过大？",
+                "answer": None,
+                "reason": "跳过",
+                "bar_range": None,
+                "skipped": True,
+            },
+            {
+                "node_id": "14",
+                "question": "是否触犯禁止行为？",
+                "answer": "no",
+                "reason": "未触犯",
+                "bar_range": "K8-K1",
+                "skipped": False,
+            },
+        ],
+        "terminal": {"node_id": "10.1", "outcome": "wait"},
         "next_cycle_prediction": {
-            "cycle": "broad_channel",
-            "direction": "bullish",
-            "probabilities": {"broad_channel": 40, "trading_range": 30, "normal_channel": 15, "trending_tr": 10, "spike": 5},
-            "unpredictable": False,
-            "reasoning": "x",
-            "features_used": ["stage1_diagnosis"],
-            "predictable": True,
+            "primary": "trading_range",
+            "primary_probability": 30,
+            "direction": "neutral",
+            "reasoning": "可能进入区间",
+            "probabilities": {
+                "spike": 2,
+                "micro_channel": 3,
+                "tight_channel": 5,
+                "normal_channel": 10,
+                "broad_channel": 25,
+                "trending_tr": 20,
+                "trading_range": 30,
+                "extreme_tr": 5,
+            },
         },
     }
-    out = normalize_stage2(obj, skip_next_bar=True)
-    dec = out["decision"]
-    assert dec["order_direction"] == "做多"
-    assert dec["estimated_win_rate_reasoning"] == ""
-    assert dec["watch_points"][0] == "回撤至100；做多"
-    assert dec["watch_points"][1] == "plain string"
-    assert "predictable" not in out["next_cycle_prediction"]
+    out = normalize_stage2(payload)
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["decision"]["estimated_win_rate_reasoning"] is None
+    assert out["bar_analysis"]["signal_bar"]["pattern"] == "none"
+    assert out["next_cycle_prediction"]["cycle"] == "trading_range"
+
+    result = schema_test_validator().validate(
+        "stage2",
+        json.dumps(out, ensure_ascii=False),
+    )
+    assert isinstance(result, Ok)

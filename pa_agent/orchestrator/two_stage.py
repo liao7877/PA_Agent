@@ -25,6 +25,7 @@ STAGE2_VALIDATION_AUTO_RETRY = False
 
 import copy
 import dataclasses
+import inspect
 import json
 import logging
 from datetime import datetime
@@ -367,6 +368,139 @@ def _stage2_decision_from_validation_error(
         return obj
 
 
+def _filter_kwargs(func: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Return only kwargs that *func* accepts; tolerant of mocks and **kwargs."""
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in sig.parameters.values()
+    ):
+        return dict(kwargs)
+    return {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+
+def _compute_market_features_block(frame: KlineFrame) -> str | None:
+    """Render the simple market-features block for injection into Stage 2 prompt."""
+    try:
+        from pa_agent.ai.market_features import (
+            compute_simple_market_features,
+            render_simple_market_features,
+        )
+
+        features = compute_simple_market_features(frame)
+        return render_simple_market_features(features)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("market_features computation skipped: %s", exc)
+        return None
+
+
+def _inject_market_features_into_stage2_messages(
+    messages: list[dict[str, Any]],
+    frame: KlineFrame,
+) -> list[dict[str, Any]]:
+    """Ensure Stage 2 user prompt contains the program market-features block.
+
+    If the assembler already injected the block (upstream behaviour), this is a
+    no-op. Otherwise compute the block and insert it before the first anchor
+    marker or append it to the end of the user turn.
+    """
+    try:
+        from pa_agent.ai.market_features import (
+            MARKET_FEATURES_SECTION_PREFIX,
+            inject_market_features_section,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("market_features injection skipped: %s", exc)
+        return messages
+
+    block = _compute_market_features_block(frame)
+    if not block or not block.strip():
+        return messages
+
+    updated = False
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str) or not content:
+            continue
+        if MARKET_FEATURES_SECTION_PREFIX in content:
+            updated = True
+            break
+    if updated:
+        return messages
+
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str) or not content:
+            continue
+        new_content = inject_market_features_section(content, block)
+        if new_content != content:
+            messages[i] = {**msg, "content": new_content}
+            updated = True
+            break
+
+    if not updated:
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            messages[i] = {**msg, "content": content.rstrip() + "\n\n" + block + "\n"}
+            break
+    return messages
+
+
+def _apply_continuity_guard_to_stage2(
+    stage2_json: dict[str, Any],
+    *,
+    frame: KlineFrame,
+    stage1_json: dict[str, Any],
+    previous_record: AnalysisRecord | None,
+    cooldown_bars: int,
+) -> dict[str, Any]:
+    """Apply program continuity guard to a validated Stage 2 decision.
+
+    Mirrors what upstream's stage2_normalizer does internally so the guard still
+    runs when the paired normalizer is from main (which lacks the integration).
+    """
+    try:
+        from pa_agent.ai.decision_continuity import (
+            apply_continuity_guard,
+            build_continuity_context,
+        )
+
+        ctx = build_continuity_context(
+            frame=frame,
+            stage1_json=stage1_json,
+            previous_record=previous_record,
+            cooldown_bars=cooldown_bars,
+        )
+        return apply_continuity_guard(stage2_json, ctx)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("apply_continuity_guard failed: %s", exc)
+        return stage2_json
+
+
+def _log_kv_prefix_chain_support(provider_settings: Any) -> bool:
+    """Log and return whether the provider supports KV prefix-chain for Stage 2."""
+    try:
+        from pa_agent.ai.deepseek_client import supports_kv_prefix_chain
+
+        supported = supports_kv_prefix_chain(provider_settings)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("supports_kv_prefix_chain check skipped: %s", exc)
+        return True
+    logger.info("Stage 2 KV prefix-chain support: %s", supported)
+    return supported
+
+
 def _build_empty_record(
     frame: KlineFrame,
     settings: Optional["Settings"],
@@ -583,20 +717,29 @@ class TwoStageOrchestrator:
 
         # ── Step 4: Build Stage 1 messages ───────────────────────────────────
         if previous_record is not None and incremental_new_bar_count is not None:
+            incremental_kwargs = _filter_kwargs(
+                self._assembler.build_incremental_stage1,
+                {
+                    "analysis_mode": analysis_mode,
+                    "provider_settings": getattr(self._settings, "provider", None),
+                    "active_position": active_position,
+                },
+            )
             messages_s1 = self._assembler.build_incremental_stage1(
                 frame,
                 previous_record,
                 incremental_new_bar_count,
-                analysis_mode=analysis_mode,
-                provider_settings=getattr(self._settings, "provider", None),
-                active_position=active_position,
+                **incremental_kwargs,
             )
         else:
-            messages_s1 = self._assembler.build_stage1(
-                frame,
-                analysis_mode=analysis_mode,
-                active_position=active_position,
+            stage1_kwargs = _filter_kwargs(
+                self._assembler.build_stage1,
+                {
+                    "analysis_mode": analysis_mode,
+                    "active_position": active_position,
+                },
             )
+            messages_s1 = self._assembler.build_stage1(frame, **stage1_kwargs)
 
         # ── Step 5: Call AI for Stage 1 ───────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -717,17 +860,22 @@ class TwoStageOrchestrator:
             s1_usage_calls.append(getattr(r, "usage", None))
             return r
 
+        s1_validate_kwargs = _filter_kwargs(
+            self._validator.validate,
+            {
+                "kline_frame": frame,
+                "incremental_new_bar_count": int(incremental_new_bar_count or 0),
+                "incremental_previous_stage1": prev_s1,
+                "active_position": active_position,
+            },
+        )
         vr_s1 = validate_with_retry(
             stage="stage1",
             messages=messages_s1,
             reply=reply_s1,
             validator=self._validator,
             validation_settings=self._validation_settings(),
-            validate_kwargs={
-                "kline_frame": frame,
-                "incremental_new_bar_count": int(incremental_new_bar_count or 0),
-                "incremental_previous_stage1": prev_s1,
-            },
+            validate_kwargs=s1_validate_kwargs,
             call_api=_call_s1_retry,
             provider_settings=getattr(self._settings, "provider", None),
         )
@@ -784,11 +932,13 @@ class TwoStageOrchestrator:
         direction = str(stage1_json.get("direction", "") or "")
         patterns = stage1_json.get("detected_patterns") or []
         prompt_cfg = getattr(self._settings, "prompt", None) if self._settings else None
-        max_exp = getattr(prompt_cfg, "experience_max_entries", 3) if prompt_cfg else 3
+        max_exp = getattr(prompt_cfg, "experience_max_entries", 0) if prompt_cfg else 0
         max_chars = (
             getattr(prompt_cfg, "experience_max_chars_per_entry", 400) if prompt_cfg else 400
         )
-        if hasattr(self._exp_reader, "read_for_stage2"):
+        if max_exp <= 0:
+            experience_entries = []
+        elif hasattr(self._exp_reader, "read_for_stage2"):
             experience_entries = self._exp_reader.read_for_stage2(
                 cycle_position,
                 direction=direction,
@@ -864,18 +1014,40 @@ class TwoStageOrchestrator:
         _enable_next_bar = bool(
             getattr(getattr(self._settings, "general", None), "enable_next_bar_prediction", False)
         )
-        messages_s2 = self._assembler.build_stage2_continuation(
-            frame=frame,
-            stage1_messages=messages_s1,
-            stage1_reply_content=reply_s1.content,
-            stage1_json=stage1_json,
-            strategy_files=strategy_files,
-            experience_entries=experience_entries,
-            decision_stance=record.meta.decision_stance,
-            previous_record=previous_record,
-            enable_next_bar_prediction=_enable_next_bar,
-            active_position=active_position,
+        _flip_cooldown = int(
+            getattr(
+                getattr(self._settings, "general", None),
+                "structure_flip_cooldown_bars",
+                3,
+            )
+            or 3
         )
+        _provider_settings = getattr(self._settings, "provider", None)
+        # KV prefix-chain support check (informational; assembler may also consult it).
+        _use_prefix_chain = _log_kv_prefix_chain_support(_provider_settings)
+
+        stage2_build_kwargs = _filter_kwargs(
+            self._assembler.build_stage2_continuation,
+            {
+                "frame": frame,
+                "stage1_messages": messages_s1,
+                "stage1_reply_content": reply_s1.content,
+                "stage1_json": stage1_json,
+                "strategy_files": strategy_files,
+                "experience_entries": experience_entries,
+                "decision_stance": record.meta.decision_stance,
+                "previous_record": previous_record,
+                "enable_next_bar_prediction": _enable_next_bar,
+                "active_position": active_position,
+                "provider_settings": _provider_settings,
+                "use_prefix_chain": _use_prefix_chain,
+                "structure_flip_cooldown_bars": _flip_cooldown,
+            },
+        )
+        messages_s2 = self._assembler.build_stage2_continuation(**stage2_build_kwargs)
+
+        # Ensure market-features block is present in the Stage 2 user prompt.
+        messages_s2 = _inject_market_features_into_stage2_messages(messages_s2, frame)
 
         # ── Step 15: Call AI for Stage 2 ──────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -1011,19 +1183,25 @@ class TwoStageOrchestrator:
             s2_usage_calls.append(getattr(r, "usage", None))
             return r
 
+        s2_validate_kwargs = _filter_kwargs(
+            self._validator.validate,
+            {
+                "kline_frame": frame,
+                "decision_stance": record.meta.decision_stance,
+                "stage1_json": stage1_json,
+                "skip_next_bar": not _enable_next_bar,
+                "active_position": active_position,
+                "previous_record": previous_record,
+                "structure_flip_cooldown_bars": _flip_cooldown,
+            },
+        )
         vr_s2 = validate_with_retry(
             stage="stage2",
             messages=messages_s2,
             reply=reply_s2,
             validator=self._validator,
             validation_settings=self._validation_settings(),
-            validate_kwargs={
-                "kline_frame": frame,
-                "decision_stance": record.meta.decision_stance,
-                "stage1_json": stage1_json,
-                "skip_next_bar": not _enable_next_bar,
-                "active_position": active_position,
-            },
+            validate_kwargs=s2_validate_kwargs,
             call_api=_call_s2_retry,
             provider_settings=getattr(self._settings, "provider", None),
         )
@@ -1101,6 +1279,16 @@ class TwoStageOrchestrator:
             stage2_json = copy.deepcopy(stage2_json)
             stage2_json.pop("next_bar_prediction", None)
 
+        # Apply program decision-continuity guard (mirrors upstream normalizer).
+        if isinstance(stage2_json, dict):
+            stage2_json = _apply_continuity_guard_to_stage2(
+                stage2_json,
+                frame=frame,
+                stage1_json=stage1_json,
+                previous_record=previous_record,
+                cooldown_bars=_flip_cooldown,
+            )
+
         # ── Step 19: Stage 2 done ─────────────────────────────────────────────
         on_event(OrchestratorEvent.Stage2Done)
 
@@ -1123,6 +1311,19 @@ class TwoStageOrchestrator:
                 )
         elif _enable_next_bar:
             logger.info("next_bar_prediction absent from stage2 response")
+
+        _nc_pred = _pred.get("next_cycle_prediction")
+        if isinstance(_nc_pred, dict):
+            if _nc_pred.get("unpredictable"):
+                logger.info("next_cycle_prediction cycle=null unpredictable=true")
+            else:
+                logger.info(
+                    "next_cycle_prediction cycle=%s direction=%s unpredictable=false",
+                    _nc_pred.get("cycle"),
+                    _nc_pred.get("direction"),
+                )
+        else:
+            logger.info("next_cycle_prediction absent from stage2 response")
 
         # ── Step 20: Build final record ───────────────────────────────────────
         usage_total = _accumulate_usage_calls(
@@ -1161,7 +1362,7 @@ class TwoStageOrchestrator:
     def _thinking_params(self) -> tuple[bool, str]:
         """Return (thinking, reasoning_effort) from settings defaults."""
         if self._settings is None:
-            return True, "max"
+            return True, "high"
         p = self._settings.provider
         return p.thinking, p.reasoning_effort
 
@@ -1183,6 +1384,7 @@ class TwoStageOrchestrator:
             self._settings.provider.model if self._settings is not None else ""
         )
         tried_qclaw = False
+        tried_cursor = False
         tried_workbuddy = False
         while True:
             try:
@@ -1200,6 +1402,7 @@ class TwoStageOrchestrator:
                 if not self._is_network_error(exc):
                     raise
                 # Try WorkBuddy fallback first (if model is openclaw_wb),
+                # then Cursor (if model is openclaw_cs),
                 # then QClaw fallback (if model is openclaw)
                 if not tried_workbuddy and self._try_workbuddy_fallback(
                     original_model=original_model
@@ -1207,6 +1410,15 @@ class TwoStageOrchestrator:
                     tried_workbuddy = True
                     logger.info(
                         "%s network error (%s); applied WorkBuddy provider — retrying",
+                        stage_label,
+                        exc,
+                    )
+                elif not tried_cursor and self._try_cursor_fallback(
+                    original_model=original_model
+                ):
+                    tried_cursor = True
+                    logger.info(
+                        "%s network error (%s); applied Cursor provider — retrying",
                         stage_label,
                         exc,
                     )
@@ -1252,6 +1464,44 @@ class TwoStageOrchestrator:
 
         logger.info(
             "QClaw auto-fallback: model=%s base_url=%s",
+            self._settings.provider.model,
+            self._settings.provider.base_url,
+        )
+        return True
+
+    def _try_cursor_fallback(self, *, original_model: str = "") -> bool:
+        """Apply Cursor route via QClaw (like settings Save with model=openclaw_cs)."""
+        from pa_agent.ai.cursor_connector import (
+            apply_cursor_provider_to_settings,
+            is_openclaw_cs_model,
+        )
+        from pa_agent.config.paths import SETTINGS_JSON_PATH
+
+        if not is_openclaw_cs_model(original_model):
+            return False
+        if self._settings is None:
+            return False
+
+        from pa_agent.config.settings import save_settings
+        from pa_agent.util.logging import update_api_key
+
+        err = apply_cursor_provider_to_settings(
+            self._settings,
+            preferred_model=original_model,
+        )
+        if err:
+            logger.warning("Cursor auto-fallback unavailable: %s", err)
+            return False
+
+        self._client.update_provider(self._settings.provider)
+        try:
+            save_settings(self._settings, SETTINGS_JSON_PATH)
+            update_api_key(self._settings.provider.api_key)
+        except Exception as save_exc:  # noqa: BLE001
+            logger.warning("Cursor fallback applied but settings save failed: %s", save_exc)
+
+        logger.info(
+            "Cursor auto-fallback: model=%s base_url=%s",
             self._settings.provider.model,
             self._settings.provider.base_url,
         )

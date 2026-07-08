@@ -222,19 +222,6 @@ QLabel#mutedLabel {
     color: #8b949e;
     font-size: 11px;
 }
-QLabel#keepAnalysisStatusLabel[status="active"] {
-    color: #3fb950;
-    font-size: 11px;
-    font-weight: 600;
-}
-QLabel#keepAnalysisStatusLabel[status="paused"] {
-    color: #d29922;
-    font-size: 11px;
-}
-QLabel#keepAnalysisStatusLabel[status="busy"] {
-    color: #58a6ff;
-    font-size: 11px;
-}
 QLabel#stageHeader {
     font-size: 14px;
     font-weight: bold;

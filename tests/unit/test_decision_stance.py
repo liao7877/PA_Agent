@@ -30,8 +30,8 @@ def test_stance_guidance_balanced_more_aggressive_than_conservative():
 def test_stance_guidance_aggressive_more_than_balanced():
     balanced = build_decision_stance_guidance("balanced")
     aggressive = build_decision_stance_guidance("aggressive")
-    assert "主动寻找可下单方案" in aggressive
-    assert "主动寻找可下单方案" not in balanced
+    assert "30–44" in aggressive
+    assert "30–44" not in balanced
 
 
 def test_stance_guidance_extreme_aggressive_forces_trade():
@@ -41,15 +41,6 @@ def test_stance_guidance_extreme_aggressive_forces_trade():
     assert "强制产出交易" in extreme
     assert "禁止因犹豫而输出「不下单」" in extreme
     assert "强制产出交易" not in aggressive
-
-
-def test_stance_guidance_no_fixed_rr_upper_cap():
-    for stance in ("conservative", "balanced", "aggressive", "extreme_aggressive"):
-        text = build_decision_stance_guidance(stance)
-        assert "盈亏比上限" not in text
-        assert "1.0–1.5" not in text
-        assert "1.0-1.5" not in text
-        assert "不设固定上限" in text or "结构自然得出" in text or "结构决定" in text
 
 
 def test_stance_label_zh():

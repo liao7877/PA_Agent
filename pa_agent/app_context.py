@@ -42,6 +42,7 @@ class AppContext:
         from pa_agent.util.event_bus import EventBus
         from pa_agent.util.mask_secret import mask_secret
         from pa_agent.data.factory import create_data_source, normalize_data_source_kind
+        from pa_agent.ai.cursor_connector import is_openclaw_cs_model
         from pa_agent.ai.deepseek_client import DeepSeekClient
         from pa_agent.ai.prompt_assembler import PromptAssembler
         from pa_agent.ai.router import route_strategy_files
@@ -54,9 +55,11 @@ class AppContext:
         settings = load_settings(SETTINGS_JSON_PATH)
         from pa_agent.ai.qclaw_connector import sync_qclaw_agent_provider_on_load
         from pa_agent.ai.workbuddy_connector import sync_workbuddy_provider_on_load
+        from pa_agent.ai.cursor_connector import sync_cursor_provider_on_load
 
         sync_qclaw_agent_provider_on_load(settings, save_path=SETTINGS_JSON_PATH)
         sync_workbuddy_provider_on_load(settings, save_path=SETTINGS_JSON_PATH)
+        sync_cursor_provider_on_load(settings, save_path=SETTINGS_JSON_PATH)
 
         # ── Logging (with API key masking) ────────────────────────────────────
         configure_logging(api_key=settings.provider.api_key)
@@ -73,8 +76,7 @@ class AppContext:
         ds_kind = normalize_data_source_kind(
             getattr(settings.general, "last_data_source", "mt5")
         )
-        mt5_path = getattr(settings.general, "mt5_terminal_path", "") or ""
-        data_source = create_data_source(ds_kind, mt5_terminal_path=mt5_path)
+        data_source = create_data_source(ds_kind)
 
         # Subscribe to the last-used symbol/timeframe from settings
         try:
@@ -100,7 +102,12 @@ class AppContext:
             app_logger.warning("Initial data source subscription failed: %s", exc)
 
         # ── AI client ─────────────────────────────────────────────────────────
-        client = DeepSeekClient(settings=settings.provider, logger_=app_logger)
+        if is_openclaw_cs_model(settings.provider.model):
+            from pa_agent.ai.cursor_sdk_client import CursorSdkClient
+
+            client = CursorSdkClient(settings=settings.provider, logger_=app_logger)
+        else:
+            client = DeepSeekClient(settings=settings.provider, logger_=app_logger)
 
         # ── Prompt assembler ──────────────────────────────────────────────────
         exp_reader = ExperienceReader(experience_dir=EXPERIENCE_DIR, logger=app_logger)

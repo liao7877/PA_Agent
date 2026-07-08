@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Early diagnostics before Qt / heavy imports: crash dumps + file logging.
+    from pa_agent.util.crash_diagnostics import enable_crash_diagnostics, log_startup_diagnostics
+    from pa_agent.util.logging import configure_logging
+
+    enable_crash_diagnostics()
+    configure_logging()
+    log_startup_diagnostics()
+
     argv = list(sys.argv if argv is None else argv)
     app = QApplication(argv)
     app.setApplicationName(PRODUCT_NAME)
