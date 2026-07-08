@@ -10,10 +10,9 @@ from pa_agent.ai.json_validator import (
     JsonValidator,
     Ok,
     ValidationError,
-    _finalize_json_repairs,
+    _repair_unclosed_string_before_brace,
     _repair_unescaped_quotes,
     _strip_fences,
-    resolve_stage_json_text,
 )
 
 _SAMPLE = Path(__file__).resolve().parents[2] / "tools" / "stage2_raw_sample.txt"
@@ -39,22 +38,11 @@ def test_strip_fences_includes_repair():
     assert isinstance(obj["decision_trace"], list)
 
 
-def test_repair_missing_comma_between_object_fields():
-    """Models often omit comma after a long string value before the next key."""
-    broken = (
-        '{"decision": {"reasoning": "等待信号，outcome=wait。"\n'
-        '    "diagnosis_confidence": 75, "order_type": "不下单"}}'
-    )
-    obj = json.loads(_strip_fences(broken))
-    assert obj["decision"]["diagnosis_confidence"] == 75
-
-
-def test_repair_literal_newline_inside_json_string():
-    """Unescaped newlines inside string values must not break parsing."""
-    broken = '{"reasoning": "第一行\n第二行", "ok": true}'
-    obj = json.loads(_finalize_json_repairs(broken))
-    assert "第一行" in obj["reasoning"]
-    assert obj["ok"] is True
+def test_repair_unclosed_string_before_brace_fixes_summary_newline() -> None:
+    broken = '{"summary":"unfinished\n}'
+    repaired = _repair_unclosed_string_before_brace(broken)
+    obj = json.loads(repaired)
+    assert obj["summary"] == "unfinished"
 
 
 # ── T2: Schema backward-compatibility tests ──────────────────────────────────
@@ -110,48 +98,57 @@ def _valid_prediction() -> dict:
 
 
 def test_stage2_schema_backward_compatible_without_prediction():
-    """Legacy Stage 2 JSON without next_bar_prediction must validate OK."""
+    """Legacy Stage 2 JSON without predictions is auto-filled in normalizer."""
     obj = _valid_stage2_no_prediction()
     result = _validator.validate("stage2", json.dumps(obj, ensure_ascii=False))
     assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert isinstance(result.obj.get("next_bar_prediction"), dict)
+    assert isinstance(result.obj.get("next_cycle_prediction"), dict)
+
+
+def _valid_cycle_prediction() -> dict:
+    return {
+        "cycle": "normal_channel",
+        "direction": "bullish",
+        "probabilities": {
+            "spike": 5,
+            "micro_channel": 5,
+            "tight_channel": 10,
+            "normal_channel": 40,
+            "broad_channel": 15,
+            "trending_tr": 10,
+            "trading_range": 10,
+            "extreme_tr": 5,
+        },
+        "reasoning": "通道延续概率最高。",
+        "unpredictable": False,
+        "features_used": ["stage1_diagnosis"],
+    }
 
 
 def test_stage2_schema_accepts_valid_prediction():
-    """Stage 2 JSON with valid next_bar_prediction must validate OK."""
+    """Stage 2 JSON with valid predictions must validate OK."""
     obj = _valid_stage2_no_prediction()
     obj["next_bar_prediction"] = _valid_prediction()
+    obj["next_cycle_prediction"] = _valid_cycle_prediction()
     result = _validator.validate("stage2", json.dumps(obj, ensure_ascii=False))
     assert isinstance(result, Ok), f"Expected Ok, got {result}"
 
 
-def test_stage2_schema_rejects_invalid_prediction_subfield():
-    """Invalid sub-field in next_bar_prediction must cause c-category error."""
+def test_stage2_normalizer_aligns_prediction_direction_to_argmax():
+    """Normalizer fixes direction when it disagrees with probability argmax."""
     obj = _valid_stage2_no_prediction()
+    obj["next_cycle_prediction"] = _valid_cycle_prediction()
     obj["next_bar_prediction"] = {
-        "direction": "bullish",
-        "probabilities": {"bullish": 10, "bearish": 10, "neutral": 10},  # sum=30
-        "reasoning": "x" * 30,
-        "unpredictable": False,
-        "features_used": ["stage1_diagnosis"],
-    }
-    # normalize_stage2 rescales probability sums before schema checks; test the
-    # checker directly so invalid sums are still guarded after normalization.
-    errors = _validator._check_next_bar_prediction(obj)
-    assert any("sum=30" in e for e in errors)
-
-
-def test_stage2_schema_rescales_invalid_prediction_sum_via_normalizer():
-    """Probability sums that are off but fixable are normalized instead of rejected."""
-    obj = _valid_stage2_no_prediction()
-    obj["next_bar_prediction"] = {
-        "direction": "bullish",
-        "probabilities": {"bullish": 10, "bearish": 10, "neutral": 10},
+        "direction": "bearish",
+        "probabilities": {"bullish": 50, "bearish": 30, "neutral": 20},
         "reasoning": "x" * 30,
         "unpredictable": False,
         "features_used": ["stage1_diagnosis"],
     }
     result = _validator.validate("stage2", json.dumps(obj, ensure_ascii=False))
-    assert isinstance(result, Ok), f"Expected Ok after normalization, got {result}"
+    assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["next_bar_prediction"]["direction"] == "bullish"
 
 
 # ── T6: Validator unit tests for _check_next_bar_prediction ──────────────────
@@ -265,13 +262,3 @@ def test_check_next_bar_prediction_invalid_fields_prefix():
     assert all(e.startswith("next_bar_prediction.") for e in errors), (
         f"Not all errors have prefix: {errors}"
     )
-
-
-def test_resolve_stage_json_text_prefers_content() -> None:
-    assert resolve_stage_json_text('{"a":1}', '{"b":2}') == '{"a":1}'
-
-
-def test_resolve_stage_json_text_falls_back_to_reasoning() -> None:
-    reasoning = 'draft...\n```json\n{"cycle_position":"spike"}\n```'
-    out = resolve_stage_json_text("", reasoning)
-    assert json.loads(out)["cycle_position"] == "spike"

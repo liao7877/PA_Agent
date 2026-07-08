@@ -10,17 +10,31 @@ from pa_agent.data.market_defaults import (
     GOLD_TV_SYMBOL,
 )
 
-DataSourceKind = Literal["mt5", "tradingview", "akshare"]
+DataSourceKind = Literal[
+    "mt5",
+    "tradingview",
+    "akshare",
+    "eastmoney",
+    "tushare",
+    "yfinance",
+]
 
 DATA_SOURCE_CHOICES: tuple[tuple[DataSourceKind, str], ...] = (
     ("mt5", "MT5"),
     ("tradingview", "TradingView"),
 )
 
+_HIDDEN_KINDS: frozenset[DataSourceKind] = frozenset(
+    {"akshare", "eastmoney", "tushare", "yfinance"}
+)
+
 _DEFAULT_SYMBOLS: dict[DataSourceKind, str] = {
     "mt5": GOLD_MT5_SYMBOL,
     "tradingview": GOLD_TV_SYMBOL,
     "akshare": A_SHARE_DEFAULT_SYMBOL,
+    "eastmoney": A_SHARE_DEFAULT_SYMBOL,
+    "tushare": A_SHARE_DEFAULT_SYMBOL,
+    "yfinance": "GC=F",
 }
 
 
@@ -31,7 +45,8 @@ def default_tradingview_exchange() -> str:
 
 def normalize_data_source_kind(kind: str | None) -> DataSourceKind:
     """Return a supported data-source kind, defaulting to MT5."""
-    if kind in {k for k, _ in DATA_SOURCE_CHOICES}:
+    supported = {k for k, _ in DATA_SOURCE_CHOICES} | _HIDDEN_KINDS
+    if kind in supported:
         return kind  # type: ignore[return-value]
     return "mt5"
 
@@ -42,6 +57,14 @@ def data_source_label(kind: str | None) -> str:
     for key, label in DATA_SOURCE_CHOICES:
         if key == normalized:
             return label
+    if normalized == "eastmoney":
+        return "东方财富"
+    if normalized == "tushare":
+        return "Tushare(A股)"
+    if normalized == "akshare":
+        return "AkShare"
+    if normalized == "yfinance":
+        return "YFinance"
     return "MT5"
 
 
@@ -60,10 +83,24 @@ def create_data_source(
         from pa_agent.data.tradingview import TradingViewSource
 
         return TradingViewSource()
+    if normalized == "eastmoney":
+        from pa_agent.data.eastmoney_source import EastMoneySource
+
+        return EastMoneySource()
+    if normalized == "tushare":
+        from pa_agent.config.paths import SETTINGS_JSON_PATH
+        from pa_agent.config.settings import load_settings
+        from pa_agent.data.tushare_source import TushareSource
+
+        return TushareSource(settings=load_settings(SETTINGS_JSON_PATH))
     if normalized == "akshare":
         from pa_agent.data.akshare_source import AkShareSource
 
         return AkShareSource()
+    if normalized == "yfinance":
+        from pa_agent.data.yfinance_source import YFinanceSource
+
+        return YFinanceSource()
     from pa_agent.data.mt5 import MT5Source
 
     return MT5Source(terminal_path=mt5_terminal_path)

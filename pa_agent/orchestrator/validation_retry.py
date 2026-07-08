@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal
 
 from pa_agent.ai.json_validator import Ok, ValidationError, coalesce_model_json_text
 from pa_agent.ai.retry_feedback import build_retry_feedback, parse_previous_for_cheat
-from pa_agent.ai.retry_policy import detect_cheat, should_retry
+from pa_agent.ai.retry_policy import detect_cheat, extract_feedback_targets, should_retry
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ def validate_with_retry(
     attempt = 0
     previous_raw: str | None = None
     previous_obj: dict[str, Any] | None = None
+    previous_feedback_targets: set[str] = set()
 
     while True:
         content = coalesce_model_json_text(
@@ -96,7 +97,14 @@ def validate_with_retry(
                     previous_obj,
                     **validate_kwargs,
                 )
-                cheats = detect_cheat(stage, before_norm, result.obj)
+                cheats = detect_cheat(
+                    stage,
+                    before_norm,
+                    result.obj,
+                    before_raw=previous_obj,
+                    after_raw=parse_previous_for_cheat(content),
+                    feedback_mentioned=previous_feedback_targets,
+                )
                 if cheats:
                     logger.warning(
                         "%s retry cheat detected after attempt %d: %s",
@@ -154,6 +162,10 @@ def validate_with_retry(
 
         previous_raw = content
         previous_obj = parse_previous_for_cheat(previous_raw)
+        previous_feedback_targets = extract_feedback_targets(
+            err.invalid_fields,
+            err.missing_fields,
+        )
 
         feedback = build_retry_feedback(
             err,

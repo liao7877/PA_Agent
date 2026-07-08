@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from pa_agent.ai.coherence_checks import BAR_BY_BAR_TARGET_COUNT
 from pa_agent.ai.trace_normalize import normalize_stage1_traces
 
 logger = logging.getLogger(__name__)
@@ -16,9 +17,13 @@ _STRATEGY_FILE_ALIASES: dict[str, str] = {
     "交易区间交易策略.txt": "震荡区间交易策略.txt",
     "宽通道分析识别.txt": "文件13-窄通道与宽通道策略.txt",
     "宽通道交易策略.txt": "文件13-窄通道与宽通道策略.txt",
+    "下跌通道策略.txt": "下跌通道交易策略.txt",
+    "下跌通道策略": "下跌通道交易策略.txt",
 }
 
 _BAR_ROLE_ALIASES: dict[str, str] = {
+    "reversal_attempt": "signal",
+    "reversal": "signal",
     "continue": "confirmation",
     "continued": "confirmation",
     "continuation": "confirmation",
@@ -27,16 +32,16 @@ _BAR_ROLE_ALIASES: dict[str, str] = {
     "follow-through": "confirmation",
     "confirm": "confirmation",
     "confirmed": "confirmation",
-    "reversal": "signal",
-    "reversal_attempt": "signal",
-    "signal_failed": "trap",
-    "failed_signal": "trap",
-    "double_bottom_attempt": "signal",
-    "double_top_attempt": "signal",
     "breakout": "signal",
     "setup": "signal",
     "pullback": "test",
     "retest": "test",
+    "breakout_test": "test",
+    "breakout_pullback": "test",
+    "breakout-test": "test",
+    "breakout_pullback_test": "test",
+    "support": "structure",
+    "resistance": "structure",
     "failure": "trap",
     "failed": "trap",
     "exhaustion": "climax",
@@ -60,72 +65,35 @@ _BAR_ROLE_ALIASES: dict[str, str] = {
 }
 
 # Model often omits the trailing "s" on strengthens_* / weakens_*.
+# Model often uses "low" as a synonym for "weak" in signal_bar.quality.
 _SIGNAL_BAR_QUALITY_ALIASES: dict[str, str] = {
     "low": "weak",
     "high": "strong",
-    "failed": "invalid",
-    "failure": "invalid",
-    "broken": "invalid",
-    "none": "invalid",
-    "bad": "invalid",
+    "moderate": "medium",
     "poor": "weak",
+    "good": "strong",
+    "bad": "invalid",
+    # "valid" means "signal meets criteria" but is not a quality descriptor
+    "valid": "medium",
+    "invalid": "invalid",
+    # 中文 synonyms
+    "弱": "weak",
+    "中": "medium",
+    "强": "strong",
+    "无效": "invalid",
+    "有效": "medium",
 }
 
-_VALID_BAR_TYPES = frozenset({
-    "trend_bull",
-    "trend_bear",
-    "doji",
-    "inside",
-    "outside_bull",
-    "outside_bear",
-    "flat",
-    "other",
-})
-
-_VALID_ENTRY_SETUP_TYPES = frozenset({
-    "h1",
-    "h2",
-    "l1",
-    "l2",
-    "mtr",
-    "wedge",
-    "tr_boundary",
-    "breakout_pullback",
-    "none",
-})
-
-_ENTRY_SETUP_TYPE_ALIASES: dict[str, str] = {
-    "": "none",
-    "null": "none",
-    "n/a": "none",
-    "na": "none",
-    "无": "none",
-    "没有": "none",
-    "无形态": "none",
+# Model often uses "moderate" as a synonym for "medium" in transition_risk.
+_TRANSITION_RISK_ALIASES: dict[str, str] = {
+    "moderate": "medium",
+    "moderately_high": "high",
+    "moderately_low": "low",
+    "moderate_high": "high",
+    "moderate_low": "low",
+    "mid": "medium",
 }
 
-_BAR_TYPE_ALIASES: dict[str, str] = {
-    "inside_bear": "inside",
-    "inside_bull": "inside",
-    "bear_inside": "inside",
-    "bull_inside": "inside",
-    "bearish_inside": "inside",
-    "bullish_inside": "inside",
-    "doji_upper_shadow": "doji",
-    "doji_lower_shadow": "doji",
-    "doji_upper": "doji",
-    "doji_lower": "doji",
-    "upper_shadow_doji": "doji",
-    "lower_shadow_doji": "doji",
-    "long_legged_doji": "doji",
-    "spinning_top": "doji",
-    "hammer": "doji",
-    "shooting_star": "doji",
-    "small_doji": "doji",
-    "trend": "other",
-    "range": "flat",
-    "ranging": "flat",
-}
 
 _CONTEXT_EFFECT_ALIASES: dict[str, str] = {
     "strengthen_bull": "strengthens_bull",
@@ -134,15 +102,107 @@ _CONTEXT_EFFECT_ALIASES: dict[str, str] = {
     "strengthens_bear": "strengthens_bear",
     "strengthens_bulls": "strengthens_bull",   # AI typo: extra 's'
     "strengthens_bears": "strengthens_bear",   # AI typo: extra 's'
+    "strengthens_bash": "strengthens_bear",    # AI typo: bash → bear
+    "strengthen_bash": "strengthens_bear",
     "weakens_bull": "weakens_bull",
     "weakens_bear": "weakens_bear",
     "weaken_bull": "weakens_bull",
     "weaken_bear": "weakens_bear",
+    "weakened_bull": "weakened_bull",
+    "weakened_bear": "weakened_bear",
     "weakens_bulls": "weakens_bull",           # AI typo: extra 's'
     "weakens_bears": "weakens_bear",           # AI typo: extra 's'
     "neutral": "neutral",
     "transition": "transition",
 }
+
+_BAR_TYPE_ENUM = frozenset({
+    "trend_bull", "trend_bear", "doji", "inside",
+    "outside_bull", "outside_bear", "flat", "other",
+})
+_VALID_BAR_ROLES = frozenset({
+    "structure", "signal", "entry", "confirmation", "noise", "trap", "climax", "test",
+})
+
+_VALID_CONTEXT_EFFECTS = frozenset({
+    "strengthens_bull", "weakens_bull", "strengthens_bear", "weakens_bear",
+    "neutral", "transition", "weakened_bull", "weakened_bear",
+})
+
+_BAR_TYPE_ALIASES: dict[str, str] = {
+    "ine": "inside",
+    "ins": "inside",
+    "insid": "inside",
+    "doj": "doji",
+    "trendbull": "trend_bull",
+    "trendbear": "trend_bear",
+    "outsidebull": "outside_bull",
+    "outsidebear": "outside_bear",
+}
+
+
+def _strip_enum_suffix(raw: str) -> str:
+    text = raw.strip()
+    for sep in ("（", "(", "【", "[", "—", "–", " - ", "：", ":"):
+        if sep in text:
+            head = text.split(sep, 1)[0].strip()
+            if head:
+                return head
+    return text
+
+
+def _normalize_bar_type_value(raw: object) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    text = _strip_enum_suffix(raw)
+    key = text.strip().lower().replace(" ", "_")
+    key = _BAR_TYPE_ALIASES.get(key, key)
+    if key in _BAR_TYPE_ENUM:
+        return key
+    for token in sorted(_BAR_TYPE_ENUM, key=len, reverse=True):
+        if key.startswith(token) or token.startswith(key):
+            return token
+    return None
+
+
+def _bar_type_from_summary(out: dict[str, Any], bar_label: str) -> str | None:
+    summary = out.get("bar_by_bar_summary")
+    if not isinstance(summary, list):
+        return None
+    target = str(bar_label or "K1").strip().upper()
+    for item in summary:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("bar", "")).strip().upper() != target:
+            continue
+        return _normalize_bar_type_value(item.get("bar_type"))
+    return None
+
+
+def _normalize_bar_types(out: dict[str, Any]) -> None:
+    """Fix truncated bar_type tokens (e.g. inside→ine) before schema validation."""
+    summary = out.get("bar_by_bar_summary")
+    if isinstance(summary, list):
+        for item in summary:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("bar_type")
+            norm = _normalize_bar_type_value(raw)
+            if norm and norm != raw:
+                item["bar_type"] = norm
+                logger.debug("Mapped bar_by_bar_summary bar_type %r -> %s", raw, norm)
+
+    bar_analysis = out.get("bar_analysis")
+    if not isinstance(bar_analysis, dict):
+        return
+    raw_bt = bar_analysis.get("bar_type")
+    norm_bt = _normalize_bar_type_value(raw_bt)
+    if norm_bt is None:
+        last_bar = str(bar_analysis.get("last_closed_bar") or "K1")
+        norm_bt = _bar_type_from_summary(out, last_bar)
+    if norm_bt and norm_bt != raw_bt:
+        bar_analysis["bar_type"] = norm_bt
+        logger.debug("Mapped bar_analysis.bar_type %r -> %s", raw_bt, norm_bt)
 
 
 def _hoist_bar_by_bar_summary(out: dict[str, Any]) -> None:
@@ -174,104 +234,38 @@ def _normalize_strategy_file_names(files: Any) -> list[str]:
     return out
 
 
-def _normalize_bar_by_bar_follow_through(out: dict[str, Any]) -> None:
-    """Default missing follow_through on bar_by_bar_summary items."""
-    summary = out.get("bar_by_bar_summary")
-    if not isinstance(summary, list):
-        return
-    for item in summary:
-        if not isinstance(item, dict):
-            continue
-        ft = item.get("follow_through")
-        if ft is None or ft == "":
-            seq = _summary_bar_seq(item.get("bar"))
-            item["follow_through"] = "pending" if seq == 1 else "no"
-            logger.debug(
-                "Filled bar_by_bar_summary follow_through for %s -> %s",
-                item.get("bar"),
-                item["follow_through"],
-            )
-        elif isinstance(ft, bool):
-            item["follow_through"] = "yes" if ft else "no"
+def _normalize_bar_role_value(raw: str) -> str | None:
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    mapped = _BAR_ROLE_ALIASES.get(key)
+    if mapped:
+        return mapped
+    if key in _VALID_BAR_ROLES:
+        return key
+    if "breakout" in key and ("test" in key or "pullback" in key):
+        return "test"
+    if key.startswith("trend_"):
+        return "structure"
+    return None
 
 
-def _normalize_entry_setup_type(out: dict[str, Any]) -> None:
-    """Default null/missing entry_setup_type and map common aliases to schema tokens."""
-    ba = out.get("bar_analysis")
-    if not isinstance(ba, dict):
-        return
-    raw = ba.get("entry_setup_type")
-    if raw is None or raw == "":
-        ba["entry_setup_type"] = "none"
-        logger.info("Filled bar_analysis.entry_setup_type null/empty -> none")
-        return
-    if not isinstance(raw, str):
-        ba["entry_setup_type"] = "none"
-        logger.info("Coerced bar_analysis.entry_setup_type %r -> none", raw)
-        return
-    key = raw.strip().lower()
-    mapped = _ENTRY_SETUP_TYPE_ALIASES.get(key, key)
-    if mapped not in _VALID_ENTRY_SETUP_TYPES:
-        mapped = "none"
-    if mapped != raw:
-        ba["entry_setup_type"] = mapped
-        logger.info("Mapped bar_analysis.entry_setup_type %r -> %s", raw, mapped)
-
-
-def _normalize_signal_bar_quality(out: dict[str, Any]) -> None:
-    """Map invented signal_bar.quality tokens to schema enums."""
-    ba = out.get("bar_analysis")
-    if not isinstance(ba, dict):
-        return
-    signal_bar = ba.get("signal_bar")
-    if not isinstance(signal_bar, dict):
-        return
-    raw = signal_bar.get("quality")
-    if not isinstance(raw, str):
-        return
-    key = raw.strip().lower()
-    mapped = _SIGNAL_BAR_QUALITY_ALIASES.get(key)
-    if mapped and mapped != key:
-        signal_bar["quality"] = mapped
-        logger.info("Mapped signal_bar.quality %r -> %s", raw, mapped)
-
-
-def _infer_gate_result(out: dict[str, Any]) -> None:
-    """Fill missing gate_result from gate_trace when the model omits it."""
-    if str(out.get("gate_result", "") or "").strip():
-        return
-    gate = out.get("gate_trace")
-    if not isinstance(gate, list) or not gate:
-        out["gate_result"] = "unknown"
-        logger.info("Filled missing gate_result -> unknown (no gate_trace)")
-        return
-
-    for item in gate:
-        if not isinstance(item, dict):
-            continue
-        ans = str(item.get("answer", "") or "").strip()
-        nid = str(item.get("node_id", "") or "").strip()
-        if ans in ("否", "等待") or (nid in ("1.2", "1.3") and ans == "否"):
-            out["gate_result"] = "wait"
-            logger.info(
-                "Inferred gate_result=wait from gate_trace %s answer=%s",
-                nid,
-                ans,
-            )
-            return
-
-    out["gate_result"] = "proceed"
-    logger.info("Inferred gate_result=proceed (gate_trace present)")
-
-
-def _fix_invalid_bar_labels(out: dict[str, Any], *, kline_frame: Any = None) -> None:
-    """Rewrite K0 (unclosed bar) to K1 before geometry coherence checks."""
-    if kline_frame is None:
-        return
-    from pa_agent.ai.coherence_checks import auto_fix_invalid_bar_labels
-
-    for msg in auto_fix_invalid_bar_labels(out, kline_frame=kline_frame):
-        logger.info("stage1 %s", msg)
+def _normalize_context_effect_value(raw: str) -> str | None:
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    mapped = _CONTEXT_EFFECT_ALIASES.get(key)
+    if mapped:
+        return mapped
+    if key in _VALID_CONTEXT_EFFECTS:
+        return key
+    if key.startswith("strengthen"):
+        if "bear" in key or "bash" in key:
+            return "strengthens_bear"
+        if "bull" in key:
+            return "strengthens_bull"
+    if key.startswith("weaken"):
+        if "bear" in key:
+            return "weakens_bear"
+        if "bull" in key:
+            return "weakens_bull"
+    return None
 
 
 def _normalize_bar_by_bar_roles(out: dict[str, Any]) -> None:
@@ -284,77 +278,10 @@ def _normalize_bar_by_bar_roles(out: dict[str, Any]) -> None:
         role = item.get("role")
         if not isinstance(role, str):
             continue
-        key = role.strip().lower()
-        normalized = _BAR_ROLE_ALIASES.get(key)
-        if not normalized and key.endswith("_attempt"):
-            normalized = "signal"
-        if normalized:
+        normalized = _normalize_bar_role_value(role)
+        if normalized and normalized != role:
             item["role"] = normalized
             logger.debug("Mapped bar_by_bar_summary role %r -> %s", role, normalized)
-
-
-def _normalize_bar_type_value(
-    value: object,
-    *,
-    bar_label: object = None,
-    kline_frame: Any = None,
-) -> str | None:
-    """Map invented bar_type tokens to schema enums; fall back to geometry."""
-    if not isinstance(value, str):
-        return None
-    key = value.strip().lower()
-    if not key:
-        return None
-    if key in _VALID_BAR_TYPES:
-        return key
-    mapped = _BAR_TYPE_ALIASES.get(key)
-    if mapped:
-        return mapped
-    if kline_frame is not None and bar_label is not None:
-        seq = _summary_bar_seq(bar_label)
-        if seq is not None:
-            from pa_agent.ai.kline_features import compute_kline_geometry_features
-
-            features = {f.seq: f for f in compute_kline_geometry_features(kline_frame)}
-            feat = features.get(seq)
-            if feat is not None:
-                computed = str(feat.bar_type or "").strip().lower()
-                if computed in _VALID_BAR_TYPES:
-                    return computed
-    return "other"
-
-
-def _normalize_bar_types(out: dict[str, Any], *, kline_frame: Any = None) -> None:
-    summary = out.get("bar_by_bar_summary")
-    if isinstance(summary, list):
-        for item in summary:
-            if not isinstance(item, dict):
-                continue
-            raw = item.get("bar_type")
-            if not isinstance(raw, str):
-                continue
-            normalized = _normalize_bar_type_value(
-                raw, bar_label=item.get("bar"), kline_frame=kline_frame
-            )
-            if normalized and normalized != raw.strip().lower():
-                logger.info(
-                    "Mapped bar_by_bar_summary bar_type %r -> %s",
-                    raw,
-                    normalized,
-                )
-                item["bar_type"] = normalized
-
-    ba = out.get("bar_analysis")
-    if isinstance(ba, dict):
-        raw = ba.get("bar_type")
-        if isinstance(raw, str):
-            bar_label = ba.get("last_closed_bar") or "K1"
-            normalized = _normalize_bar_type_value(
-                raw, bar_label=bar_label, kline_frame=kline_frame
-            )
-            if normalized and normalized != raw.strip().lower():
-                logger.info("Mapped bar_analysis.bar_type %r -> %s", raw, normalized)
-                ba["bar_type"] = normalized
 
 
 def _normalize_bar_by_bar_context_effects(out: dict[str, Any]) -> None:
@@ -367,8 +294,7 @@ def _normalize_bar_by_bar_context_effects(out: dict[str, Any]) -> None:
         effect = item.get("context_effect")
         if not isinstance(effect, str):
             continue
-        key = effect.strip().lower()
-        normalized = _CONTEXT_EFFECT_ALIASES.get(key)
+        normalized = _normalize_context_effect_value(effect)
         if normalized and normalized != effect:
             item["context_effect"] = normalized
             logger.debug(
@@ -376,6 +302,130 @@ def _normalize_bar_by_bar_context_effects(out: dict[str, Any]) -> None:
                 effect,
                 normalized,
             )
+
+
+_VALID_TRAPPED_SIDES = frozenset({"bulls", "bears", "both", "none", "unknown"})
+
+
+def _normalize_bar_by_bar_trapped_side(out: dict[str, Any]) -> None:
+    summary = out.get("bar_by_bar_summary")
+    if not isinstance(summary, list):
+        return
+    for item in summary:
+        if not isinstance(item, dict):
+            continue
+        side = item.get("trapped_side")
+        if side is None or (isinstance(side, str) and not side.strip()):
+            item["trapped_side"] = "none"
+            logger.debug("Mapped bar_by_bar_summary trapped_side null/empty -> none")
+            continue
+        if isinstance(side, str):
+            key = side.strip().lower()
+            if key in _VALID_TRAPPED_SIDES:
+                if key != side:
+                    item["trapped_side"] = key
+            else:
+                item["trapped_side"] = "unknown"
+                logger.debug("Mapped bar_by_bar_summary trapped_side %r -> unknown", side)
+
+
+def _infer_signal_bar_from_summary(summary: object) -> dict[str, Any] | None:
+    """Build signal_bar from the newest bar_by_bar_summary item with role=signal."""
+    if not isinstance(summary, list):
+        return None
+    for item in summary:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role", "")).strip().lower() != "signal":
+            continue
+        bar_type = str(item.get("bar_type", "")).strip().lower()
+        if bar_type in ("trend_bull", "trend_bear"):
+            quality = "strong"
+        elif bar_type in ("outside_bull", "outside_bear"):
+            quality = "medium"
+        elif bar_type in ("doji", "inside", "flat", "other"):
+            quality = "weak"
+        else:
+            quality = "invalid"
+        reason = str(item.get("reason", "") or "").strip()
+        if not reason:
+            reason = "从 bar_by_bar_summary（role=signal）推断"
+        return {
+            "bar": item.get("bar"),
+            "quality": quality,
+            "reason": reason,
+        }
+    return None
+
+
+def _normalize_signal_bar_object(out: dict[str, Any]) -> bool:
+    """``signal_bar`` must be an object; models often emit null when signal is in summary."""
+    bar_analysis = out.get("bar_analysis")
+    if not isinstance(bar_analysis, dict):
+        return False
+
+    signal_bar = bar_analysis.get("signal_bar")
+    if isinstance(signal_bar, dict):
+        if not str(signal_bar.get("reason", "") or "").strip():
+            signal_bar["reason"] = "见 bar_by_bar_summary"
+        if "bar" not in signal_bar:
+            signal_bar["bar"] = None
+        q = signal_bar.get("quality")
+        if q is None or not isinstance(q, str) or not str(q).strip():
+            # setdefault skips explicit null; schema requires enum string
+            signal_bar["quality"] = "invalid" if signal_bar.get("bar") is None else "weak"
+        return False
+
+    inferred = _infer_signal_bar_from_summary(out.get("bar_by_bar_summary"))
+    if inferred is None:
+        last_bar = str(bar_analysis.get("last_closed_bar", "K1") or "K1").strip()
+        bar_type = str(bar_analysis.get("bar_type", "") or "").strip().lower()
+        quality = "weak" if bar_type in ("doji", "inside", "flat", "other") else "invalid"
+        inferred = {
+            "bar": None,
+            "quality": quality,
+            "reason": (
+                f"模型 signal_bar=null；最近收盘棒 {last_bar}（{bar_type or 'unknown'}），"
+                "无独立已确认信号棒，见 bar_by_bar_summary"
+            ),
+        }
+    bar_analysis["signal_bar"] = inferred
+    logger.debug(
+        "Normalized bar_analysis.signal_bar null -> %r",
+        inferred.get("bar"),
+    )
+    return True
+
+
+def _normalize_signal_bar_quality(out: dict[str, Any]) -> None:
+    """Normalize signal_bar.quality to valid enum values."""
+    bar_analysis = out.get("bar_analysis")
+    if not isinstance(bar_analysis, dict):
+        return
+    signal_bar = bar_analysis.get("signal_bar")
+    if not isinstance(signal_bar, dict):
+        return
+    quality = signal_bar.get("quality")
+    if quality is None or not isinstance(quality, str) or not str(quality).strip():
+        signal_bar["quality"] = "invalid" if signal_bar.get("bar") is None else "weak"
+        return
+    key = quality.strip().lower()
+    normalized = _SIGNAL_BAR_QUALITY_ALIASES.get(key)
+    if normalized and normalized != quality:
+        signal_bar["quality"] = normalized
+        logger.debug("Mapped signal_bar.quality %r -> %s", quality, normalized)
+
+
+def _normalize_transition_risk(out: dict[str, Any]) -> None:
+    """Normalize transition_risk to valid enum values."""
+    risk = out.get("transition_risk")
+    if not isinstance(risk, str):
+        return
+    key = risk.strip().lower()
+    normalized = _TRANSITION_RISK_ALIASES.get(key)
+    if normalized and normalized != risk:
+        out["transition_risk"] = normalized
+        logger.debug("Mapped transition_risk %r -> %s", risk, normalized)
 
 
 def _summary_bar_seq(bar_label: object) -> int | None:
@@ -388,7 +438,7 @@ def _pad_bar_by_bar_summary_to_minimum(
     *,
     kline_frame: Any = None,
 ) -> None:
-    """Pad bar_by_bar_summary to min(8, n_bars) using geometry stubs for missing K1..Kn."""
+    """Pad bar_by_bar_summary to min(BAR_BY_BAR_TARGET_COUNT, n_bars) using geometry stubs."""
     summary = out.get("bar_by_bar_summary")
     if not isinstance(summary, list) or kline_frame is None:
         return
@@ -399,7 +449,8 @@ def _pad_bar_by_bar_summary_to_minimum(
     if n_bars < 1:
         return
 
-    expected_min = min(8, n_bars) if n_bars >= 8 else n_bars
+    target = BAR_BY_BAR_TARGET_COUNT
+    expected_min = min(target, n_bars) if n_bars >= target else n_bars
     if len(summary) >= expected_min:
         return
 
@@ -447,6 +498,68 @@ def _pad_bar_by_bar_summary_to_minimum(
     )
 
 
+# Pattern-name values the model occasionally places in cycle_position instead of
+# detected_patterns.  Each entry maps the invalid cp string →
+#   (pattern_tag_to_rescue, fallback_cycle_position).
+# The fallback is the most natural host structure for that formation.
+_PATTERN_MISPLACED_AS_CYCLE: dict[str, tuple[str, str]] = {
+    "ascending_triangle":   ("ascending_triangle",   "trading_range"),
+    "descending_triangle":  ("descending_triangle",  "trading_range"),
+    "symmetrical_triangle": ("symmetrical_triangle", "trading_range"),
+    "expanding_triangle":   ("expanding_triangle",   "trading_range"),
+    "wedge":                ("wedge",                "broad_channel"),
+    "double_top":           ("double_top_bottom",    "trading_range"),
+    "double_bottom":        ("double_top_bottom",    "trading_range"),
+    "double_top_bottom":    ("double_top_bottom",    "trading_range"),
+    "mtr":                  ("mtr",                  "broad_channel"),
+    "final_flag":           ("final_flag",           "broad_channel"),
+    "breakout_failure":     ("breakout_failure",     "trading_range"),
+    "failed_breakout":      ("breakout_failure",     "trading_range"),
+    "breakout_test":        ("breakout_test",        "trading_range"),
+    "barbwire":             ("barbwire",             "trading_range"),
+}
+
+_VALID_CYCLE_POSITIONS: frozenset[str] = frozenset([
+    "spike", "micro_channel", "tight_channel", "normal_channel", "broad_channel",
+    "trending_tr", "trading_range", "extreme_tr", "unknown",
+])
+
+
+def _rescue_pattern_from_cycle_position(out: dict[str, Any]) -> bool:
+    """Fix the model putting a pattern name (e.g. 'descending_triangle') in cycle_position.
+
+    When detected, the pattern tag is injected into detected_patterns and cycle_position
+    is replaced with the most natural fallback host state.  Returns True if a rescue was
+    performed.
+    """
+    cp = str(out.get("cycle_position", "") or "").strip().lower()
+    if cp in _VALID_CYCLE_POSITIONS:
+        return False  # already valid — nothing to do
+
+    entry = _PATTERN_MISPLACED_AS_CYCLE.get(cp)
+    if entry is None:
+        # Unknown value but not a known pattern name: leave it for the validator to reject.
+        return False
+
+    pattern_tag, fallback_cp = entry
+
+    # Inject the rescued pattern tag into detected_patterns.
+    patterns: list[str] = list(out.get("detected_patterns") or [])
+    if pattern_tag not in patterns:
+        patterns.insert(0, pattern_tag)
+        out["detected_patterns"] = patterns
+
+    logger.warning(
+        "cycle_position %r is a pattern name, not a market state — "
+        "rescued tag %r into detected_patterns and replaced cycle_position with %r",
+        cp,
+        pattern_tag,
+        fallback_cp,
+    )
+    out["cycle_position"] = fallback_cp
+    return True
+
+
 _INCREMENTAL_TRACKED_FIELDS = (
     "cycle_position",
     "alternative_cycle_position",
@@ -457,6 +570,8 @@ _INCREMENTAL_TRACKED_FIELDS = (
     "gate_result",
     "entry_setup",
     "spike_stage",
+    "support_levels",
+    "resistance_levels",
 )
 
 
@@ -550,6 +665,9 @@ def normalize_stage1(
 
     lenient = normalization_mode == "lenient"
 
+    # ── Rescue pattern names misplaced in cycle_position ─────────────────────
+    _rescue_pattern_from_cycle_position(out)
+
     # ── DecisionNodeEngine: fill §1.1/§2.3/§2.4 (before strategy_files routing) ──
     if kline_frame is not None:
         try:
@@ -577,25 +695,50 @@ def normalize_stage1(
             out.get("strategy_files_needed")
         )
 
-    from pa_agent.ai.pattern_routing import sync_detected_patterns_field
+    from pa_agent.ai.pattern_routing import ensure_detected_patterns_coherent
 
-    sync_detected_patterns_field(out)
+    if kline_frame is not None:
+        try:
+            from pa_agent.ai.market_features import build_program_features_dict
+
+            out["program_features"] = build_program_features_dict(kline_frame)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("build_program_features_dict failed: %s", exc)
+
+    ensure_detected_patterns_coherent(out, kline_frame=kline_frame)
+
+    if not out.get("climax_risk"):
+        patterns = out.get("detected_patterns") or []
+        if isinstance(patterns, list):
+            if "climax_triggered" in patterns:
+                out["climax_risk"] = "triggered"
+            elif "climax_warning" in patterns:
+                out["climax_risk"] = "warning"
+        if not out.get("climax_risk"):
+            out["climax_risk"] = "none"
 
     _hoist_bar_by_bar_summary(out)
-    _normalize_entry_setup_type(out)
-    _normalize_signal_bar_quality(out)
-    _infer_gate_result(out)
     normalize_stage1_traces(out, normalization_mode=normalization_mode)
     _normalize_bar_by_bar_roles(out)
-    _normalize_bar_by_bar_follow_through(out)
-    _fix_invalid_bar_labels(out, kline_frame=kline_frame)
     _normalize_bar_by_bar_context_effects(out)
-    _normalize_bar_types(out, kline_frame=kline_frame)
+    _normalize_bar_by_bar_trapped_side(out)
+    _normalize_bar_types(out)
+    _normalize_signal_bar_object(out)
+    _normalize_signal_bar_quality(out)
+    _normalize_transition_risk(out)
     _pad_bar_by_bar_summary_to_minimum(out, kline_frame=kline_frame)
     _fill_incremental_delta(
         out,
         new_bar_count=incremental_new_bar_count,
         previous_stage1=incremental_previous_stage1,
     )
+
+    if kline_frame is not None:
+        try:
+            from pa_agent.ai.structure_levels import refresh_stage1_support_resistance
+
+            refresh_stage1_support_resistance(out, kline_frame)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("refresh_stage1_support_resistance failed: %s", exc)
 
     return out

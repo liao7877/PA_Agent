@@ -1,29 +1,40 @@
 {
   "provider": {
-    "model": "deepseek-chat",
-    "base_url": "https://api.deepseek.com",
+    "model": "claude-sonnet-4-6",
+    "base_url": "https://www.packyapi.com/v1",
     "api_key_encrypted": "",
     "thinking": true,
-    "reasoning_effort": "high",
-    "context_window": 128000
+    "reasoning_effort": "max",
+    "context_window": 2000000
   },
   "general": {
     "analysis_bar_count": 100,
     "refresh_interval_ms": 1000,
     "context_warning_threshold_pct": 80.0,
     "last_data_source": "mt5",
+    "kline_adjust": "qfq",
     "last_tradingview_exchange": "OANDA",
     "last_symbol": "XAUUSDm",
     "last_timeframe": "15m",
     "decision_flow_auto_play": true,
     "decision_flow_play_seconds": 50,
+    "alert_on_order_opportunity": true,
     "incremental_max_new_bars": 10,
     "decision_stance": "balanced",
     "decision_flow_default_zoom_pct": 500,
     "stream_pane_font_pt": 11,
     "chart_seq_label_font_pt": 7,
     "auto_resume_chart_after_analysis": true,
-    "mt5_terminal_path": ""
+    "keep_analysis": false,
+    "keep_analysis_time_window_enabled": false,
+    "keep_analysis_time_start": "09:00",
+    "keep_analysis_time_end": "23:00",
+    "keep_analysis_bypass_with_position": true,
+    "mt5_terminal_path": "",
+    "cancel_keep_analysis_on_retry": false,
+    "decision_confidence_threshold": 40,
+    "enable_next_bar_prediction": false,
+    "structure_flip_cooldown_bars": 3
   },
   "prompt": {
     "stage2_load_full_strategy_library": false,
@@ -33,8 +44,43 @@
   },
   "validation": {
     "normalization_mode": "strict",
+    "stage1_coherence_checks": false,
+    "stage2_coherence_checks": false,
     "trace_semantic_checks": true,
     "strict_bar_by_bar_features": true,
-    "disable_truncation_repair": true
+    "disable_truncation_repair": true,
+    "retry_enabled": true,
+    "retry_max": 3,
+    "retry_max_semantic": 1,
+    "retry_stage2": true
+  },
+  "notification": {
+    "enabled": false,
+    "dingtalk_webhook": "",
+    "dingtalk_secret": "",
+    "wechat_webhook": "",
+    "notify_new_order": true,
+    "notify_entry_filled": true,
+    "notify_exit": true,
+    "notify_manage": true,
+    "notify_no_trade": false,
+    "notify_error": false,
+    "notify_api_error": false,
+    "request_timeout_s": 10
+  },
+  "feishu": {
+    "enabled": true,
+    "webhook_url": "",
+    "secret": "",
+    "app_id": "",
+    "app_secret": "",
+    "notify_on_order_only": true
+  },
+  "pushplus": {
+    "enabled": false,
+    "token": ""
+  },
+  "tushare": {
+    "token": ""
   }
 }

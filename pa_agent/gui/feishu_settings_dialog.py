@@ -221,7 +221,8 @@ class FeishuSettingsDialog(QDialog):
         dlg.setWindowTitle("远程协助设置")
         layout = QVBoxLayout(dlg)
         label = QLabel(
-            "去问龙虾怎么添加飞书群组机器人，还是搞不定的话<br>"
+            "去问龙虾PA_Agent这个项目怎么使用飞书功能，一步一步教我<br>"
+            "还是搞不定的话<br>"
             "可以联系阿尔法本人QQ：564020069<br><br>"
             "赞助49.9元可以帮你远程协助完成飞书设置<br><br>"
             "如果之前已经支付过49.9元了，这次只需要赞助30元即可"

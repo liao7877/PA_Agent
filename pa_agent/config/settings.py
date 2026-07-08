@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DecisionStance = Literal["conservative", "balanced", "aggressive", "extreme_aggressive"]
-DataSourceKind = Literal["mt5", "tradingview", "akshare"]
+DataSourceKind = Literal["mt5", "tradingview", "akshare", "eastmoney", "tushare"]
 NormalizationMode = Literal["strict", "lenient"]
 
 
@@ -39,10 +39,20 @@ class ValidationSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     normalization_mode: NormalizationMode = "strict"
+    #: Stage-1 cross-field checks (gate trace, bar_by_bar, pattern tags). Off by default.
+    stage1_coherence_checks: bool = False
+    #: Stage-2 trace / diagnosis cross-checks (not order safety). Off by default.
+    stage2_coherence_checks: bool = False
     trace_semantic_checks: bool = True
     strict_bar_by_bar_features: bool = True
     #: Do not inject stub gate_trace on truncated Stage 1 JSON.
     disable_truncation_repair: bool = True
+    #: Re-call API with structured feedback when validation fails (format errors).
+    retry_enabled: bool = True
+    retry_max: int = Field(default=3, ge=0, le=5)
+    #: Max retries for category=c semantic errors (subset only).
+    retry_max_semantic: int = Field(default=1, ge=0, le=3)
+    retry_stage2: bool = True
 
 
 class GeneralSettings(BaseModel):
@@ -53,12 +63,16 @@ class GeneralSettings(BaseModel):
     refresh_interval_ms: int = 1000
     context_warning_threshold_pct: float = 80.0
     last_data_source: DataSourceKind = "mt5"
+    #: A-share K-line adjust for East Money / Baostock (qfq=前复权)
+    kline_adjust: Literal["qfq", "hfq", "none"] = "qfq"
     #: TradingView 交易所；空字符串 =（自动）依次探测预设列表
     last_tradingview_exchange: str = ""
     last_symbol: str = "XAUUSDm"
     last_timeframe: str = "15m"
     decision_flow_auto_play: bool = True
     decision_flow_play_seconds: int = 50
+    #: 阶段二给出限价/突破/市价单时：警报音、弹窗，并自动切到「决策」页（跳过决策树可视化演示）
+    alert_on_order_opportunity: bool = True
     incremental_max_new_bars: int = Field(default=10, ge=0, le=500)
     #: 阶段二交易倾向：balanced=默认；conservative/aggressive 逐级调整下单意愿
     decision_stance: DecisionStance = "balanced"
@@ -82,6 +96,14 @@ class GeneralSettings(BaseModel):
     keep_analysis_bypass_with_position: bool = True
     #: MT5 安装目录或 terminal64.exe 完整路径；空=自动连接已运行/默认实例
     mt5_terminal_path: str = ""
+    #: 重试后取消持续跟踪分析：校验失败触发重试后自动关闭 keep_analysis
+    cancel_keep_analysis_on_retry: bool = False
+    #: 交易决策置信度门槛：仅当 trade_confidence >= 此值时，才视为有下单机会（弹窗警报并提供决策详情）
+    decision_confidence_threshold: int = Field(default=40, ge=0, le=100)
+    #: 开启下根K线预期功能；关闭时不向模型请求该预测，节省 token
+    enable_next_bar_prediction: bool = False
+    #: 同一结构位 entry 相差≤3跳时，禁止反向新方案的冷却 K 线根数（已收盘）
+    structure_flip_cooldown_bars: int = Field(default=3, ge=1, le=50)
 
     @field_validator("last_data_source", mode="before")
     @classmethod
@@ -90,6 +112,10 @@ class GeneralSettings(BaseModel):
             return "mt5"
         if v in ("adata", "a_share"):
             return "akshare"
+        if v == "eastmoney":
+            return "eastmoney"
+        if v == "tushare":
+            return "tushare"
         return v
 
     @field_validator("decision_flow_default_zoom_pct", mode="before")
@@ -101,26 +127,17 @@ class GeneralSettings(BaseModel):
 
 
 class NotificationSettings(BaseModel):
-    """Outbound notification (DingTalk / WeChat-via-Bark) settings.
-
-    Each scene toggle is independent; a message is dispatched only when both
-    the master switch and the matching scene toggle are enabled and at least
-    one channel target is configured.
-    """
+    """Outbound notification (DingTalk / WeChat-via-Bark) settings."""
     model_config = ConfigDict(extra="ignore")
 
     #: Master switch. When False, no notification is ever sent.
     enabled: bool = False
-
-    # ── Channel targets ───────────────────────────────────────────────────
     #: DingTalk group-robot webhook URL (https://oapi.dingtalk.com/robot/send?...).
     dingtalk_webhook: str = ""
     #: Optional DingTalk "加签" secret; empty = keyword/IP security only.
     dingtalk_secret: str = ""
     #: WeChat push URL (Server酱 / Bark / 企业微信群机器人 webhook 等)。
     wechat_webhook: str = ""
-
-    # ── Per-scene toggles ─────────────────────────────────────────────────
     #: 产生新的下单决策（入场/止盈/止损）。
     notify_new_order: bool = True
     #: 计划单被市场触及、确认入场成交。
@@ -135,9 +152,46 @@ class NotificationSettings(BaseModel):
     notify_error: bool = False
     #: AI API 调用异常时通知（网络错误、鉴权失败、限流等）。
     notify_api_error: bool = False
-
     #: HTTP 请求超时（秒）。
     request_timeout_s: int = Field(default=10, ge=1, le=120)
+
+
+_FEISHU_CONFIG_KEYS = (
+    "enabled",
+    "webhook_url",
+    "secret",
+    "app_id",
+    "app_secret",
+    "notify_on_order_only",
+)
+
+
+class FeishuSettings(BaseModel):
+    """Feishu bot notification settings (persisted in settings.json)."""
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    webhook_url: str = ""
+    secret: str = ""
+    app_id: str = ""
+    app_secret: str = ""
+    #: True = only push when there is an order opportunity.
+    notify_on_order_only: bool = True
+
+
+class TushareSettings(BaseModel):
+    """Tushare Pro data source settings (persisted in ignored settings.json)."""
+    model_config = ConfigDict(extra="ignore")
+
+    token: str = ""
+
+
+class PushPlusSettings(BaseModel):
+    """PushPlus notification settings (settings.json only; no GUI)."""
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    token: str = ""
 
 
 class Settings(BaseModel):
@@ -149,6 +203,9 @@ class Settings(BaseModel):
     prompt: PromptSettings = Field(default_factory=PromptSettings)
     validation: ValidationSettings = Field(default_factory=ValidationSettings)
     notification: NotificationSettings = Field(default_factory=NotificationSettings)
+    feishu: FeishuSettings = Field(default_factory=FeishuSettings)
+    pushplus: PushPlusSettings = Field(default_factory=PushPlusSettings)
+    tushare: TushareSettings = Field(default_factory=TushareSettings)
 
 
 def provider_api_key_configured(settings: Settings | None) -> bool:
@@ -161,9 +218,41 @@ def provider_api_key_configured(settings: Settings | None) -> bool:
 # ── Persistence ───────────────────────────────────────────────────────────────
 import json
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _migrate_legacy_feishu_json(raw: dict, settings_path: Path) -> bool:
+    """Merge legacy config/feishu.json into settings.feishu when needed."""
+    legacy_path = settings_path.parent / "feishu.json"
+    if not legacy_path.exists():
+        return False
+
+    feishu = raw.setdefault("feishu", {})
+    if (feishu.get("webhook_url") or "").strip():
+        return False
+
+    try:
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("legacy feishu.json unreadable (%s); skipping migration", exc)
+        return False
+
+    migrated = False
+    for key in _FEISHU_CONFIG_KEYS:
+        if key not in legacy:
+            continue
+        value = legacy.get(key)
+        if value in (None, ""):
+            continue
+        if feishu.get(key) in (None, ""):
+            feishu[key] = value
+            migrated = True
+    if migrated:
+        logger.info("Migrated Feishu config from %s into settings.json", legacy_path)
+    return migrated
 
 
 def load_settings(path: Path | None = None) -> "Settings":
@@ -177,7 +266,6 @@ def load_settings(path: Path | None = None) -> "Settings":
 
     if not path.exists():
         import shutil
-        import sys
 
         from pa_agent.config.paths import BUNDLE_ROOT
         from pa_agent.licensing.packaged import is_packaged_build
@@ -218,7 +306,20 @@ def load_settings(path: Path | None = None) -> "Settings":
     # Migrate legacy encrypted key: drop it, api_key already in provider dict
     raw.setdefault("provider", {}).setdefault("api_key", "")
 
-    return Settings.model_validate(raw)
+    migrated_feishu = _migrate_legacy_feishu_json(raw, path)
+    settings = Settings.model_validate(raw)
+    dirty = migrated_feishu
+    if settings.pushplus.enabled and not settings.pushplus.token.strip():
+        if not (os.environ.get("PUSHPLUS_TOKEN") or "").strip():
+            settings.pushplus.enabled = False
+            logger.info(
+                "PushPlus enabled but token empty — auto-disabled "
+                "(Feishu notifications unaffected)"
+            )
+            dirty = True
+    if dirty:
+        save_settings(settings, path)
+    return settings
 
 
 def save_settings(settings: "Settings", path: Path | None = None) -> None:

@@ -707,6 +707,93 @@ def test_normalize_stage2_upgrades_9_0_for_planned_limit() -> None:
     assert node_90["answer"] == "是"
 
 
+def test_11_2_override_preserves_limit_order_without_basis() -> None:
+    """§11.2 maps to 突破单, but planned limits keep null entry_basis_*."""
+    nodes = [
+        {"node_id": "11.1", "question": "q", "answer": "否", "reason": "", "bar_range": "K1"},
+        {"node_id": "11.2", "question": "q", "answer": "否", "reason": "", "bar_range": "K1"},
+    ]
+    out = {
+        "decision": {
+            "order_type": "限价单",
+            "entry_basis_bar": None,
+            "entry_basis_extreme": None,
+            "entry_rule": None,
+        }
+    }
+    overrides = [
+        {
+            "node_id": "11.2",
+            "answer": "是",
+            "override_reason": "trending_tr planned limit pullback, not breakout",
+        },
+    ]
+    apply_overrides(nodes, overrides, out=out, stage="stage2")
+    assert out["decision"]["order_type"] == "限价单"
+
+
+def test_apply_stage2_11_2_override_keeps_limit_order() -> None:
+    """Regression: node_overrides on §11.2 must not force 突破单 without basis fields."""
+    frame = _make_frame(25)
+    out = {
+        "decision": {
+            "order_direction": "做多",
+            "order_type": "限价单",
+            "entry_price": 2002.0,
+            "entry_basis_bar": None,
+            "entry_basis_extreme": None,
+            "entry_rule": None,
+            "take_profit_price": 2015.0,
+            "take_profit_price_2": 2030.0,
+            "stop_loss_price": 1995.0,
+            "reasoning": "planned limit",
+            "diagnosis_confidence": 55,
+            "diagnosis_confidence_reasoning": "x",
+            "trade_confidence": 50,
+            "trade_confidence_reasoning": "x",
+            "estimated_win_rate": 47,
+            "estimated_win_rate_reasoning": "x",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "x",
+            "invalidation_condition": "x",
+        },
+        "decision_trace": [
+            {
+                "node_id": "10.3",
+                "section": "风险收益",
+                "question": "交易者方程是否通过？",
+                "answer": "是",
+                "reason": "pass",
+                "bar_range": "K1",
+            },
+        ],
+        "bar_analysis": {
+            "signal_bar": {"bar": "K1", "quality": "medium", "pattern": "tr_boundary"},
+            "entry_bar": {
+                "strength": "not_triggered",
+                "freshness": "pending",
+                "follow_through": True,
+            },
+        },
+        "node_overrides": [
+            {
+                "node_id": "11.2",
+                "answer": "是",
+                "override_reason": "use limit pullback instead of breakout",
+            },
+        ],
+    }
+    stage1 = {
+        "cycle_position": "trending_tr",
+        "direction": "bullish",
+        "gate_result": "proceed",
+    }
+    DecisionNodeEngine.apply_stage2(out, frame, stage1)
+    assert out["decision"]["order_type"] == "限价单"
+    assert out["decision"]["entry_basis_bar"] is None
+
+
 def test_apply_stage2_tolerates_non_dict_stage1_and_decision() -> None:
     """Regression: string stage1_json/decision must not crash §9/§11 program fill."""
     frame = _make_frame()
