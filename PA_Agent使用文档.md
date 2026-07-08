@@ -1,4 +1,4 @@
-# PA Agent — 功能详细使用文档
+# Trading Agent — 功能详细使用文档
 
 > AI K线分析辅助工具，基于价格行为学（Price Action），通过 DeepSeek / Claude 等大模型进行市场结构分析与交易决策。
 
@@ -212,7 +212,7 @@ pa-agent
 
 ## 7. 两阶段分析流程详解
 
-PA Agent 的核心分析采用**两阶段（Two-Stage）架构**：
+Trading Agent 的核心分析采用**两阶段（Two-Stage）架构**：
 
 ### 阶段一：市场诊断（Stage 1 — Diagnosis）
 
@@ -371,7 +371,7 @@ PA Agent 的核心分析采用**两阶段（Two-Stage）架构**：
 
 ### 决策树原理
 
-PA Agent 内置一套**二元决策树**（基于 `prompt_engineering/二元决策.txt`），用于引导 AI 按固定逻辑链路做交易决策：
+Trading Agent 内置一套**二元决策树**（基于 `prompt_engineering/二元决策.txt`），用于引导 AI 按固定逻辑链路做交易决策：
 
 1. **闸门阶段（Gate）**：节点 0.1–0.3，判断市场是否具备交易条件
   - 0.1：是否有足够K线数据
@@ -721,7 +721,7 @@ experience/
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              PA Agent 核心操作速查                     │
+│              Trading Agent 核心操作速查                     │
 ├─────────────────────────────────────────────────────┤
 │ python run.py              启动程序                   │
 │ [提交分析]                 完整两阶段 AI 分析          │

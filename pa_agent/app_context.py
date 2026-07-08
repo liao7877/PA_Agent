@@ -25,7 +25,11 @@ class AppContext:
     pending_writer: Any = None    # PendingWriter
     exp_reader: Any = None        # ExperienceReader
     ledger: Any = None            # SessionTokenLedger
+
+    # Notification layer
     notifier: Any = None          # NotificationService
+
+    # Position tracking layer
     position_tracker: Any = None  # PositionTracker
 
     @classmethod
@@ -42,14 +46,16 @@ class AppContext:
         from pa_agent.util.event_bus import EventBus
         from pa_agent.util.mask_secret import mask_secret
         from pa_agent.data.factory import create_data_source, normalize_data_source_kind
-        from pa_agent.ai.cursor_connector import is_openclaw_cs_model
-        from pa_agent.ai.deepseek_client import DeepSeekClient
+        from pa_agent.ai.client_factory import create_ai_client
         from pa_agent.ai.prompt_assembler import PromptAssembler
         from pa_agent.ai.router import route_strategy_files
         from pa_agent.ai.json_validator import JsonValidator
         from pa_agent.ai.session_ledger import SessionTokenLedger
         from pa_agent.records.pending_writer import PendingWriter
         from pa_agent.records.experience_reader import ExperienceReader
+        from pa_agent.notification.service import NotificationService
+        from pa_agent.positions.store import PositionStore
+        from pa_agent.positions.tracker import PositionTracker
 
         # ── Settings ──────────────────────────────────────────────────────────
         settings = load_settings(SETTINGS_JSON_PATH)
@@ -70,13 +76,11 @@ class AppContext:
         event_bus = EventBus()
 
         # ── Data layer ────────────────────────────────────────────────────────
-        from pa_agent.data.kline_adjust import apply_kline_adjust_from_settings
-
-        apply_kline_adjust_from_settings(settings)
         ds_kind = normalize_data_source_kind(
             getattr(settings.general, "last_data_source", "mt5")
         )
-        data_source = create_data_source(ds_kind)
+        mt5_path = getattr(settings.general, "mt5_terminal_path", "") or ""
+        data_source = create_data_source(ds_kind, mt5_terminal_path=mt5_path)
 
         # Subscribe to the last-used symbol/timeframe from settings
         try:
@@ -102,12 +106,9 @@ class AppContext:
             app_logger.warning("Initial data source subscription failed: %s", exc)
 
         # ── AI client ─────────────────────────────────────────────────────────
-        if is_openclaw_cs_model(settings.provider.model):
-            from pa_agent.ai.cursor_sdk_client import CursorSdkClient
+        from pa_agent.ai.client_factory import create_ai_client
 
-            client = CursorSdkClient(settings=settings.provider, logger_=app_logger)
-        else:
-            client = DeepSeekClient(settings=settings.provider, logger_=app_logger)
+        client = create_ai_client(settings.provider, logger_=app_logger)
 
         # ── Prompt assembler ──────────────────────────────────────────────────
         exp_reader = ExperienceReader(experience_dir=EXPERIENCE_DIR, logger=app_logger)
@@ -134,7 +135,13 @@ class AppContext:
             warn_pct=settings.general.context_warning_threshold_pct,
         )
 
-        ctx = cls(
+        # ── Notification service ──────────────────────────────────────────────
+        notifier = NotificationService(settings=settings, logger=app_logger)
+
+        # ── Position tracker ──────────────────────────────────────────────────
+        position_tracker = PositionTracker(store=PositionStore(), notifier=notifier)
+
+        return cls(
             settings=settings,
             logger=app_logger,
             event_bus=event_bus,
@@ -146,8 +153,6 @@ class AppContext:
             pending_writer=pending_writer,
             exp_reader=exp_reader,
             ledger=ledger,
+            notifier=notifier,
+            position_tracker=position_tracker,
         )
-        # Trading Agent: notification + position tracker (see trading_agent/bootstrap.py)
-        from pa_agent.trading_agent.bootstrap import enrich_app_context
-
-        return enrich_app_context(ctx)

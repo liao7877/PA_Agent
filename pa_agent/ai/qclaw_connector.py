@@ -288,7 +288,7 @@ def apply_qclaw_provider_to_settings(
 def qclaw_provider_settings(
     model: str | None = None,
     thinking: bool = True,
-    reasoning_effort: str = "max",
+    reasoning_effort: str = "high",
     context_window: int = 2_000_000,
     *,
     prefer_relay: bool = False,

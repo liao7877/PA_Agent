@@ -1,4 +1,4 @@
-"""Pydantic settings models for PA Agent."""
+"""Pydantic settings models for Trading Agent."""
 from __future__ import annotations
 from typing import Literal
 
@@ -13,8 +13,8 @@ class AIProviderSettings(BaseModel):
     """AI provider connection and behaviour settings."""
     model_config = ConfigDict(extra="ignore")
 
-    model: str = "deepseek-v4-flash"
-    base_url: str = "https://api.deepseek.com"
+    model: str = "claude-sonnet-4-6"
+    base_url: str = "https://www.packyapi.com/v1"
     api_key: str = ""
     api_key_encrypted: str = ""
     thinking: bool = True
@@ -28,7 +28,7 @@ class PromptSettings(BaseModel):
 
     #: When True, Stage 2 loads every strategy .txt (legacy/test behaviour).
     stage2_load_full_strategy_library: bool = False
-    experience_max_entries: int = Field(default=0, ge=0, le=10)
+    experience_max_entries: int = Field(default=3, ge=0, le=10)
     experience_max_chars_per_entry: int = Field(default=400, ge=100, le=4000)
     #: Inject pattern判定表 + 速查 brief into Stage 1 user prompt (reduces missed tags).
     stage1_inject_pattern_briefs: bool = True
@@ -38,15 +38,15 @@ class ValidationSettings(BaseModel):
     """Post-LLM validation behaviour."""
     model_config = ConfigDict(extra="ignore")
 
-    normalization_mode: NormalizationMode = "lenient"
+    normalization_mode: NormalizationMode = "strict"
     #: Stage-1 cross-field checks (gate trace, bar_by_bar, pattern tags). Off by default.
     stage1_coherence_checks: bool = False
     #: Stage-2 trace / diagnosis cross-checks (not order safety). Off by default.
     stage2_coherence_checks: bool = False
-    trace_semantic_checks: bool = False
-    strict_bar_by_bar_features: bool = False
-    #: Allow Stage 1 truncated JSON tail repair before failing syntax validation.
-    disable_truncation_repair: bool = False
+    trace_semantic_checks: bool = True
+    strict_bar_by_bar_features: bool = True
+    #: Do not inject stub gate_trace on truncated Stage 1 JSON.
+    disable_truncation_repair: bool = True
     #: Re-call API with structured feedback when validation fails (format errors).
     retry_enabled: bool = True
     retry_max: int = Field(default=3, ge=0, le=5)
@@ -59,7 +59,7 @@ class GeneralSettings(BaseModel):
     """UI and data-feed general settings."""
     model_config = ConfigDict(extra="ignore")
 
-    analysis_bar_count: int = Field(default=100, ge=2, le=5000)
+    analysis_bar_count: int = Field(default=100, ge=20, le=5000)
     refresh_interval_ms: int = 1000
     context_warning_threshold_pct: float = 80.0
     last_data_source: DataSourceKind = "mt5"
@@ -77,7 +77,7 @@ class GeneralSettings(BaseModel):
     #: 阶段二交易倾向：balanced=默认；conservative/aggressive 逐级调整下单意愿
     decision_stance: DecisionStance = "balanced"
     #: 决策树可视化：在「整图适配」基础上的缩放百分比（100=与适配一致；可任意放大，仅下限 10%）
-    decision_flow_default_zoom_pct: int = Field(default=600, ge=10)
+    decision_flow_default_zoom_pct: int = Field(default=500, ge=10)
     #: 「实时」页思考过程/撰写回答框与追问输入框的等宽字体字号（pt）
     stream_pane_font_pt: int = Field(default=11, ge=8, le=28)
     #: K 线图上 #序号 标签的字号（pt）
@@ -86,20 +86,22 @@ class GeneralSettings(BaseModel):
     auto_resume_chart_after_analysis: bool = False
     #: 持续跟踪分析：有新K线收盘时自动触发新一轮分析
     keep_analysis: bool = False
+    #: 持续跟踪仅在指定时段内自动分析（有持仓时可豁免，见下）
+    keep_analysis_time_window_enabled: bool = False
+    #: 跟踪时段开始（HH:MM，本机当地时区）
+    keep_analysis_time_start: str = "09:00"
+    #: 跟踪时段结束（HH:MM，本机当地时区；可跨午夜，如 22:00–06:00）
+    keep_analysis_time_end: str = "23:00"
+    #: 有持仓时不受跟踪时段限制（仍按 K 线收盘触发）
+    keep_analysis_bypass_with_position: bool = True
+    #: MT5 安装目录或 terminal64.exe 完整路径；空=自动连接已运行/默认实例
+    mt5_terminal_path: str = ""
     #: 重试后取消持续跟踪分析：校验失败触发重试后自动关闭 keep_analysis
     cancel_keep_analysis_on_retry: bool = False
     #: 交易决策置信度门槛：仅当 trade_confidence >= 此值时，才视为有下单机会（弹窗警报并提供决策详情）
     decision_confidence_threshold: int = Field(default=40, ge=0, le=100)
     #: 开启下根K线预期功能；关闭时不向模型请求该预测，节省 token
     enable_next_bar_prediction: bool = False
-    #: MT5 安装目录或 terminal64.exe 完整路径；留空则自动连接默认实例
-    mt5_terminal_path: str = ""
-    #: 持续跟踪仅在本机时段内自动分析
-    keep_analysis_time_window_enabled: bool = False
-    keep_analysis_time_start: str = "09:00"
-    keep_analysis_time_end: str = "23:00"
-    #: 有持仓时不受跟踪时段限制
-    keep_analysis_bypass_with_position: bool = True
     #: 同一结构位 entry 相差≤3跳时，禁止反向新方案的冷却 K 线根数（已收盘）
     structure_flip_cooldown_bars: int = Field(default=3, ge=1, le=50)
 
@@ -125,22 +127,33 @@ class GeneralSettings(BaseModel):
 
 
 class NotificationSettings(BaseModel):
-    """Outbound notification channel and per-scene toggles."""
+    """Outbound notification (DingTalk / WeChat-via-Bark) settings."""
     model_config = ConfigDict(extra="ignore")
 
+    #: Master switch. When False, no notification is ever sent.
     enabled: bool = False
+    #: DingTalk group-robot webhook URL (https://oapi.dingtalk.com/robot/send?...).
     dingtalk_webhook: str = ""
+    #: Optional DingTalk "加签" secret; empty = keyword/IP security only.
     dingtalk_secret: str = ""
+    #: WeChat push URL (Server酱 / Bark / 企业微信群机器人 webhook 等)。
     wechat_webhook: str = ""
+    #: 产生新的下单决策（入场/止盈/止损）。
     notify_new_order: bool = True
+    #: 计划单被市场触及、确认入场成交。
     notify_entry_filled: bool = True
+    #: 持仓出场（触及止盈/止损或 AI 建议平仓）。
     notify_exit: bool = True
+    #: 持仓管理调整（移动止损/止盈等）。
     notify_manage: bool = True
-    notify_order_cancelled: bool = True
+    #: 观望/不下单的结论也通知。
     notify_no_trade: bool = False
+    #: 分析失败/异常时通知。
     notify_error: bool = False
+    #: AI API 调用异常时通知（网络错误、鉴权失败、限流等）。
     notify_api_error: bool = False
-    request_timeout_s: int = Field(default=10, ge=3, le=120)
+    #: HTTP 请求超时（秒）。
+    request_timeout_s: int = Field(default=10, ge=1, le=120)
 
 
 _FEISHU_CONFIG_KEYS = (
@@ -252,9 +265,22 @@ def load_settings(path: Path | None = None) -> "Settings":
     path = path or SETTINGS_JSON_PATH
 
     if not path.exists():
-        defaults = Settings()
-        save_settings(defaults, path)
-        return defaults
+        import shutil
+
+        from pa_agent.config.paths import BUNDLE_ROOT
+        from pa_agent.licensing.packaged import is_packaged_build
+
+        seeded = False
+        if is_packaged_build():
+            example = BUNDLE_ROOT / "config" / "settings.example.json"
+            if example.is_file():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(example, path)
+                seeded = True
+        if not seeded:
+            defaults = Settings()
+            save_settings(defaults, path)
+            return defaults
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))

@@ -1,1 +1,1 @@
-"""PA Agent indicators package."""
+"""Trading Agent indicators package."""

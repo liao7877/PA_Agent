@@ -25,8 +25,6 @@ STAGE2_VALIDATION_AUTO_RETRY = False
 
 import copy
 import dataclasses
-import inspect
-import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -39,7 +37,7 @@ if TYPE_CHECKING:
     from pa_agent.records.experience_reader import ExperienceReader
     from pa_agent.records.pending_writer import PendingWriter
 
-from pa_agent.ai.json_validator import Ok, ValidationError, resolve_stage_json_text, _strip_fences
+from pa_agent.ai.json_validator import Ok, ValidationError
 from pa_agent.orchestrator.validation_retry import validate_with_retry
 from pa_agent.data.base import KlineFrame
 from pa_agent.records.schema import AnalysisRecord, RecordMeta
@@ -58,43 +56,6 @@ def _latency_ms_label(latency_ms: object) -> str:
 
 # When the gateway buffers the full reply, emit pseudo-stream chunks to the UI.
 _FALLBACK_STREAM_CHUNK = 48
-
-
-def _json_unclosed_depth(text: str) -> int:
-    stripped = (text or "").strip()
-    if not stripped.startswith("{"):
-        return 0
-    depth = 0
-    in_string = False
-    escape = False
-    for ch in stripped:
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-    return depth
-
-
-def _looks_like_truncated_json(text: str) -> bool:
-    stripped = (text or "").strip()
-    if not stripped.startswith("{"):
-        return False
-    try:
-        json.loads(stripped)
-        return False
-    except json.JSONDecodeError:
-        depth = _json_unclosed_depth(stripped)
-        return depth > 0 or not stripped.rstrip().endswith("}")
 
 
 def _json_truncation_hint(content: str, err: ValidationError) -> str | None:
@@ -231,274 +192,6 @@ def _emit_buffered_stream(
     for i in range(0, len(text), chunk_size):
         on_token(text[i : i + chunk_size])
     return True
-
-
-def _reply_with_resolved_content(
-    reply: Any,
-    content: str,
-    *,
-    raw_note: dict[str, Any] | None = None,
-) -> Any:
-    raw = dict(reply.raw)
-    if raw_note:
-        raw.update(raw_note)
-    raw["content"] = content
-    return dataclasses.replace(reply, content=content, raw=raw)
-
-
-def _merge_stage_replies(first: Any, second: Any, *, fallback_reason: str) -> Any:
-    from pa_agent.ai.deepseek_client import AIUsage
-
-    usage = AIUsage(
-        prompt_tokens=first.usage.prompt_tokens + second.usage.prompt_tokens,
-        cached_prompt_tokens=first.usage.cached_prompt_tokens
-        + second.usage.cached_prompt_tokens,
-        completion_tokens=first.usage.completion_tokens + second.usage.completion_tokens,
-        total_tokens=first.usage.total_tokens + second.usage.total_tokens,
-    )
-    raw = dict(second.raw)
-    raw.update(
-        {
-            "empty_content_fallback": True,
-            "fallback_reason": fallback_reason,
-            "first_attempt_reasoning_chars": len(first.reasoning_content or ""),
-            "first_attempt_request_id": first.request_id,
-        }
-    )
-    return dataclasses.replace(
-        second,
-        reasoning_content=first.reasoning_content or second.reasoning_content,
-        usage=usage,
-        latency_ms=first.latency_ms + second.latency_ms,
-        raw=raw,
-    )
-
-
-def _stream_stage_with_empty_content_fallback(
-    client: Any,
-    messages: list[dict[str, Any]],
-    *,
-    stage: str,
-    thinking: bool,
-    reasoning_effort: str,
-    cancel_token: CancelToken | None,
-    on_reasoning_token: Callable[[str], None] | None,
-    on_content_token: Callable[[str], None] | None,
-) -> Any:
-    """Call stream_chat; recover JSON from reasoning or retry once without thinking."""
-    reply = client.stream_chat(
-        messages,
-        on_reasoning_token=on_reasoning_token,
-        on_content_token=on_content_token,
-        cancel_token=cancel_token,
-        thinking=thinking,
-        reasoning_effort=reasoning_effort,
-    )
-    resolved = resolve_stage_json_text(reply.content, reply.reasoning_content)
-    truncated = bool(resolved.strip()) and _looks_like_truncated_json(resolved)
-    if resolved.strip() and not truncated:
-        if resolved != (reply.content or "").strip():
-            return _reply_with_resolved_content(
-                reply,
-                resolved,
-                raw_note={"json_recovered_from": "reasoning_content"},
-            )
-        return reply
-
-    if not thinking:
-        return reply
-
-    fallback_reason = (
-        "truncated_json_after_thinking" if truncated else "empty_content_after_thinking"
-    )
-    logger.warning(
-        "Stage %s: %s (effort=%s); retrying once with thinking disabled",
-        stage,
-        "truncated JSON after thinking" if truncated else "empty JSON after thinking",
-        reasoning_effort,
-    )
-    retry = client.stream_chat(
-        messages,
-        on_content_token=on_content_token,
-        cancel_token=cancel_token,
-        thinking=False,
-        reasoning_effort=None,
-    )
-    retry_resolved = resolve_stage_json_text(retry.content, retry.reasoning_content)
-    if retry_resolved.strip() and retry_resolved != (retry.content or "").strip():
-        retry = _reply_with_resolved_content(
-            retry,
-            retry_resolved,
-            raw_note={"json_recovered_from": "reasoning_content"},
-        )
-    return _merge_stage_replies(reply, retry, fallback_reason=fallback_reason)
-
-
-def _stage2_decision_from_validation_error(
-    *,
-    content: str,
-    kline_frame: KlineFrame,
-    decision_stance: str | None,
-    stage1_json: dict[str, Any] | None,
-    skip_next_bar: bool,
-) -> dict[str, Any] | None:
-    """Keep stage-2 decision visible when validation fails but JSON is usable."""
-    resolved = resolve_stage_json_text(content, None)
-    stripped = _strip_fences(resolved)
-    if not stripped.startswith("{"):
-        return None
-    try:
-        obj = json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    try:
-        from pa_agent.ai.stage2_normalizer import normalize_stage2
-
-        return normalize_stage2(
-            obj,
-            normalization_mode="lenient",
-            kline_frame=kline_frame,
-            decision_stance=decision_stance,
-            stage1_json=stage1_json,
-            skip_next_bar=skip_next_bar,
-        )
-    except Exception:  # noqa: BLE001
-        return obj
-
-
-def _filter_kwargs(func: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Return only kwargs that *func* accepts; tolerant of mocks and **kwargs."""
-    try:
-        sig = inspect.signature(func)
-    except (TypeError, ValueError):
-        return dict(kwargs)
-    if any(
-        p.kind == inspect.Parameter.VAR_KEYWORD
-        for p in sig.parameters.values()
-    ):
-        return dict(kwargs)
-    return {k: v for k, v in kwargs.items() if k in sig.parameters}
-
-
-def _compute_market_features_block(frame: KlineFrame) -> str | None:
-    """Render the simple market-features block for injection into Stage 2 prompt."""
-    try:
-        from pa_agent.ai.market_features import (
-            compute_simple_market_features,
-            render_simple_market_features,
-        )
-
-        features = compute_simple_market_features(frame)
-        return render_simple_market_features(features)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("market_features computation skipped: %s", exc)
-        return None
-
-
-def _inject_market_features_into_stage2_messages(
-    messages: list[dict[str, Any]],
-    frame: KlineFrame,
-) -> list[dict[str, Any]]:
-    """Ensure Stage 2 user prompt contains the program market-features block.
-
-    If the assembler already injected the block (upstream behaviour), this is a
-    no-op. Otherwise compute the block and insert it before the first anchor
-    marker or append it to the end of the user turn.
-    """
-    try:
-        from pa_agent.ai.market_features import (
-            MARKET_FEATURES_SECTION_PREFIX,
-            inject_market_features_section,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("market_features injection skipped: %s", exc)
-        return messages
-
-    block = _compute_market_features_block(frame)
-    if not block or not block.strip():
-        return messages
-
-    updated = False
-    for msg in messages:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if not isinstance(content, str) or not content:
-            continue
-        if MARKET_FEATURES_SECTION_PREFIX in content:
-            updated = True
-            break
-    if updated:
-        return messages
-
-    for i, msg in enumerate(messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if not isinstance(content, str) or not content:
-            continue
-        new_content = inject_market_features_section(content, block)
-        if new_content != content:
-            messages[i] = {**msg, "content": new_content}
-            updated = True
-            break
-
-    if not updated:
-        for i, msg in enumerate(messages):
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, str):
-                continue
-            messages[i] = {**msg, "content": content.rstrip() + "\n\n" + block + "\n"}
-            break
-    return messages
-
-
-def _apply_continuity_guard_to_stage2(
-    stage2_json: dict[str, Any],
-    *,
-    frame: KlineFrame,
-    stage1_json: dict[str, Any],
-    previous_record: AnalysisRecord | None,
-    cooldown_bars: int,
-) -> dict[str, Any]:
-    """Apply program continuity guard to a validated Stage 2 decision.
-
-    Mirrors what upstream's stage2_normalizer does internally so the guard still
-    runs when the paired normalizer is from main (which lacks the integration).
-    """
-    try:
-        from pa_agent.ai.decision_continuity import (
-            apply_continuity_guard,
-            build_continuity_context,
-        )
-
-        ctx = build_continuity_context(
-            frame=frame,
-            stage1_json=stage1_json,
-            previous_record=previous_record,
-            cooldown_bars=cooldown_bars,
-        )
-        return apply_continuity_guard(stage2_json, ctx)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("apply_continuity_guard failed: %s", exc)
-        return stage2_json
-
-
-def _log_kv_prefix_chain_support(provider_settings: Any) -> bool:
-    """Log and return whether the provider supports KV prefix-chain for Stage 2."""
-    try:
-        from pa_agent.ai.deepseek_client import supports_kv_prefix_chain
-
-        supported = supports_kv_prefix_chain(provider_settings)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("supports_kv_prefix_chain check skipped: %s", exc)
-        return True
-    logger.info("Stage 2 KV prefix-chain support: %s", supported)
-    return supported
 
 
 def _build_empty_record(
@@ -657,7 +350,6 @@ class TwoStageOrchestrator:
         on_stage2_files: Callable[[list[str]], None] | None = None,
         previous_record: AnalysisRecord | None = None,
         incremental_new_bar_count: int | None = None,
-        active_position: Any | None = None,
     ) -> AnalysisRecord:
         """Run the two-stage analysis pipeline and return an AnalysisRecord.
 
@@ -717,29 +409,15 @@ class TwoStageOrchestrator:
 
         # ── Step 4: Build Stage 1 messages ───────────────────────────────────
         if previous_record is not None and incremental_new_bar_count is not None:
-            incremental_kwargs = _filter_kwargs(
-                self._assembler.build_incremental_stage1,
-                {
-                    "analysis_mode": analysis_mode,
-                    "provider_settings": getattr(self._settings, "provider", None),
-                    "active_position": active_position,
-                },
-            )
             messages_s1 = self._assembler.build_incremental_stage1(
                 frame,
                 previous_record,
                 incremental_new_bar_count,
-                **incremental_kwargs,
+                analysis_mode=analysis_mode,
+                provider_settings=getattr(self._settings, "provider", None),
             )
         else:
-            stage1_kwargs = _filter_kwargs(
-                self._assembler.build_stage1,
-                {
-                    "analysis_mode": analysis_mode,
-                    "active_position": active_position,
-                },
-            )
-            messages_s1 = self._assembler.build_stage1(frame, **stage1_kwargs)
+            messages_s1 = self._assembler.build_stage1(frame, analysis_mode=analysis_mode)
 
         # ── Step 5: Call AI for Stage 1 ───────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -860,22 +538,17 @@ class TwoStageOrchestrator:
             s1_usage_calls.append(getattr(r, "usage", None))
             return r
 
-        s1_validate_kwargs = _filter_kwargs(
-            self._validator.validate,
-            {
-                "kline_frame": frame,
-                "incremental_new_bar_count": int(incremental_new_bar_count or 0),
-                "incremental_previous_stage1": prev_s1,
-                "active_position": active_position,
-            },
-        )
         vr_s1 = validate_with_retry(
             stage="stage1",
             messages=messages_s1,
             reply=reply_s1,
             validator=self._validator,
             validation_settings=self._validation_settings(),
-            validate_kwargs=s1_validate_kwargs,
+            validate_kwargs={
+                "kline_frame": frame,
+                "incremental_new_bar_count": int(incremental_new_bar_count or 0),
+                "incremental_previous_stage1": prev_s1,
+            },
             call_api=_call_s1_retry,
             provider_settings=getattr(self._settings, "provider", None),
         )
@@ -907,6 +580,7 @@ class TwoStageOrchestrator:
                         "invalid_fields": err.invalid_fields,
                         "raw_text": err.raw_text,
                         "parse_position": err.parse_position,
+                        "validation_attempts": vr_s1.attempts,
                     },
                 }
             )
@@ -1022,32 +696,19 @@ class TwoStageOrchestrator:
             )
             or 3
         )
-        _provider_settings = getattr(self._settings, "provider", None)
-        # KV prefix-chain support check (informational; assembler may also consult it).
-        _use_prefix_chain = _log_kv_prefix_chain_support(_provider_settings)
-
-        stage2_build_kwargs = _filter_kwargs(
-            self._assembler.build_stage2_continuation,
-            {
-                "frame": frame,
-                "stage1_messages": messages_s1,
-                "stage1_reply_content": reply_s1.content,
-                "stage1_json": stage1_json,
-                "strategy_files": strategy_files,
-                "experience_entries": experience_entries,
-                "decision_stance": record.meta.decision_stance,
-                "previous_record": previous_record,
-                "enable_next_bar_prediction": _enable_next_bar,
-                "active_position": active_position,
-                "provider_settings": _provider_settings,
-                "use_prefix_chain": _use_prefix_chain,
-                "structure_flip_cooldown_bars": _flip_cooldown,
-            },
+        messages_s2 = self._assembler.build_stage2_continuation(
+            frame=frame,
+            stage1_messages=messages_s1,
+            stage1_reply_content=reply_s1.content,
+            stage1_json=stage1_json,
+            strategy_files=strategy_files,
+            experience_entries=experience_entries,
+            decision_stance=record.meta.decision_stance,
+            previous_record=previous_record,
+            enable_next_bar_prediction=_enable_next_bar,
+            provider_settings=getattr(self._settings, "provider", None),
+            structure_flip_cooldown_bars=_flip_cooldown,
         )
-        messages_s2 = self._assembler.build_stage2_continuation(**stage2_build_kwargs)
-
-        # Ensure market-features block is present in the Stage 2 user prompt.
-        messages_s2 = _inject_market_features_into_stage2_messages(messages_s2, frame)
 
         # ── Step 15: Call AI for Stage 2 ──────────────────────────────────────
         logger.debug("\n" + "="*80)
@@ -1183,25 +844,20 @@ class TwoStageOrchestrator:
             s2_usage_calls.append(getattr(r, "usage", None))
             return r
 
-        s2_validate_kwargs = _filter_kwargs(
-            self._validator.validate,
-            {
-                "kline_frame": frame,
-                "decision_stance": record.meta.decision_stance,
-                "stage1_json": stage1_json,
-                "skip_next_bar": not _enable_next_bar,
-                "active_position": active_position,
-                "previous_record": previous_record,
-                "structure_flip_cooldown_bars": _flip_cooldown,
-            },
-        )
         vr_s2 = validate_with_retry(
             stage="stage2",
             messages=messages_s2,
             reply=reply_s2,
             validator=self._validator,
             validation_settings=self._validation_settings(),
-            validate_kwargs=s2_validate_kwargs,
+            validate_kwargs={
+                "kline_frame": frame,
+                "decision_stance": record.meta.decision_stance,
+                "stage1_json": stage1_json,
+                "skip_next_bar": not _enable_next_bar,
+                "previous_record": previous_record,
+                "structure_flip_cooldown_bars": _flip_cooldown,
+            },
             call_api=_call_s2_retry,
             provider_settings=getattr(self._settings, "provider", None),
         )
@@ -1214,39 +870,10 @@ class TwoStageOrchestrator:
         if isinstance(result_s2, ValidationError):
             err = result_s2
             err_message = _enrich_stage2_validation_message(err, reply_s2)
-            preserved_s2 = _stage2_decision_from_validation_error(
-                content=reply_s2.content or "",
-                kline_frame=frame,
-                decision_stance=record.meta.decision_stance,
-                stage1_json=stage1_json,
-                skip_next_bar=not _enable_next_bar,
-            )
-            exc_payload: dict[str, Any] = {
-                "type": "provider_error" if err.category == "e" else "validation_error",
-                "stage": "stage2",
-                "category": err.category,
-                "message": err_message,
-                "missing_fields": err.missing_fields,
-                "invalid_fields": err.invalid_fields,
-                "raw_text": err.raw_text,
-                "parse_position": err.parse_position,
-                "decision_preserved": preserved_s2 is not None,
-            }
-            from pa_agent.positions.decision_fields import (
-                should_apply_position_despite_validation,
-            )
-
-            exc_payload["position_apply_allowed"] = (
-                should_apply_position_despite_validation(
-                    exc_payload,
-                    stage2_decision=preserved_s2,
-                )
-            )
             logger.warning(
-                "Stage 2 validation failed: category=%s preserved=%s apply=%s",
+                "Stage 2 validation failed: category=%s message=%s",
                 err.category,
-                preserved_s2 is not None,
-                exc_payload["position_apply_allowed"],
+                err_message,
             )
             record = record.model_copy(
                 update={
@@ -1255,7 +882,6 @@ class TwoStageOrchestrator:
                     "stage1_diagnosis": stage1_json,
                     "stage2_messages": messages_s2,
                     "stage2_response": reply_s2.raw,
-                    "stage2_decision": preserved_s2,
                     "strategy_files_used": strategy_files,
                     "experience_loaded": [
                         e.model_dump() if hasattr(e, "model_dump") else dict(e)
@@ -1265,7 +891,17 @@ class TwoStageOrchestrator:
                         _accumulate_usage_calls(record.usage_total, s1_usage_calls),
                         s2_usage_calls,
                     ),
-                    "exception": exc_payload,
+                    "exception": {
+                        "type": "provider_error" if err.category == "e" else "validation_error",
+                        "stage": "stage2",
+                        "category": err.category,
+                        "message": err_message,
+                        "missing_fields": err.missing_fields,
+                        "invalid_fields": err.invalid_fields,
+                        "raw_text": err.raw_text,
+                        "parse_position": err.parse_position,
+                        "validation_attempts": vr_s2.attempts,
+                    },
                 }
             )
             self._pending_writer.save_partial(record, f"stage2_{err.category}")
@@ -1278,16 +914,6 @@ class TwoStageOrchestrator:
         if not _enable_next_bar and isinstance(stage2_json, dict):
             stage2_json = copy.deepcopy(stage2_json)
             stage2_json.pop("next_bar_prediction", None)
-
-        # Apply program decision-continuity guard (mirrors upstream normalizer).
-        if isinstance(stage2_json, dict):
-            stage2_json = _apply_continuity_guard_to_stage2(
-                stage2_json,
-                frame=frame,
-                stage1_json=stage1_json,
-                previous_record=previous_record,
-                cooldown_bars=_flip_cooldown,
-            )
 
         # ── Step 19: Stage 2 done ─────────────────────────────────────────────
         on_event(OrchestratorEvent.Stage2Done)
@@ -1376,10 +1002,8 @@ class TwoStageOrchestrator:
         thinking: bool,
         reasoning_effort: str,
         stage_label: str,
-        stage_id: str = "",
     ) -> Any:
-        """Call stream_chat with empty-content fallback and provider failover."""
-        stage_key = stage_id or ("stage1" if "1" in stage_label else "stage2")
+        """Call stream_chat; on connection error, switch to QClaw and retry once."""
         original_model = (
             self._settings.provider.model if self._settings is not None else ""
         )
@@ -1388,21 +1012,18 @@ class TwoStageOrchestrator:
         tried_workbuddy = False
         while True:
             try:
-                return _stream_stage_with_empty_content_fallback(
-                    self._client,
+                return self._client.stream_chat(
                     messages,
-                    stage=stage_key,
-                    thinking=thinking,
-                    reasoning_effort=reasoning_effort,
-                    cancel_token=cancel_token,
                     on_reasoning_token=on_reasoning_token,
                     on_content_token=on_content_token,
+                    cancel_token=cancel_token,
+                    thinking=thinking,
+                    reasoning_effort=reasoning_effort,
                 )
             except Exception as exc:
                 if not self._is_network_error(exc):
                     raise
                 # Try WorkBuddy fallback first (if model is openclaw_wb),
-                # then Cursor (if model is openclaw_cs),
                 # then QClaw fallback (if model is openclaw)
                 if not tried_workbuddy and self._try_workbuddy_fallback(
                     original_model=original_model

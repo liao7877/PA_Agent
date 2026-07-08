@@ -141,27 +141,6 @@ def _strip_fences(text: str) -> str:
     return _repair_unescaped_quotes(_repair_semicolon_separator(_extract_outer_json_object(t)))
 
 
-def resolve_stage_json_text(
-    content: str | None,
-    reasoning_content: str | None = None,
-) -> str:
-    """Pick JSON text for stage validation: content first, then reasoning fallback."""
-    text = (content or "").strip()
-    if text:
-        return text
-    reasoning = (reasoning_content or "").strip()
-    if "{" not in reasoning:
-        return text
-    candidate = _strip_fences(reasoning)
-    if candidate.startswith("{"):
-        logger.info(
-            "Recovered stage JSON from reasoning_content (%d chars; content was empty)",
-            len(candidate),
-        )
-        return candidate
-    return text
-
-
 def _escape_control_chars_in_json_strings(text: str) -> str:
     """Escape raw newlines/tabs/control chars inside JSON string literals."""
     out: list[str] = []
@@ -370,27 +349,82 @@ def _inject_stage1_missing_tail(text: str) -> str:
     return _balance_json_brackets(tail)
 
 
+def _repair_unclosed_string_before_brace(text: str) -> str:
+    """Close strings broken by a raw newline followed by ``}`` / ``]``.
+
+    Models sometimes omit the closing quote in long ``summary`` / ``reasoning``
+    fields, e.g. ``"summary": "text\\n}\\n  },"`` → insert ``"`` before ``}``.
+    """
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(text)
+
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if escape:
+            escape = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            escape = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_string = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\n":
+            j = i + 1
+            while j < n and text[j] in " \t\r":
+                j += 1
+            if j < n and text[j] in "}]":
+                out.append('"')
+                in_string = False
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _try_repair_json_syntax(
     text: str,
     stage: Literal["stage1", "stage2"],
     *,
     allow_tail_inject: bool = False,
 ) -> str | None:
-    """Return repaired JSON text when truncation caused a syntax error, else None."""
+    """Return repaired JSON text when truncation/syntax slip caused parse failure."""
     if not text.strip().startswith("{"):
         return None
 
-    candidate = text.rstrip()
+    bases: list[str] = [text.rstrip()]
     if stage == "stage1" and allow_tail_inject:
-        candidate = _inject_stage1_missing_tail(candidate)
-    candidate = _balance_json_brackets(candidate)
-    if candidate == text.rstrip():
-        return None
-    try:
-        json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
-    return candidate
+        bases.append(_inject_stage1_missing_tail(bases[0]))
+
+    seen: set[str] = set()
+    for base in bases:
+        for variant in (base, _repair_unclosed_string_before_brace(base)):
+            candidate = _balance_json_brackets(variant.rstrip())
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if candidate != text.rstrip():
+                return candidate
+    return None
 
 
 # ── JsonValidator ─────────────────────────────────────────────────────────────
@@ -425,7 +459,6 @@ class JsonValidator:
         incremental_new_bar_count: int = 0,
         incremental_previous_stage1: dict[str, Any] | None = None,
         skip_next_bar: bool = False,
-        active_position: Any | None = None,
         previous_record: Any | None = None,
         structure_flip_cooldown_bars: int = 3,
     ) -> dict[str, Any]:
@@ -469,7 +502,6 @@ class JsonValidator:
         incremental_new_bar_count: int = 0,
         incremental_previous_stage1: dict[str, Any] | None = None,
         skip_next_bar: bool = False,
-        active_position: Any | None = None,
         previous_record: Any | None = None,
         structure_flip_cooldown_bars: int = 3,
     ) -> Result:
@@ -520,15 +552,12 @@ class JsonValidator:
                     parse_exc = exc2
             if obj is None and parse_exc is not None:
                 exc = parse_exc
-                # Stage 2: fail fast on syntax errors (no silent truncation repair).
                 allow_inject = (
                     stage == "stage1"
                     and not getattr(self._validation, "disable_truncation_repair", True)
                 )
-                repaired = (
-                    _try_repair_json_syntax(stripped, stage, allow_tail_inject=allow_inject)
-                    if stage == "stage1"
-                    else None
+                repaired = _try_repair_json_syntax(
+                    stripped, stage, allow_tail_inject=allow_inject
                 )
                 if repaired is not None:
                     try:
@@ -568,7 +597,6 @@ class JsonValidator:
             incremental_new_bar_count=incremental_new_bar_count,
             incremental_previous_stage1=incremental_previous_stage1,
             skip_next_bar=False if stage == "stage2" else skip_next_bar,
-            active_position=active_position,
             previous_record=previous_record,
             structure_flip_cooldown_bars=structure_flip_cooldown_bars,
         )
@@ -673,9 +701,6 @@ class JsonValidator:
             for msg in self._check_next_cycle_prediction(obj):
                 invalid.append(msg)
 
-            for msg in self._check_position_management(obj, active_position):
-                invalid.append(f"position:{msg}")
-
             for msg in self._check_trade_metrics(
                 obj,
                 decision_stance=decision_stance,
@@ -773,37 +798,6 @@ class JsonValidator:
                     },
                 }
         return None
-
-    @staticmethod
-    def _check_position_management(
-        obj: dict,
-        active_position: Any | None,
-    ) -> list[str]:
-        """Require position_action when managing an existing filled position."""
-        if active_position is None:
-            return []
-        if hasattr(active_position, "model_dump"):
-            data = active_position.model_dump(mode="json")
-        elif isinstance(active_position, dict):
-            data = active_position
-        else:
-            return []
-        if str(data.get("status", "")) != "filled":
-            return []
-        decision = obj.get("decision")
-        if not isinstance(decision, dict):
-            return []
-        order_type = str(decision.get("order_type") or "")
-        if order_type != "不下单":
-            return []
-        from pa_agent.positions.decision_fields import get_position_action
-
-        if get_position_action(decision) is None:
-            return [
-                "filled position requires position_action "
-                "(持有|调整|平仓) when order_type=不下单"
-            ]
-        return []
 
     @staticmethod
     def _check_breakout_order_basis(obj: dict) -> dict | None:

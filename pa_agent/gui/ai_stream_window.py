@@ -10,7 +10,6 @@ from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -86,8 +85,6 @@ class AIStreamPanel(QWidget):
         self._finalized_stages: set[str] = set()
         # Per-stage streamed char counts; text in the pane is never cleared between stages.
         self._stage_chars: dict[str, dict[str, int]] = {}
-        # Completed attempts per stage (pre-retry counts preserved).
-        self._stage_attempts: dict[str, list[dict[str, int]]] = {}
         self._stage_headers_written: set[str] = set()
         self._content_headers_written: set[str] = set()
 
@@ -149,6 +146,7 @@ class AIStreamPanel(QWidget):
         self._reasoning_edit.setFont(font)
         self._reasoning_edit.document().setDefaultFont(font)
         self._input_edit.setFont(font)
+        self._input_edit.document().setDefaultFont(font)
 
     def _build_token_bar(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -166,60 +164,24 @@ class AIStreamPanel(QWidget):
 
     def _build_input_area(self) -> QWidget:
         box = QWidget()
-        box.setStyleSheet(
-            "QWidget {"
-            " background: #161b22;"
-            " border-top: 1px solid #30363d;"
-            "}"
-        )
         row = QHBoxLayout(box)
-        row.setContentsMargins(12, 10, 12, 10)
-        row.setSpacing(8)
-
-        self._input_edit = QLineEdit()
+        self._input_edit = QPlainTextEdit()
         self._input_edit.setObjectName("chatInput")
-        self._input_edit.setPlaceholderText("分析完成后可继续追问\u2026")
-        self._input_edit.setFixedHeight(44)
-        self._input_edit.setStyleSheet(
-            "QLineEdit {"
-            " border: 1px solid #30363d;"
-            " border-radius: 6px;"
-            " background: #0a0e14;"
-            " color: #e6edf3;"
-            " padding: 0 14px;"
-            " font-size: 13px;"
-            "}"
-            "QLineEdit:focus {"
-            " border-color: #38bdf8;"
-            "}"
-        )
-        self._input_edit.returnPressed.connect(self._on_send_or_stop)
+        self._input_edit.setPlaceholderText("分析完成后可继续追问…")
+        self._input_edit.setMaximumHeight(80)
         row.addWidget(self._input_edit, stretch=1)
 
         button_col = QVBoxLayout()
         button_col.setSpacing(6)
         self._send_btn = QPushButton("发送")
-        self._send_btn.setStyleSheet(
-            "QPushButton {"
-            " background: #15803d;"
-            " color: #fff;"
-            " border: 1px solid #16a34a;"
-            " min-width: 80px;"
-            " border-radius: 4px;"
-            " padding: 4px 8px;"
-            "}"
-            "QPushButton:disabled {"
-            " background: #1f2937;"
-            " color: #6b7280;"
-            " border-color: #374151;"
-            "}"
-        )
+        self._send_btn.setObjectName("primaryButton")
+        self._send_btn.setMinimumWidth(72)
         self._send_btn.clicked.connect(self._on_send_or_stop)
         button_col.addWidget(self._send_btn)
 
         self._clear_output_btn = QPushButton("清空")
         self._clear_output_btn.setMinimumWidth(72)
-        self._clear_output_btn.setToolTip("清空上方\u201c思考过程\u201d窗口内容，不影响当前会话")
+        self._clear_output_btn.setToolTip("清空上方“思考过程”窗口内容，不影响当前会话")
         self._clear_output_btn.clicked.connect(self.clear_stream_output)
         button_col.addWidget(self._clear_output_btn)
         button_col.addStretch()
@@ -228,11 +190,11 @@ class AIStreamPanel(QWidget):
 
     def bind_settings(self, settings: Optional["Settings"]) -> None:
         self._settings = settings
-        self._apply_stream_font()
-        self._refresh_mode_label()
 
     def bind_notifier(self, notifier: object | None) -> None:
         self._notifier = notifier
+        self._apply_stream_font()
+        self._refresh_mode_label()
 
     def _refresh_mode_label(self) -> None:
         if self._settings is None:
@@ -244,11 +206,6 @@ class AIStreamPanel(QWidget):
             thinking = "enabled" if p.thinking else "disabled"
             self._mode_label.setText(
                 f"API: thinking={thinking} · reasoning_effort={p.reasoning_effort} · {p.model}"
-            )
-        elif "minimax.io" in base or "minimax.com" in base:
-            thinking = "adaptive" if p.thinking else "disabled"
-            self._mode_label.setText(
-                f"MiniMax: thinking={thinking} · {p.model}"
             )
         elif "kkone.vip" in base:
             thinking = "开" if p.thinking else "关"
@@ -283,47 +240,27 @@ class AIStreamPanel(QWidget):
         labels = {"stage1": "阶段一", "stage2": "阶段二", "chat": "追问"}
         parts: list[str] = []
         for sid, label in labels.items():
-            # ── completed attempts ──
-            prev_attempts = self._stage_attempts.get(sid, [])
-            for i, prev in enumerate(prev_attempts):
-                attempt_label = label if i == 0 else f"{label}重试"
-                parts.append(self._format_attempt_text(attempt_label, prev))
-            # ── current attempt ──
             counts = self._stage_chars.get(sid)
-            if counts:
-                attempt_label = label if not prev_attempts else f"{label}重试"
-                parts.append(self._format_attempt_text(attempt_label, counts))
+            if not counts:
+                continue
+            reasoning_n = counts.get("reasoning", 0)
+            content_n = counts.get("content", 0)
+            cache_hit_pct = counts.get("cache_hit_pct")
+            if reasoning_n and content_n:
+                text = f"{label} 思考{reasoning_n:,}+回答{content_n:,}字"
+            elif reasoning_n:
+                text = f"{label} 思考{reasoning_n:,}字"
+            elif content_n:
+                text = f"{label} 回答{content_n:,}字"
+            else:
+                continue
+            if cache_hit_pct is not None:
+                text += f"，缓存命中率{cache_hit_pct:.0f}%"
+            parts.append(text)
         if parts:
             self._stats_label.setText(" · ".join(parts))
         else:
             self._stats_label.setText("思考 0 字")
-
-    @staticmethod
-    def _format_attempt_text(label: str, counts: dict[str, int]) -> str:
-        reasoning_n = counts.get("reasoning", 0)
-        content_n = counts.get("content", 0)
-        cache_hit_pct = counts.get("cache_hit_pct")
-        if reasoning_n and content_n:
-            text = f"{label} 思考{reasoning_n:,}+回答{content_n:,}字"
-        elif reasoning_n:
-            text = f"{label} 思考{reasoning_n:,}字"
-        elif content_n:
-            text = f"{label} 回答{content_n:,}字"
-        else:
-            text = f"{label}"
-        if cache_hit_pct is not None:
-            text += f"，缓存命中率{cache_hit_pct:.0f}%"
-        return text
-
-    def mark_retry(self, stage: str) -> None:
-        """Called when a retry begins: preserve current char counts as a completed
-        attempt and reset for the new attempt."""
-        current = self._stage_chars.get(stage)
-        if current is not None and (current.get("reasoning", 0) or current.get("content", 0)):
-            attempts = self._stage_attempts.setdefault(stage, [])
-            attempts.append(dict(current))
-        self._stage_chars[stage] = {"reasoning": 0, "content": 0}
-        self._update_stats()
 
     def set_stage_cache_hit(self, stage: str, cache_hit_pct: float) -> None:
         """Set the cache hit rate (0–100) for a given stage; refreshes stats label."""
@@ -418,7 +355,6 @@ class AIStreamPanel(QWidget):
         self._stage_t0 = time.monotonic()
         self._reasoning_chars = 0
         self._content_chars = 0
-        self._stage_attempts.pop(stage, None)  # fresh start, no retries yet
         self._ensure_stage_header(stage)
         self._phase_label.setText(f"▶ {title} — {self._stream_phase_suffix()}")
         self._update_stats()
@@ -446,7 +382,6 @@ class AIStreamPanel(QWidget):
         self._stage = ""
         self._finalized_stages.clear()
         self._stage_chars.clear()
-        self._stage_attempts.clear()
         self._stage_headers_written.clear()
         self._content_headers_written.clear()
         self._phase_label.setText("等待分析…")
@@ -463,7 +398,6 @@ class AIStreamPanel(QWidget):
         self._reasoning_chars = 0
         self._content_chars = 0
         self._stage_chars.clear()
-        self._stage_attempts.clear()
         self._stage_headers_written.clear()
         self._content_headers_written.clear()
         self._finalized_stages.clear()
@@ -474,6 +408,20 @@ class AIStreamPanel(QWidget):
             self._phase_label.setText("等待分析…")
         self._update_stats()
 
+    def begin_new_round(self) -> None:
+        """Start a new analysis round while keeping prior output visible."""
+        if self._reasoning_edit.toPlainText().strip():
+            self._reasoning_edit.appendPlainText("\n" + "═" * 48 + "\n【新一轮持续跟踪分析】\n")
+        self._stage = ""
+        self._reasoning_chars = 0
+        self._content_chars = 0
+        self._finalized_stages.clear()
+        self._stage_chars.clear()
+        self._stage_headers_written.clear()
+        self._content_headers_written.clear()
+        self._phase_label.setText("等待分析…")
+        self._update_stats()
+
     def on_analysis_started(self, *, preserve_output: bool = False) -> None:
         self.set_input_enabled(False)
         self._session = None
@@ -482,33 +430,6 @@ class AIStreamPanel(QWidget):
             self.begin_new_round()
         else:
             self.clear()
-
-    def begin_new_round(self) -> None:
-        """Start a new analysis round while keeping prior output visible."""
-        if self._reasoning_edit.toPlainText().strip():
-            self._reasoning_edit.appendPlainText(
-                "\n" + "═" * 48 + "\n【新一轮持续跟踪分析】\n"
-            )
-        self._stage = ""
-        self._reasoning_chars = 0
-        self._content_chars = 0
-        self._finalized_stages.clear()
-        self._stage_chars.clear()
-        self._stage_attempts.clear()
-        self._stage_headers_written.clear()
-        self._content_headers_written.clear()
-        self._phase_label.setText("等待分析…")
-        self._update_stats()
-
-    def show_error_banner(self, title: str, detail: str = "") -> None:
-        """Show a visible failure / notice block in the live stream pane."""
-        if self._reasoning_edit.toPlainText().strip():
-            self._reasoning_edit.appendPlainText("\n" + "═" * 48 + "\n")
-        self._reasoning_edit.appendPlainText(f"【{title}】\n")
-        if detail:
-            self._reasoning_edit.appendPlainText(detail.strip() + "\n")
-        self._reasoning_edit.moveCursor(QTextCursor.MoveOperation.End)
-        self._reasoning_edit.ensureCursorVisible()
 
     def on_record_saved(self) -> None:
         self.set_input_enabled(True)
@@ -607,6 +528,21 @@ class AIStreamPanel(QWidget):
         if stage_id not in self._finalized_stages:
             self.finalize_stage(stage_id)
 
+    def show_error_banner(self, title: str, detail: str = "") -> None:
+        """Show a visible failure / notice block in the live stream pane."""
+        if self._reasoning_edit.toPlainText().strip():
+            self._reasoning_edit.appendPlainText("\n" + "═" * 48 + "\n")
+        self._reasoning_edit.appendPlainText(f"【{title}】\n")
+        if detail:
+            self._reasoning_edit.appendPlainText(detail.strip() + "\n")
+        self._reasoning_edit.moveCursor(QTextCursor.MoveOperation.End)
+        self._reasoning_edit.ensureCursorVisible()
+        self._phase_label.setText(f"✗ {title}")
+
+    def show_status_message(self, text: str) -> None:
+        """Update the phase header without clearing streamed text."""
+        self._phase_label.setText(text)
+
     def _on_send_or_stop(self) -> None:
         if self._sending:
             if self._cancel_token is not None:
@@ -617,7 +553,7 @@ class AIStreamPanel(QWidget):
     def _on_send(self) -> None:
         if self._session is None:
             return
-        text = self._input_edit.text().strip()
+        text = self._input_edit.toPlainText().strip()
         if not text:
             return
         from pa_agent.util.threading import CancelToken
@@ -631,16 +567,9 @@ class AIStreamPanel(QWidget):
 
         self._sending = True
         self._send_btn.setText("停止")
-        self._send_btn.setStyleSheet(
-            "QPushButton {"
-            " background: rgba(239,68,68,0.15);"
-            " color: #ef4444;"
-            " border: 1px solid #ef4444;"
-            " min-width: 80px;"
-            " border-radius: 4px;"
-            " padding: 4px 8px;"
-            "}"
-        )
+        self._send_btn.setObjectName("dangerButton")
+        self._send_btn.style().unpolish(self._send_btn)
+        self._send_btn.style().polish(self._send_btn)
         self._input_edit.setEnabled(False)
 
         self._worker = _ChatWorker(self._session, text, self._cancel_token, parent=self)
@@ -688,20 +617,8 @@ class AIStreamPanel(QWidget):
     def _on_worker_done(self) -> None:
         self._sending = False
         self._send_btn.setText("发送")
-        self._send_btn.setStyleSheet(
-            "QPushButton {"
-            " background: #15803d;"
-            " color: #fff;"
-            " border: 1px solid #16a34a;"
-            " min-width: 80px;"
-            " border-radius: 4px;"
-            " padding: 4px 8px;"
-            "}"
-            "QPushButton:disabled {"
-            " background: #1f2937;"
-            " color: #6b7280;"
-            " border-color: #374151;"
-            "}"
-        )
+        self._send_btn.setObjectName("primaryButton")
+        self._send_btn.style().unpolish(self._send_btn)
+        self._send_btn.style().polish(self._send_btn)
         self._input_edit.setEnabled(True)
         self._worker = None

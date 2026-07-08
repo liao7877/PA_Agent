@@ -149,6 +149,21 @@ def test_panel_neutral_renders_yellow(panel: DecisionPanel):
     assert "#e6b800" in panel._prediction_direction_label.styleSheet()
 
 
+def test_panel_bearish_range_trend_shows_biased_sideways(panel: DecisionPanel):
+    """Bearish trading range shows 震荡偏空, aligned with 下跌交易区间 cycle label."""
+    data = _valid_no_order()
+    data["diagnosis_summary"] = {
+        "cycle_position": "trading_range",
+        "direction": "bearish",
+        "alternative_cycle_position": "trending_tr",
+        "key_signals": [],
+    }
+    panel.set_decision(data["decision"], diagnosis_summary=data["diagnosis_summary"])
+    assert "震荡偏空" in panel._trend_label.text()
+    assert "下跌交易区间" in panel._cycle_label.text()
+    assert "#f85149" in panel._trend_label.styleSheet()
+
+
 def test_panel_clear_hides_group(panel: DecisionPanel):
     """clear() must hide prediction group and clear text."""
     data = _valid_no_order()

@@ -19,7 +19,6 @@ DataSourceKind = Literal[
     "yfinance",
 ]
 
-# UI-visible sources only — ``eastmoney`` is config/programmatic, not listed here.
 DATA_SOURCE_CHOICES: tuple[tuple[DataSourceKind, str], ...] = (
     ("mt5", "MT5"),
     ("tradingview", "TradingView"),
@@ -73,7 +72,11 @@ def default_symbol_for_kind(kind: str | None) -> str:
     return _DEFAULT_SYMBOLS[normalize_data_source_kind(kind)]
 
 
-def create_data_source(kind: str | None, *, mt5_terminal_path: str = "") -> DataSource:
+def create_data_source(
+    kind: str | None,
+    *,
+    mt5_terminal_path: str = "",
+) -> DataSource:
     """Instantiate a fresh data source for *kind* (not connected)."""
     normalized = normalize_data_source_kind(kind)
     if normalized == "tradingview":

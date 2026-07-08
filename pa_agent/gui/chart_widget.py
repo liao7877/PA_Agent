@@ -59,12 +59,11 @@ class ChartWidget(pg.PlotWidget):
         self._seq_labels: list[SeqLabelItem] = []
         self._ema_line: pg.PlotDataItem | None = None
         self._overlay = OverlayLines()
+        self._pending_decision: dict | None = None
         self._position_overlay = OverlayLines()
         self._active_position: dict | None = None
-        self._sr_items: list[pg.GraphicsItem] = []  # support/resistance level lines
-        self._pending_decision: dict | None = None
         self._direction_items: list[pg.GraphicsItem] = []
-        self._seq_label_font_pt: int = 7
+        self._seq_label_font_pt: int = 11
         self._fit_on_next_render: bool = False
         self._first_frame_fitted: bool = False
 
@@ -154,20 +153,16 @@ class ChartWidget(pg.PlotWidget):
 
     def set_decision(self, decision: dict) -> None:
         """Draw or clear entry/TP/SL lines and direction marker from the AI decision."""
-        self._pending_decision = decision
         order_type = decision.get("order_type", _NO_ORDER_TEXT)
-        if order_type == _NO_ORDER_TEXT:
+        overlay_active = bool(decision.get("chart_overlay_active"))
+
+        if order_type == _NO_ORDER_TEXT and not overlay_active:
+            self._pending_decision = None
             self._overlay.clear_lines(self)
             self._clear_direction_marker()
-            self._pending_decision = None
             return
 
-        # Tracked position lines take precedence — avoid double labels at same price.
-        if self._active_position is not None:
-            self._overlay.clear_lines(self)
-            self._update_direction_marker()
-            return
-
+        self._pending_decision = decision
         entry = decision.get("entry_price")
         tp = decision.get("take_profit_price")
         tp2 = decision.get("take_profit_price_2")
@@ -177,7 +172,12 @@ class ChartWidget(pg.PlotWidget):
             try:
                 tp2_val = float(tp2) if tp2 is not None else None
                 self._overlay.set_lines(
-                    self, float(entry), float(tp), float(sl), tp2=tp2_val
+                    self,
+                    float(entry),
+                    float(tp),
+                    float(sl),
+                    tp2=tp2_val,
+                    continuity=overlay_active,
                 )
             except (TypeError, ValueError):
                 self._overlay.clear_lines(self)
@@ -187,19 +187,24 @@ class ChartWidget(pg.PlotWidget):
         self._update_direction_marker()
 
     def clear_decision_overlay(self) -> None:
-        """Remove entry/TP/SL lines and direction marker; keep the current K-line frame."""
+        """Remove planned-order lines and direction marker; keep held-position lines."""
         self._overlay.clear_lines(self)
         self._clear_direction_marker()
         self._pending_decision = None
 
     def set_active_position(self, position: dict | None) -> None:
-        """Draw persistent solid/dashed lines for a tracked position."""
+        """Draw persistent solid lines for a held position.
+
+        *position* is a dict with ``entry_price`` (or ``fill_price``),
+        ``take_profit_price``, ``stop_loss_price`` and ``status``. Pass None to
+        clear. These lines persist across analysis rounds and chart refreshes,
+        unlike the planned-order overlay.
+        """
         if not position:
             self._active_position = None
             self._position_overlay.clear_lines(self)
             return
         self._active_position = dict(position)
-        self._overlay.clear_lines(self)
         self._draw_active_position()
 
     def clear_active_position(self) -> None:
@@ -215,7 +220,6 @@ class ChartWidget(pg.PlotWidget):
         if entry is None:
             entry = position.get("entry_price")
         tp = position.get("take_profit_price")
-        tp2 = position.get("take_profit_price_2")
         sl = position.get("stop_loss_price")
         if entry is None:
             self._position_overlay.clear_lines(self)
@@ -226,98 +230,14 @@ class ChartWidget(pg.PlotWidget):
             self._position_overlay.set_lines(
                 self,
                 float(entry),
-                float(tp) if tp is not None else None,
-                float(sl) if sl is not None else None,
-                tp2=float(tp2) if tp2 is not None else None,
+                float(tp) if tp is not None else None,  # type: ignore[arg-type]
+                float(sl) if sl is not None else None,  # type: ignore[arg-type]
                 solid=(status == "filled"),
                 label_prefix=prefix,
+                width=2 if status == "filled" else 1,
             )
         except (TypeError, ValueError):
             self._position_overlay.clear_lines(self)
-
-    def set_support_resistance(self, levels: list) -> None:
-        """Draw horizontal support/resistance lines from StructureLevel objects.
-
-        Parameters
-        ----------
-        levels:
-            List of ``StructureLevel`` objects (from ``pa_agent.gui.support_resistance``).
-            Supports are drawn in green, resistances in red/amber.
-        """
-        plot = self.getPlotItem()
-        for item in self._sr_items:
-            plot.removeItem(item)
-        self._sr_items.clear()
-
-        for level in levels:
-            kind = getattr(level, "kind", "support")
-            price = getattr(level, "price", None)
-            low = getattr(level, "low", price)
-            high = getattr(level, "high", price)
-            label_text = getattr(level, "label", kind)
-            if price is None:
-                continue
-
-            if kind == "support":
-                color = (34, 197, 94, 180)    # green
-                text_color = (134, 239, 172)   # light green
-            else:
-                color = (245, 158, 11, 180)    # amber
-                text_color = (251, 191, 36)    # yellow
-
-            # Draw the midline
-            line = pg.InfiniteLine(
-                pos=price,
-                angle=0,
-                pen=pg.mkPen(color=color, width=1,
-                             style=pg.QtCore.Qt.PenStyle.DashLine),
-                movable=False,
-            )
-            plot.addItem(line)
-            self._sr_items.append(line)
-
-            # Draw a zone fill if it's a range (high != low)
-            is_zone = abs((high or price) - (low or price)) > 1e-9
-            if is_zone and low is not None and high is not None:
-                zone_color = (*color[:3], 28)  # very transparent fill
-                fill = pg.LinearRegionItem(
-                    values=(low, high),
-                    orientation="horizontal",
-                    movable=False,
-                    brush=pg.mkBrush(color=zone_color),
-                    pen=pg.mkPen(None),
-                )
-                plot.addItem(fill)
-                self._sr_items.append(fill)
-
-            # Label
-            label = pg.TextItem(
-                text=f"{label_text}: {price:.5g}",
-                color=text_color,
-                anchor=(0.0, 0.5),
-            )
-            plot.addItem(label)
-            self._sr_items.append(label)
-            label._sr_price = float(price)  # type: ignore[attr-defined]
-
-        # Position labels at left edge (use exact price, not rounded display text)
-        if self._sr_items:
-            try:
-                x_min = self.getViewBox().viewRange()[0][0]
-                for item in self._sr_items:
-                    if isinstance(item, pg.TextItem):
-                        p = getattr(item, "_sr_price", None)
-                        if p is not None:
-                            item.setPos(x_min, float(p))
-            except Exception:  # noqa: BLE001
-                pass
-
-    def clear_support_resistance(self) -> None:
-        """Remove all support/resistance lines from the chart."""
-        plot = self.getPlotItem()
-        for item in self._sr_items:
-            plot.removeItem(item)
-        self._sr_items.clear()
 
     # ── Price-axis resize via viewportEvent ──────────────────────────────────
 
@@ -473,6 +393,7 @@ class ChartWidget(pg.PlotWidget):
 
         self._update_direction_marker()
 
+        # Held-position lines persist across refreshes; redraw after rebuild.
         if self._active_position is not None:
             self._draw_active_position()
         elif self._pending_decision is not None:
@@ -547,7 +468,10 @@ class ChartWidget(pg.PlotWidget):
         frame = self._latest_frame
         if decision is None or frame is None:
             return
-        if decision.get("order_type", _NO_ORDER_TEXT) == _NO_ORDER_TEXT:
+        if (
+            decision.get("order_type", _NO_ORDER_TEXT) == _NO_ORDER_TEXT
+            and not decision.get("chart_overlay_active")
+        ):
             return
 
         entry = decision.get("entry_price")

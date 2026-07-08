@@ -1,1 +1,1 @@
-"""PA Agent AI prompts and JSON schemas package."""
+"""Trading Agent AI prompts and JSON schemas package."""

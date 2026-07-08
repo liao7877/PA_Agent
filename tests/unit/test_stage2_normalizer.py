@@ -304,6 +304,42 @@ def test_normalize_decision_reasoning_truncation() -> None:
     assert out["decision"]["reasoning"].endswith("…")
 
 
+def test_normalize_stage2_retruncates_after_continuity_guard() -> None:
+    from unittest.mock import patch
+
+    from pa_agent.ai.stage2_normalizer import DECISION_REASONING_MAX_LEN, normalize_stage2
+
+    guarded = {
+        "decision": {
+            "order_type": "不下单",
+            "order_direction": None,
+            "entry_price": None,
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "reasoning": "【程序连续性守卫】" + "x" * 400,
+            "diagnosis_confidence": 60,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 0,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": None,
+            "estimated_win_rate_reasoning": None,
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "continuity", "outcome": "wait", "label": "方案连续性守卫"},
+    }
+
+    def _fake_guard(stage2, ctx):
+        return guarded
+
+    obj = dict(guarded)
+    with patch("pa_agent.ai.decision_continuity.apply_continuity_guard", side_effect=_fake_guard):
+        out = normalize_stage2(obj, kline_frame=object(), stage1_json={"direction": "neutral"})
+    assert len(out["decision"]["reasoning"]) <= DECISION_REASONING_MAX_LEN
+
+
 def test_normalize_next_bar_prediction_reasoning_truncation():
     """Reasoning > 1500 chars gets truncated with ellipsis."""
     pred = {
@@ -796,6 +832,110 @@ def test_repair_next_bar_yinxian_singular_probability() -> None:
     assert nb["probabilities"]["bearish"] == 60
 
 
+def test_prediction_guard_forbids_long_when_next_cycle_bearish() -> None:
+    obj = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做多",
+            "entry_price": 4015.365,
+            "take_profit_price": 4022.486,
+            "take_profit_price_2": 4034.234,
+            "stop_loss_price": 4009.472,
+            "reasoning": "test",
+            "diagnosis_confidence": 64,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 52,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 52,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "t",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "trending_tr",
+            "direction": "neutral",
+            "key_signals": [],
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "11.3", "outcome": "trade", "label": "t"},
+        "next_cycle_prediction": {
+            "cycle": "broad_channel",
+            "direction": "bearish",
+            "probabilities": {
+                "spike": 5,
+                "micro_channel": 5,
+                "tight_channel": 8,
+                "normal_channel": 12,
+                "broad_channel": 30,
+                "trending_tr": 20,
+                "trading_range": 15,
+                "extreme_tr": 5,
+            },
+            "unpredictable": False,
+            "reasoning": "x",
+            "features_used": ["stage1_diagnosis"],
+        },
+    }
+    out = normalize_stage2(obj)
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["terminal"]["outcome"] == "wait"
+    assert "禁止做多" in (out["decision"].get("reasoning") or "")
+
+
+def test_prediction_guard_forbids_short_when_next_cycle_bullish() -> None:
+    obj = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做空",
+            "entry_price": 4022.486,
+            "take_profit_price": 4015.365,
+            "take_profit_price_2": 4009.473,
+            "stop_loss_price": 4034.234,
+            "reasoning": "test",
+            "diagnosis_confidence": 64,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 52,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 52,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "t",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "trending_tr",
+            "direction": "neutral",
+            "key_signals": [],
+        },
+        "decision_trace": [],
+        "terminal": {"node_id": "11.3", "outcome": "trade", "label": "t"},
+        "next_cycle_prediction": {
+            "cycle": "broad_channel",
+            "direction": "bullish",
+            "probabilities": {
+                "spike": 5,
+                "micro_channel": 5,
+                "tight_channel": 8,
+                "normal_channel": 12,
+                "broad_channel": 30,
+                "trending_tr": 20,
+                "trading_range": 15,
+                "extreme_tr": 5,
+            },
+            "unpredictable": False,
+            "reasoning": "x",
+            "features_used": ["stage1_diagnosis"],
+        },
+    }
+    out = normalize_stage2(obj)
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["terminal"]["outcome"] == "wait"
+    assert "禁止做空" in (out["decision"].get("reasoning") or "")
+
+
 def test_validator_injects_next_bar_when_feature_disabled() -> None:
     """skip_next_bar=True must not skip schema-required injection during validate()."""
     payload = {
@@ -975,3 +1115,156 @@ def test_normalize_stage2_no_order_english_alias_passes_schema() -> None:
         json.dumps(out, ensure_ascii=False),
     )
     assert isinstance(result, Ok)
+
+
+def test_normalize_flat_decision_wait_string_from_user_report() -> None:
+    """Models sometimes emit decision=wait with fields at root instead of nested."""
+    payload = {
+        "decision": "wait",
+        "decision_trace": [
+            {
+                "node": "§6.1",
+                "question": "是否满足区间态（清晰上下边界）？",
+                "answer": "是",
+                "reason": "上沿60857测试≥2次",
+            },
+            {
+                "node": "§9.0P",
+                "question": "AIS下做空限价是否可行？",
+                "answer": "否",
+                "reason": "结构止损过窄",
+            },
+            {
+                "node": "§14 禁止项扫描",
+                "question": "是否触犯禁止行为？",
+                "answer": "否",
+                "reason": "未触犯",
+            },
+        ],
+        "reasoning": "direction=neutral且AIS下，当前无合格空头方案，等待更明确信号。",
+        "key_factors": ["K1站上EMA20", "AIS仍在"],
+        "risk_assessment": "方向矛盾，强行入场风险较高。",
+        "watch_points": ["K0若为空头趋势棒则重新评估"],
+        "terminal": {"outcome": "wait", "node_id": "9.0P"},
+    }
+    stage1 = {
+        "cycle_position": "trending_tr",
+        "direction": "neutral",
+        "diagnosis_confidence": 62,
+        "bar_analysis": {
+            "always_in": "short",
+            "last_closed_bar": "K1",
+            "bar_type": "trend_bull",
+            "signal_bar": {"bar": None, "quality": "invalid", "reason": "无"},
+            "entry_setup_type": "none",
+            "follow_through": "pending",
+        },
+    }
+    out = normalize_stage2(payload, stage1_json=stage1, skip_next_bar=True)
+    decision = out["decision"]
+    assert isinstance(decision, dict)
+    assert decision["order_type"] == "不下单"
+    assert "direction=neutral" in decision["reasoning"]
+    assert decision["key_factors"] == ["K1站上EMA20", "AIS仍在"]
+    assert decision["entry_price"] is None
+    assert out["decision_trace"][-1]["node_id"] == "14.1"
+
+    result = schema_test_validator().validate(
+        "stage2",
+        json.dumps(out, ensure_ascii=False),
+        stage1_json=stage1,
+        skip_next_bar=True,
+    )
+    assert isinstance(result, Ok), getattr(result, "message", result)
+
+
+def test_repair_misplaced_decision_fields_from_diagnosis_summary() -> None:
+    """Regression: models put estimated_win_rate_reasoning under diagnosis_summary."""
+    payload = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做空",
+            "entry_price": 7335.0,
+            "stop_loss_price": 7337.51,
+            "take_profit_price": 7319.84,
+            "take_profit_price_2": 7309.34,
+            "reasoning": "计划限价做空。",
+            "estimated_win_rate": 60,
+            "trade_confidence": 55,
+            "trade_confidence_reasoning": "结构一致。",
+            "diagnosis_confidence": 72,
+            "diagnosis_confidence_reasoning": "阶段一诊断一致。",
+            "key_factors": ["AIS确认"],
+            "risk_assessment": "风险可控。",
+            "watch_points": ["等待反弹"],
+            "invalidation_condition": "突破止损",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "spike",
+            "direction": "bearish",
+            "estimated_win_rate_reasoning": "双顶结构偏空，胜率约60%。",
+        },
+        "decision_trace": [
+            {
+                "node_id": "14",
+                "question": "是否触犯禁止行为？",
+                "answer": "否",
+                "reason": "未触犯",
+                "bar_range": "K8-K1",
+            }
+        ],
+        "terminal": {"node_id": "10.3", "outcome": "trade"},
+        "next_bar_prediction": {
+            "direction": "bearish",
+            "probabilities": {"bullish": 20, "bearish": 60, "neutral": 20},
+            "unpredictable": False,
+            "reasoning": "偏空",
+            "features_used": ["stage1_diagnosis"],
+        },
+        "next_cycle_prediction": {
+            "current_cycle": "spike",
+            "predicted_next_cycle": "broad_channel",
+            "direction": "bearish",
+            "confidence": 60,
+            "reasoning": "可能进入宽通道。",
+            "probabilities": {
+                "spike": 3,
+                "micro_channel": 5,
+                "tight_channel": 8,
+                "normal_channel": 20,
+                "broad_channel": 35,
+                "trending_tr": 15,
+                "trading_range": 10,
+                "extreme_tr": 4,
+            },
+            "features_used": ["stage1_diagnosis", "kline_features"],
+        },
+    }
+    stage1 = {
+        "cycle_position": "spike",
+        "direction": "bearish",
+        "key_signals": ["AIS确认"],
+        "diagnosis_confidence": 72,
+    }
+    out = normalize_stage2(payload, stage1_json=stage1, skip_next_bar=True)
+    assert out["decision"]["estimated_win_rate_reasoning"] == "双顶结构偏空，胜率约60%。"
+    assert out["diagnosis_summary"]["key_signals"] == ["AIS确认"]
+    assert "current_cycle" not in out["next_cycle_prediction"]
+    assert out["next_cycle_prediction"]["cycle"] == "broad_channel"
+    assert "estimated_win_rate_reasoning" not in out["diagnosis_summary"]
+
+
+def test_coerce_breakout_without_basis_to_limit() -> None:
+    from pa_agent.ai.stage2_normalizer import _coerce_breakout_without_basis
+
+    out = {
+        "decision": {
+            "order_type": "突破单",
+            "entry_basis_bar": None,
+            "entry_basis_extreme": None,
+            "entry_rule": "K1 high + 1 tick",
+        }
+    }
+    assert _coerce_breakout_without_basis(out) is True
+    assert out["decision"]["order_type"] == "限价单"
+    assert out["decision"]["entry_rule"] is None

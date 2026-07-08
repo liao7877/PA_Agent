@@ -191,41 +191,18 @@ def format_manage(
     take_profit_price: Any = None, stop_loss_price: Any = None,
     advisory_only: bool = False,
 ) -> NotificationMessage:
-    """Build a message when an open position's TP/SL is adjusted."""
+    """Build a message when an open position's TP/SL is adjusted or advised."""
     pair = f"{symbol} {timeframe}".strip()
-    title = f"🔧 持仓调整 · {pair} · {direction or '—'}"
+    title_kind = "持仓建议" if advisory_only else "持仓调整"
+    title = f"🔧 {title_kind} · {pair} · {direction or '—'}"
     lines = [
         f"方向: {direction or '—'}",
-        f"调整: {change_text}",
+        f"{'建议' if advisory_only else '调整'}: {change_text}",
         f"当前止盈: {_fmt_price(take_profit_price)}",
         f"当前止损: {_fmt_price(stop_loss_price)}",
     ]
     return NotificationMessage(
         event=NotificationEvent.MANAGE,
-        title=title,
-        text="\n".join(lines),
-        fields={"symbol": symbol, "timeframe": timeframe},
-    )
-
-
-def format_order_cancelled(
-    *,
-    symbol: str,
-    timeframe: str,
-    direction: str,
-    order_type: str = "",
-    entry_price: Any = None,
-) -> NotificationMessage:
-    """Build a message when a planned order is cancelled."""
-    pair = f"{symbol} {timeframe}".strip()
-    title = f"🚫 撤单 · {pair} · {direction or '—'}"
-    lines = [
-        f"方向: {direction or '—'}",
-        f"类型: {order_type or '—'}",
-        f"原挂单价: {_fmt_price(entry_price)}",
-    ]
-    return NotificationMessage(
-        event=NotificationEvent.ORDER_CANCELLED,
         title=title,
         text="\n".join(lines),
         fields={"symbol": symbol, "timeframe": timeframe},

@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "run",
+      "type": "shell",
+      "command": "python -m pa_agent.main",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "detail": "启动 Trading Agent GUI"
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "pytest -q",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "detail": "运行全部测试（安静模式）"
+    },
+    {
+      "label": "test (skip e2e)",
+      "type": "shell",
+      "command": "pytest -q -m \"not e2e\"",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "detail": "运行测试，跳过端到端测试（无需 GUI 环境）"
+    },
+    {
+      "label": "lint",
+      "type": "shell",
+      "command": "ruff check . && black --check .",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "detail": "代码静态检查（ruff + black）"
+    }
+  ]
+}

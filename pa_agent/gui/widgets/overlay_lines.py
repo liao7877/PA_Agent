@@ -43,56 +43,38 @@ class OverlayLines:
         self,
         plot: "PlotItem",
         entry: float,
-        tp: float | None,
-        sl: float | None,
+        tp: float,
+        sl: float,
         *,
         tp2: float | None = None,
-        solid: bool = False,
-        label_prefix: str = "",
-        width: int = 1,
+        continuity: bool = False,
     ) -> None:
-        """Draw (or redraw) the horizontal price lines.
+        """Draw (or redraw) horizontal price lines.
 
         Clears any previously drawn lines first. Labels are anchored to the
         left edge of the current view and stay there on pan/zoom.
-
-        Parameters
-        ----------
-        tp2:
-            Optional second take-profit price. When provided, a ``止盈2``
-            line is drawn between the TP and SL lines.
-        solid:
-            Use a solid pen for held positions instead of dashed previews.
-        label_prefix:
-            Prepended to each line label, e.g. ``"持仓"``.
-        width:
-            Pen width in px.
         """
         self.clear_lines(plot)
         self._plot = plot
 
-        specs: list[tuple[float | None, QColor, str]] = [
-            (entry, _COLOR_ENTRY, "入场"),
-            (tp, _COLOR_TP, "止盈"),
-            (sl, _COLOR_SL, "止损"),
+        wait_suffix = " (延续)" if continuity else ""
+        specs: list[tuple[float, QColor, str]] = [
+            (entry, _COLOR_ENTRY, f"Entry{wait_suffix}"),
+            (tp, _COLOR_TP, f"TP1{wait_suffix}"),
+            (sl, _COLOR_SL, f"SL{wait_suffix}"),
         ]
         if tp2 is not None:
-            specs.insert(2, (tp2, _COLOR_TP2, "止盈2"))
-
-        style = pg.QtCore.Qt.PenStyle.SolidLine if solid else pg.QtCore.Qt.PenStyle.DashLine
+            specs.insert(2, (tp2, _COLOR_TP2, f"TP2{wait_suffix}"))
 
         for price, color, label_text in specs:
-            if price is None:
-                continue
             line = pg.InfiniteLine(
                 pos=price,
                 angle=0,
-                pen=pg.mkPen(color=color, width=width, style=style),
+                pen=pg.mkPen(color=color, width=1, style=pg.QtCore.Qt.PenStyle.DashLine),
                 movable=False,
             )
-            prefix = f"{label_prefix} " if label_prefix else ""
             label = pg.TextItem(
-                text=f"{prefix}{label_text}  {price:.5g}",
+                text=f"{label_text}: {price:.5g}",
                 color=color,
                 anchor=(0.0, 0.5),
             )
@@ -113,14 +95,9 @@ class OverlayLines:
         """Remove all managed lines and labels from the plot."""
         if self._range_conn is not None:
             try:
-                self._range_conn.disconnect()
+                plot.getViewBox().sigRangeChanged.disconnect(self._range_conn)
             except Exception:  # noqa: BLE001
-                try:
-                    plot.getViewBox().sigRangeChanged.disconnect(
-                        self._update_label_positions
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+                pass
             self._range_conn = None
 
         for item in self._items:

@@ -273,7 +273,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
   {"node_id": "2.3", "answer": "是", "branch": "bearish", "override_reason": "近3根出现强势看跌反转，斜率窗口未捕捉到该结构突变"}
 ]
 ```
-约束：§1.1/§9.1 为锁定节点不可覆盖；安全闸门（§10.3/§14）只能朝更保守方向；§2.3 answer/branch 须自洽（bullish/bearish↔是，neutral↔中性）；不输出时请勿包含该字段。
+约束：§1.1/§9.1 为锁定节点不可覆盖；安全闸门（§10.3/§14）只能朝更保守方向；§2.3 answer/branch 须自洽（bullish/bearish↔是，neutral↔中性）；`answer` **禁止**写多头/空头/bullish/bearish，方向只写在 `branch`；不输出时请勿包含该字段。
 
 **§2.3 覆盖门槛（三项全部满足才允许提交）：**
 1. 指明具体是哪根 K 线（如 K2、K1）、哪个结构特征（如强势空头趋势棒跌破颈线、MTR 四组件齐全）导致方向突变；
@@ -363,9 +363,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "key_factors": [],
     "watch_points": [],
     "risk_assessment": "",
-    "invalidation_condition": "",
-    "position_action": "持有|调整|平仓|null（无持仓/无计划单管理时为 null）",
-    "position_advice": ""
+    "invalidation_condition": ""
   },
   "diagnosis_summary": {
     "cycle_position": "",
@@ -478,14 +476,14 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - `decision_trace[10.3].reason` 中的入场/止损/目标数字必须与 `decision` 三价一致（勿用未写入 decision 的中间价）
 - 做多：风险点数 = entry − stop，回报点数 = take_profit_price − entry；做空：风险 = stop − entry，回报 = entry − take_profit_price
 - 盈亏比 = 回报 ÷ 风险（程序与界面只认此公式；reasoning 中写的 RR 必须与三价一致，否则校验失败）
-- **无盈亏比上限（模型侧）**：按结构自由定 entry / TP1 / TP2 / stop；**禁止**为凑 RR 而缩小 TP1 或贴噪音止损。程序会在 RR>1.5 时自动向外扩 stop（保持 TP1/TP2 不变）。
+- **无盈亏比上限（模型侧）**：按结构自由定 entry / TP1 / TP2 / stop；**禁止**为凑 RR 而缩小 TP1 或贴噪音止损。程序会在 RR>1.0 时自动向外扩 stop（保持 TP1/TP2 不变）。
 - **定价顺序（推荐）**：
   1. 定 **entry**（结构位/边界/回撤位或突破极值±跳动）
   2. 定 **take_profit_price（TP1）** 于最近有效结构目标（通道对边、区间对侧、前 swing 等）
   3. 定 **take_profit_price_2（TP2）** 于更远结构目标（Measured Move、通道对边远端、区间翻测等）
   4. 定 **stop_loss_price** 于结构失效位（信号棒/波段极点外 1 跳等）
-  5. 若按结构 stop 算得 RR = 回报÷风险 **> 1.5**：**保持 TP1/TP2 不变**；程序校验时会自动向外扩 stop（模型也可先自行扩 stop）
-  6. 若结构 stop 已是最宽合理位且 RR 仍 > 1.5：程序会自动扩 stop；只要 §10.3 交易者方程通过即可
+  5. 若按结构 stop 算得 RR = 回报÷风险 **> 1.0**：**保持 TP1/TP2 不变**；程序校验时会自动向外扩 stop（模型也可先自行扩 stop）
+  6. 若结构 stop 已是最宽合理位且 RR 仍 > 1.0：程序会自动扩 stop；只要 §10.3 交易者方程通过即可
   7. 若结构 stop 导致 RR < 1.0：优先**收紧** stop 至更近的结构失效位，或调整 entry；**禁止**向外扩 stop；仍无法 ≥1.0 → reject
 - **TP1 / TP2 硬规则**：
   - 有下单时 `take_profit_price` 与 `take_profit_price_2` **均必填**；不下单时均为 null
@@ -595,12 +593,12 @@ terminal 必须与 order_type 一致（**decision 与 decision_trace 同步**）
 
 情形 A：**有入场计划，但交易者方程不通过**（有具体止损、止盈数字，但盈亏比不达标）
 → `terminal.node_id = "10.3"`，`outcome = "reject"`
-典型表现：10.3 trace 里有具体数值计算，方程结果为负
+→ 典型表现：10.3 trace 里有具体数值计算，方程结果为负
 
 情形 B：**§9.0=否 且 §9.0P=否**（或 §10.1=否 因无止损锚点）
 → `terminal.node_id = "9.0P"`（或 9.0），`outcome = "wait"`
-**不能** terminal 在 10.3，因为从未有过可评估的交易方案
-**不能** 写 outcome="reject"——拒绝一个不存在的方案在语义上是无意义的
+→ **不能** terminal 在 10.3，因为从未有过可评估的交易方案
+→ **不能** 写 outcome="reject"——拒绝一个不存在的方案在语义上是无意义的
 
 常见错误：§9.0=否 → **跳过 §9.0P** → §10.1=否 → terminal=10.3/reject
 正确做法：§9.0=否 时**必须先写 §9.0P**；仅当 §9.0P 也=否（或 §10.1 因无锚点=否）→ terminal.node_id=**9.0P**（或 9.0），outcome=**wait**；10.3 不应出现在 trace 里（或标 skipped=true）。**禁止**在未评估 §9.0P 时因 §9.0=否 直接 terminal=9.0。
@@ -639,33 +637,14 @@ estimated_win_rate_reasoning：必须简要说明依据（如“宽通道顺势 
 
 # ── Analysis-mode–aware Stage 1 output rule ───────────────────────────────────
 
-_STAGE1_ORIGINAL_MODE_GATE_RULE = """
-## 原始分析过程闸门硬规则（覆盖上文任何相反描述）
-
-- 当前为 **原始分析过程**：不要使用「程序已经判定 / 由程序填充 / AI 不输出」作为省略 gate_trace 节点的理由。
-- 即使你在思考中认为某个节点已被程序预判，最终 JSON 仍必须在 `gate_trace` 中显式写出该节点。
-- 当 `gate_result="proceed"` 时，`gate_trace` 必须至少包含以下节点，且每个节点都要有独立的 `question`、`answer`、`reason`、`bar_range`：
-  `0.1`、`0.2`、`1.1`、`1.2`、`1.3`、`2.1`、`2.2`、`2.3`、`2.4`、`2.5`。
-- `0.1`/`0.2` 是阶段一前置可读性与继续分析条件闸门；`1.1` 是数据是否足够；`2.3` 是方向；`2.4` 是 Always In。原始模式必须由你自己写入 `gate_trace`。
-- 不要在 `gate_trace` 中跳过 `0.1`、`0.2`、`1.1`、`2.3`、`2.4`；否则校验会失败，阶段二不会执行。
-- **禁止在 gate_trace 中输出 node_id 为 "14.1" 的节点**：14.1（禁止行为扫描）由程序自动注入，无需 AI 输出；额外输出会导致重复节点和校验失败。
-""".strip()
-
 
 def _stage1_output_reminder_for_mode(analysis_mode: str = "original") -> str:
-    """Return Stage 1 output rules adjusted for the selected analysis mode.
+    """Return Stage 1 output rules (same for original and optimized).
 
-    - ``original``: appends a hard-rule block requiring the AI to write ALL
-      gate_trace nodes explicitly (including 0.1/0.2/1.1/2.3/2.4 which are
-      normally program-prefilled). Also disables the program prefill hint so
-      the AI reasons independently.
-    - ``optimized``: returns the standard reminder unchanged (program prefill
-      path stays active).
+    Program prefill handles §1.1/§2.3/§2.4; AI outputs the five gate nodes only.
     """
-    mode = (analysis_mode or "original").strip().lower()
-    if mode == "optimized":
-        return _STAGE1_OUTPUT_REMINDER
-    return _STAGE1_OUTPUT_REMINDER + "\n\n" + _STAGE1_ORIGINAL_MODE_GATE_RULE
+    _ = analysis_mode  # reserved for future mode-specific tweaks
+    return _STAGE1_OUTPUT_REMINDER
 
 
 _NEXT_BAR_PREDICTION_INSTRUCTION = """\
@@ -706,7 +685,6 @@ _NEXT_BAR_DISABLED_NOTE = """\
 程序校验时会自动补全占位字段；请把篇幅集中在 decision / decision_trace / terminal /
 `next_cycle_prediction` 上，勿因缺少 `next_bar_prediction` 反复重试。
 """.strip()
-
 
 def _build_next_cycle_prediction_instruction(*, enable_next_bar: bool) -> str:
     """Return next-cycle instruction; avoid referencing next_bar when that feature is off."""
@@ -935,60 +913,39 @@ class PromptAssembler:
     # DeepSeek KV Cache hits require the *prefix* of consecutive requests to
     # be byte-identical.  System prompts are fully static (persona + txt files)
     # and never change during a session, so we cache them at the process level.
-    # Key = (prompt_dir_str, stage) so different PromptAssembler instances that
-    # point to the same directory share the cache.
+    # Stage 1 and Stage 2 share one system blob so S1→S2 prefix matches.
 
     @functools.cached_property
-    def _system_prompt_stage1(self) -> str:
-        """Stage 1 system prompt (cached for the lifetime of this instance)."""
-        return self._get_or_build_system_prompt("stage1")
+    def _shared_system_prompt(self) -> str:
+        """Shared Stage 1/2 system prompt (cached for this instance)."""
+        return self._get_shared_system_prompt()
 
-    @functools.cached_property
-    def _system_prompt_stage2(self) -> str:
-        """Stage 2 system prompt (cached for the lifetime of this instance)."""
-        return self._get_or_build_system_prompt("stage2")
-
-    def _get_or_build_system_prompt(self, stage: str) -> str:
-        """Fetch from process-wide cache, or build & store."""
-        key = f"{self._prompt_dir.resolve()}::{stage}"
+    def _get_shared_system_prompt(self) -> str:
+        key = str(self._prompt_dir.resolve())
         cached = _SYSTEM_PROMPT_CACHE.get(key)
         if cached is not None:
             return cached
-        if stage == "stage1":
-            built = self._build_stage1_system_prompt_inner()
-        else:
-            built = self._build_stage2_system_prompt_inner()
+        built = self._build_shared_system_prompt_inner()
         _SYSTEM_PROMPT_CACHE[key] = built
         return built
 
     def _build_stage1_system_prompt(self) -> str:
-        """Return cached Stage 1 system prompt."""
-        return self._system_prompt_stage1
+        """Return cached shared system prompt."""
+        return self._shared_system_prompt
 
     def _build_stage2_system_prompt(self) -> str:
-        """Return cached Stage 2 system prompt."""
-        return self._system_prompt_stage2
+        """Return cached shared system prompt (byte-identical to Stage 1)."""
+        return self._shared_system_prompt
 
-    def _build_stage1_system_prompt_inner(self) -> str:
-        """Stage 1 system: persona + gate-only decision tree (§0–§2)."""
+    def _build_shared_system_prompt_inner(self) -> str:
+        """Persona + full binary decision tree (both stages)."""
         system_parts = [
             _LANGUAGE_ZH_RULE,
             _PA_TERMINOLOGY_ZH,
             _OPENCLAW_AGENT_NO_TOOLS_RULE,
             _THINKING_CONTENT_OUTPUT_RULE,
         ]
-        system_parts.extend(self._load(name) for name in COMMON_SYSTEM_STAGE1_TXT_FILES)
-        return "\n\n---\n\n".join(p for p in system_parts if p)
-
-    def _build_stage2_system_prompt_inner(self) -> str:
-        """Stage 2 system: persona + full decision tree."""
-        system_parts = [
-            _LANGUAGE_ZH_RULE,
-            _PA_TERMINOLOGY_ZH,
-            _OPENCLAW_AGENT_NO_TOOLS_RULE,
-            _THINKING_CONTENT_OUTPUT_RULE,
-        ]
-        system_parts.extend(self._load(name) for name in COMMON_SYSTEM_STAGE2_TXT_FILES)
+        system_parts.extend(self._load(name) for name in COMMON_SYSTEM_PROMPT_TXT_FILES)
         return "\n\n---\n\n".join(p for p in system_parts if p)
 
     # ── File loading ──────────────────────────────────────────────────────────
@@ -1081,20 +1038,10 @@ class PromptAssembler:
 
     # ── Stage 1 ───────────────────────────────────────────────────────────────
 
-    def build_stage1(
-        self,
-        frame: KlineFrame,
-        *,
-        analysis_mode: str = "original",
-        active_position: Any | None = None,
-    ) -> list[dict]:
+    def build_stage1(self, frame: KlineFrame, *, analysis_mode: str = "original") -> list[dict]:
         """Build the message list for Stage 1 (market diagnosis)."""
         system_content = self._build_stage1_system_prompt()
-        user_content = self._build_stage1_user_prompt(
-            frame,
-            analysis_mode=analysis_mode,
-            active_position=active_position,
-        )
+        user_content = self._build_stage1_user_prompt(frame, analysis_mode=analysis_mode)
 
         return [
             {"role": "system", "content": system_content},
@@ -1132,7 +1079,6 @@ class PromptAssembler:
         *,
         analysis_mode: str = "original",
         provider_settings: Any | None = None,
-        active_position: Any | None = None,
     ) -> list[dict]:
         """Build Stage 1 as a continuation-based incremental update.
 
@@ -1187,8 +1133,6 @@ class PromptAssembler:
             prev_assistant_content,
         )
 
-        # Refresh / insert program market-features block so the cached previous
-        # user message reflects the latest simple-features computation.
         prev_user_content = self._inject_market_features_block(prev_user_content, frame)
 
         prev_reasoning = ""
@@ -1219,7 +1163,6 @@ class PromptAssembler:
             previous_record,
             new_bar_count,
             analysis_mode=analysis_mode,
-            active_position=active_position,
         )
 
         return [
@@ -1322,20 +1265,10 @@ class PromptAssembler:
             logger.warning("_render_program_prefill_hint failed: %s", exc)
             return ""
 
-    def _build_stage1_user_prompt(
-        self,
-        frame: KlineFrame,
-        *,
-        analysis_mode: str = "original",
-        active_position: Any | None = None,
-    ) -> str:
+    def _build_stage1_user_prompt(self, frame: KlineFrame, *, analysis_mode: str = "original") -> str:
         """Build the Stage 1 task turn; stage-specific rules stay out of system."""
-        position_note = self._render_stage1_position_note(active_position)
         pattern_block = self._stage1_pattern_supplement()
-        # In original mode the AI must reason independently — do NOT inject the
-        # program prefill hint, as it would prime the model to skip those nodes.
-        use_prefill = (analysis_mode or "original").strip().lower() == "optimized"
-        prefill_hint = self._render_program_prefill_hint(frame) if use_prefill else ""
+        prefill_hint = self._render_program_prefill_hint(frame)
         stage1_parts = [
             *(self._load(name) for name in STAGE1_TASK_PROMPT_TXT_FILES),
             *([pattern_block] if pattern_block else []),
@@ -1354,7 +1287,6 @@ class PromptAssembler:
                 f"以程序预填 §2.2 为准）：\n"
             )
         return (
-            f"{position_note}"
             "## 阶段一任务\n\n"
             "你现在只执行阶段一：市场诊断与闸门判断。不要评估具体下单、止损、止盈或仓位。\n\n"
             f"{stage1_context}\n\n"
@@ -1399,8 +1331,7 @@ class PromptAssembler:
     ) -> str:
         """Build a Stage 1 update turn using the last completed analysis."""
         pattern_block = self._stage1_pattern_supplement()
-        use_prefill = (analysis_mode or "original").strip().lower() == "optimized"
-        prefill_hint = self._render_program_prefill_hint(frame) if use_prefill else ""
+        prefill_hint = self._render_program_prefill_hint(frame)
         stage1_parts = [
             *(self._load(name) for name in STAGE1_TASK_PROMPT_TXT_FILES),
             *([pattern_block] if pattern_block else []),
@@ -1468,18 +1399,15 @@ class PromptAssembler:
         new_bar_count: int,
         *,
         analysis_mode: str = "original",
-        active_position: Any | None = None,
     ) -> str:
         """Build the incremental continuation user turn (message [3] in 4-message mode).
 
         Only sends NEW K-line data; the model can reference the full K-line table
         from the previous Stage 1 user message ([1]) above.
-        Injects prefill_hint in optimized mode so the AI knows the updated §2.3/§2.4
-        verdicts even though the full K-line table is not re-sent. In original mode
-        the prefill hint is suppressed so the AI reasons independently.
+        Injects program prefill hint so the AI knows updated §2.3/§2.4 verdicts
+        even when the full K-line table is not re-sent.
         """
-        use_prefill = (analysis_mode or "original").strip().lower() == "optimized"
-        prefill_hint = self._render_program_prefill_hint(frame) if use_prefill else ""
+        prefill_hint = self._render_program_prefill_hint(frame)
         simple_features_block = self._render_simple_market_features_block(frame)
         if simple_features_block:
             simple_features_block = _MARKET_FEATURES_AUTHORITY_NOTE + simple_features_block
@@ -1493,9 +1421,7 @@ class PromptAssembler:
             "stage2_decision": previous_record.stage2_decision or {},
             "strategy_files_used": previous_record.strategy_files_used or [],
         }
-        position_note = PromptAssembler._render_stage1_position_note(active_position)
         return (
-            f"{position_note}"
             "## 阶段一增量更新任务\n\n"
             "上方是你上一轮完成的阶段一诊断。现在基于新增 K 线，更新诊断与闸门判断。\n"
             "完整 K 线数据已包含在上方阶段一用户消息中（K线序号已重新编号，"
@@ -1556,6 +1482,7 @@ class PromptAssembler:
             strategy_files=strategy_files,
             experience_entries=experience_entries,
             decision_stance=decision_stance,
+            enable_next_bar_prediction=False,
         )
         return [
             {"role": "system", "content": system_content},
@@ -1622,8 +1549,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         decision_stance: str = "conservative",
         previous_record: Any | None = None,
-        enable_next_bar_prediction: bool = True,
-        active_position: Any | None = None,
+        enable_next_bar_prediction: bool = False,
         provider_settings: Any | None = None,
         use_prefix_chain: bool | None = None,
         structure_flip_cooldown_bars: int = 3,
@@ -1650,7 +1576,6 @@ class PromptAssembler:
             decision_stance=decision_stance,
             previous_record=previous_record,
             enable_next_bar_prediction=enable_next_bar_prediction,
-            active_position=active_position,
             omit_kline_block=chain_after_s1,
             structure_flip_cooldown_bars=structure_flip_cooldown_bars,
         )
@@ -1680,8 +1605,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         decision_stance: str = "conservative",
         previous_record: Any | None = None,
-        enable_next_bar_prediction: bool = True,
-        active_position: Any | None = None,
+        enable_next_bar_prediction: bool = False,
         omit_kline_block: bool = False,
         structure_flip_cooldown_bars: int = 3,
     ) -> str:
@@ -1749,7 +1673,6 @@ class PromptAssembler:
         n_bars = len(frame.bars)
         breakout_tick_hint = format_breakout_tick_hint(frame)
         prev_pred_block = self._render_previous_prediction(previous_record)
-        position_block = self._render_active_position(active_position)
         compact_s1 = json.dumps(
             self._compact_stage1_for_stage2(stage1_json),
             ensure_ascii=False,
@@ -1804,103 +1727,12 @@ class PromptAssembler:
             f"## 阶段一诊断结果\n\n```json\n"
             f"{compact_s1}"
             f"\n```\n\n"
-            f"{position_block}"
             f"{kline_block}"
             f"{prev_pred_block + chr(10) if prev_pred_block else ''}"
             f"请根据以上诊断和K线数据,按《二元决策.txt》§3–§11、§14 输出 JSON 决策结果"
             f"(含 decision_trace 与 terminal)。\n"
             f"注意:如果判断不下单,entry_price、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。\n\n"
             f"{_STAGE2_TAIL_REMINDER}"
-        )
-
-    @staticmethod
-    def _render_stage1_position_note(active_position: Any | None) -> str:
-        """Brief Stage-1 context when a plan or fill is already tracked."""
-        if not active_position:
-            return ""
-        if hasattr(active_position, "model_dump"):
-            data = active_position.model_dump(mode="json")
-        elif isinstance(active_position, dict):
-            data = dict(active_position)
-        else:
-            return ""
-        status = str(data.get("status", ""))
-        if status not in ("planned", "filled"):
-            return ""
-        status_zh = {"planned": "计划单", "filled": "持仓"}.get(status, status)
-        direction = data.get("order_direction") or "—"
-        entry = data.get("fill_price") if status == "filled" else data.get("entry_price")
-        order_type = data.get("order_type") or "—"
-        return (
-            f"## 当前跟踪状态（{status_zh}）\n\n"
-            f"品种已有 **{status_zh}**：{order_type} {direction} @ {entry}。"
-            f"阶段一仍只做市场诊断与闸门；**持仓/挂单管理决策在阶段二**。"
-            f"诊断时请考虑该仓位/挂单的方向与失效条件是否仍成立。\n\n"
-        )
-
-    @staticmethod
-    def _render_active_position(active_position: Any | None) -> str:
-        """Render a position-management block when a position is currently held."""
-        if not active_position:
-            return ""
-        if hasattr(active_position, "model_dump"):
-            data = active_position.model_dump(mode="json")
-        elif isinstance(active_position, dict):
-            data = dict(active_position)
-        else:
-            return ""
-
-        status = str(data.get("status", ""))
-        if status not in ("planned", "filled"):
-            return ""
-
-        status_zh = {"planned": "计划单（尚未成交）", "filled": "持仓中（已成交）"}.get(
-            status, status
-        )
-        direction = data.get("order_direction") or "—"
-        entry = data.get("fill_price") if status == "filled" else data.get("entry_price")
-        tp = data.get("take_profit_price")
-        sl = data.get("stop_loss_price")
-        compact = {
-            "status": status,
-            "order_type": data.get("order_type"),
-            "order_direction": direction,
-            "entry_price": entry,
-            "take_profit_price": tp,
-            "stop_loss_price": sl,
-            "invalidation_condition": data.get("invalidation_condition"),
-        }
-
-        if status == "filled":
-            instruction = (
-                "**重要：当前已有持仓，本轮阶段二的任务是『持仓管理』，不是重新判断是否入场。**\n"
-                "必须在 decision 中填写 position_action（枚举，程序据此执行，不靠正文关键词猜测）：\n"
-                "1. position_action=「持有」：维持原止盈止损，order_type=不下单；\n"
-                "2. position_action=「调整」：移动止盈/止损。order_type=不下单，order_direction 与持仓一致，"
-                "填写新的 take_profit_price / stop_loss_price；若仅有定性说明，可同时填写 position_advice；\n"
-                "3. position_action=「平仓」：建议提前出场，order_type=不下单，三价与 order_direction 均为 null；\n"
-                "4. 若结构反转且应反向：输出反向下单（order_type=限价/突破/市价），程序会先平仓再开新计划单。\n"
-                "无持仓时 position_action 必须为 null。不要在已持仓时输出与持仓同向的全新入场计划。\n"
-            )
-        else:
-            instruction = (
-                "**注意：当前已有一个尚未成交的计划单（等待价格触及入场价）。**\n"
-                "本轮阶段二的任务是『计划单管理』，不是重新评估全新入场。\n"
-                "必须在 decision 中明确管理意图（程序据此执行）：\n"
-                "1. 继续挂着：输出与计划同向的 order_type（限价/突破）及三价（可微调 entry/TP/SL），"
-                "或 order_type=不下单 且 position_action=「持有」；\n"
-                "2. 撤销挂单：order_type=不下单，position_action 填 null，程序将删除该计划单；\n"
-                "3. 微调挂单：同向 order_type + 新的 entry/TP/SL（程序会更新计划单）；\n"
-                "4. 方向反转：输出反向 order_type + 三价，程序将替换原计划单。\n"
-                "无持仓/无计划单时 position_action 必须为 null。\n"
-            )
-
-        return (
-            f"## 当前持仓 / 计划单（{status_zh}）\n\n"
-            f"{instruction}\n"
-            "```json\n"
-            f"{json.dumps(compact, ensure_ascii=False, indent=2)}\n"
-            "```\n\n"
         )
 
     def stage2_system_prompt_only(
@@ -2070,7 +1902,7 @@ class PromptAssembler:
             "- 若无强信号棒：§9.0=否，**必须** 继续写 **§9.0P** 并尝试背景限价三价。",
             "- §9.0P=是：signal_bar.bar=null、quality=invalid；entry_bar pending；"
             "三价写入 decision，不要只在 watch_points 写触发条件。",
-            "- 定价：先定结构 TP1/TP2，再定结构 stop；RR>1.5 时程序自动向外扩 stop（保持 TP 不变）。",
+            "- 定价：先定结构 TP1/TP2，再定结构 stop；RR>1.0 时程序自动向外扩 stop（保持 TP 不变）。",
         ]
         if near_support is not None:
             lines.append(

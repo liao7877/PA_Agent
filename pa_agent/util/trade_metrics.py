@@ -81,7 +81,7 @@ def format_estimated_win_rate_reasoning(decision: dict[str, Any]) -> str:
 # Lower cap: reward must be at least equal to risk (1:1) for any stance.
 MIN_RISK_REWARD_RATIO = 1.0
 # Upper cap on TP1 reward:risk — enforced by widening stop, not by shrinking TP1.
-MAX_TP1_RISK_REWARD_RATIO = 1.5
+MAX_TP1_RISK_REWARD_RATIO = 1.0
 
 
 def min_risk_reward_ratio(decision_stance: str | None = None) -> float:
@@ -120,21 +120,77 @@ def widen_stop_for_tp1_rr_cap(
     min_risk = reward / MAX_TP1_RISK_REWARD_RATIO
     long = is_long_direction(direction)
     t = tick if tick and tick > 0 else 0.0
+    min_rr = MIN_RISK_REWARD_RATIO
+
+    def _ratio_for_stop(candidate: float) -> float | None:
+        probe = compute_risk_reward(entry, take_profit, candidate, direction)
+        if probe is None:
+            return None
+        return float(probe["ratio"])
+
+    def _pick_tick_aligned_stop(ideal_stop: float, *, round_down: bool) -> float | None:
+        if not t:
+            return ideal_stop
+        scaled = ideal_stop / t
+        aligned = math.floor(scaled + 1e-12) * t if round_down else math.ceil(scaled - 1e-12) * t
+        return aligned
 
     if long is True:
-        new_stop = entry - min_risk
-        if t:
-            new_stop = math.floor(new_stop / t + 1e-12) * t
-        if new_stop >= entry:
+        ideal_stop = entry - min_risk
+        if ideal_stop >= entry:
             return None
-        return new_stop
+        candidates: list[float] = [ideal_stop]
+        if t:
+            candidates.extend(
+                s
+                for s in (
+                    _pick_tick_aligned_stop(ideal_stop, round_down=True),
+                    _pick_tick_aligned_stop(ideal_stop, round_down=False),
+                )
+                if s is not None
+            )
+        best: float | None = None
+        best_ratio: float | None = None
+        for candidate in candidates:
+            if candidate >= entry:
+                continue
+            cand_ratio = _ratio_for_stop(candidate)
+            if cand_ratio is None:
+                continue
+            if cand_ratio < min_rr - 1e-9 or cand_ratio > MAX_TP1_RISK_REWARD_RATIO + 1e-9:
+                continue
+            if best_ratio is None or cand_ratio > best_ratio:
+                best = candidate
+                best_ratio = cand_ratio
+        return best
     if long is False:
-        new_stop = entry + min_risk
-        if t:
-            new_stop = math.ceil(new_stop / t - 1e-12) * t
-        if new_stop <= entry:
+        ideal_stop = entry + min_risk
+        if ideal_stop <= entry:
             return None
-        return new_stop
+        candidates = [ideal_stop]
+        if t:
+            candidates.extend(
+                s
+                for s in (
+                    _pick_tick_aligned_stop(ideal_stop, round_down=False),
+                    _pick_tick_aligned_stop(ideal_stop, round_down=True),
+                )
+                if s is not None
+            )
+        best = None
+        best_ratio = None
+        for candidate in candidates:
+            if candidate <= entry:
+                continue
+            cand_ratio = _ratio_for_stop(candidate)
+            if cand_ratio is None:
+                continue
+            if cand_ratio < min_rr - 1e-9 or cand_ratio > MAX_TP1_RISK_REWARD_RATIO + 1e-9:
+                continue
+            if best_ratio is None or cand_ratio > best_ratio:
+                best = candidate
+                best_ratio = cand_ratio
+        return best
     return None
 
 

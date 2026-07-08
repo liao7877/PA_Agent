@@ -2680,29 +2680,59 @@ def _sync_order_type_from_11_override(
 
     new_answer = str(override.get("answer", "")).strip()
 
-    if new_answer == "是":
+    if new_answer != "是":
 
-        # Determine which order type this §11 node represents
+        return
 
-        node_id = str(node.get("node_id", ""))
 
-        node_method_map = {
 
-            "11.1": "市价单",
+    node_id = str(node.get("node_id", ""))
 
-            "11.2": "突破单",
+    node_method_map = {
 
-            "11.3": "限价单",
+        "11.1": "市价单",
 
-            "11.4": "限价单",
+        "11.2": "突破单",
 
-        }
+        "11.3": "限价单",
 
-        method = node_method_map.get(node_id)
+        "11.4": "限价单",
 
-        if method and decision.get("order_type") != "不下单":
+    }
 
-            decision["order_type"] = method
+    method = node_method_map.get(node_id)
+
+    if not method or decision.get("order_type") == "不下单":
+
+        return
+
+
+
+    existing = str(decision.get("order_type") or "").strip()
+
+    has_basis = bool(
+
+        decision.get("entry_basis_bar") and decision.get("entry_basis_extreme")
+
+    )
+
+    # Mirror judge_section11 breakout_fallback_to_limit: §11.2 defaults to 突破单,
+
+    # but without basis fields the schema rejects null entry_basis_*. Preserve an
+
+    # explicit 限价单/市价单 plan (e.g. §9.0P planned limit) instead of forcing 突破单.
+
+    if method == "突破单" and not has_basis:
+
+        if existing in ("限价单", "市价单"):
+
+            return
+
+        method = "限价单"
+
+
+
+    decision["order_type"] = method
 
 
 

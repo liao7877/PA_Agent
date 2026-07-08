@@ -145,7 +145,7 @@ class FreeChatSession:
             {
                 "role": "system",
                 "content": (
-                    "你是 PA Agent 的【追问助手】（post-analysis advisor），不是在执行新的完整两阶段分析。\n"
+                    "你是 Trading Agent 的【追问助手】（post-analysis advisor），不是在执行新的完整两阶段分析。\n"
                     "你的目标是：优先、直接回答用户当前问题；必要时引用价格行为/关键价位/风险控制。\n"
                     "\n"
                     "严格规则：\n"
@@ -325,10 +325,10 @@ class FreeChatSession:
         history_for_api.append({"role": "user", "content": user_content})
 
         # ── 2. Resolve reasoning_effort ───────────────────────────────────────
-        reasoning_effort = "max"
+        reasoning_effort = "high"
         if self._settings is not None:
             reasoning_effort = getattr(
-                self._settings.provider, "reasoning_effort", "max"
+                self._settings.provider, "reasoning_effort", "high"
             )
 
         # ── 3. Check cancellation before API call ─────────────────────────────

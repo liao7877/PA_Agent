@@ -217,7 +217,13 @@ def _base_files_for_cycle(
         pass  # no strategy files — do not trade
 
     else:
-        logger.warning("Unknown cycle_position %r — no strategy files loaded", cp)
+        logger.warning(
+            "Unknown cycle_position %r — no strategy files loaded. "
+            "If this is a pattern name (e.g. 'descending_triangle'), it belongs in "
+            "detected_patterns, not cycle_position. "
+            "Run normalize_stage1() before route_strategy_files() to auto-correct.",
+            cp,
+        )
 
     return files
 

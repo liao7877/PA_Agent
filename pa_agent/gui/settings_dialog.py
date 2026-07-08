@@ -17,11 +17,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt, QTime, QUrl
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QFont
 
 from pa_agent.config.settings import Settings, save_settings
@@ -55,9 +54,6 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("设置")
         self.setMinimumWidth(520)
         self._settings = settings
-        from pa_agent.trading_agent.settings_ui import TradingAgentSettingsExtension
-
-        self._ta_settings = TradingAgentSettingsExtension(self)
         self._setup_ui()
         self._load_values()
 
@@ -99,13 +95,6 @@ class SettingsDialog(QDialog):
         self._reasoning_effort_combo = QComboBox()
         self._reasoning_effort_combo.addItems(["low", "medium", "high", "max"])
         provider_form.addRow("Reasoning Effort:", self._reasoning_effort_combo)
-
-        self._api_health_btn = QPushButton("检测 API 连通性")
-        self._api_health_btn.setToolTip(
-            "使用当前表单中的模型、Base URL、API Key 发送一次最小请求，验证中转/上游是否可用。"
-        )
-        self._api_health_btn.clicked.connect(self._on_check_api_health)
-        provider_form.addRow("", self._api_health_btn)
 
         self._api_key_help_btn = QPushButton("小白点这里！获取程序无限Token，无限分析")
         self._api_key_help_btn.clicked.connect(self._show_unlimited_token_info)
@@ -173,8 +162,6 @@ class SettingsDialog(QDialog):
             "并重新显示最右侧未收盘空心 K 线。演示模式不受影响。"
         )
         general_form.addRow("图表:", self._auto_resume_chart_check)
-
-        self._ta_settings.install_general_fields(general_form)
 
         self._keep_analysis_check = QCheckBox("有新K线收盘时自动开始新一轮分析")
         self._keep_analysis_check.setToolTip(
@@ -267,8 +254,6 @@ class SettingsDialog(QDialog):
 
         form_layout.addWidget(general_group)
 
-        self._ta_settings.install_notification_group(form_layout)
-
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -295,7 +280,6 @@ class SettingsDialog(QDialog):
         self._auto_resume_chart_check.setChecked(
             bool(getattr(g, "auto_resume_chart_after_analysis", False))
         )
-        self._ta_settings.load(self._settings)
         self._keep_analysis_check.setChecked(
             bool(getattr(g, "keep_analysis", False))
         )
@@ -304,7 +288,7 @@ class SettingsDialog(QDialog):
         )
         self._context_warning_spin.setValue(int(g.context_warning_threshold_pct))
         self._stream_font_spin.setValue(int(getattr(g, "stream_pane_font_pt", 11)))
-        self._chart_seq_font_spin.setValue(int(getattr(g, "chart_seq_label_font_pt", 7)))
+        self._chart_seq_font_spin.setValue(int(getattr(g, "chart_seq_label_font_pt", 11)))
         self._incremental_max_new_bars_spin.setValue(
             int(getattr(g, "incremental_max_new_bars", 10))
         )
@@ -318,7 +302,7 @@ class SettingsDialog(QDialog):
         )
         self._enable_next_bar_check.blockSignals(False)
         self._decision_conf_threshold_spin.setValue(
-            int(getattr(g, "decision_confidence_threshold", 60))
+            int(getattr(g, "decision_confidence_threshold", 40))
         )
         self._last_symbol_edit.setText(g.last_symbol)
         self._last_timeframe_edit.setText(g.last_timeframe)
@@ -334,7 +318,7 @@ class SettingsDialog(QDialog):
             getattr(g, "decision_flow_play_seconds", 50)
         )
         self._flow_default_zoom_spin.setValue(
-            int(getattr(g, "decision_flow_default_zoom_pct", 500))
+            int(getattr(g, "decision_flow_default_zoom_pct", 600))
         )
 
     @staticmethod
@@ -449,12 +433,10 @@ class SettingsDialog(QDialog):
 
         p.thinking = self._thinking_check.isChecked()
         p.reasoning_effort = self._reasoning_effort_combo.currentText()  # type: ignore[assignment]
-        # context_window is no longer editable in UI; use code-level default
 
         g.analysis_bar_count = self._analysis_bar_count_spin.value()
         g.refresh_interval_ms = self._refresh_interval_spin.value()
         g.auto_resume_chart_after_analysis = self._auto_resume_chart_check.isChecked()
-        self._ta_settings.save(self._settings)
         g.keep_analysis = self._keep_analysis_check.isChecked()
         g.cancel_keep_analysis_on_retry = self._cancel_keep_on_retry_check.isChecked()
         g.context_warning_threshold_pct = float(self._context_warning_spin.value())
@@ -473,49 +455,6 @@ class SettingsDialog(QDialog):
 
         save_settings(self._settings, SETTINGS_JSON_PATH)
         self.accept()
-
-    def _on_check_api_health(self) -> None:
-        from pa_agent.config.settings import AIProviderSettings
-
-        provider = AIProviderSettings(
-            model=self._model_edit.text().strip(),
-            base_url=self._base_url_edit.text().strip(),
-            api_key=self._api_key_edit.text().strip(),
-            thinking=self._thinking_check.isChecked(),
-            reasoning_effort=self._reasoning_effort_combo.currentText(),  # type: ignore[arg-type]
-        )
-        if not provider.api_key:
-            QMessageBox.warning(self, "API 检测", "请先填写 API Key。")
-            return
-        if not provider.base_url:
-            QMessageBox.warning(self, "API 检测", "请先填写 Base URL。")
-            return
-        if not provider.model:
-            QMessageBox.warning(self, "API 检测", "请先填写模型 ID。")
-            return
-
-        self._api_health_btn.setEnabled(False)
-        self._api_health_btn.setText("检测中…")
-        try:
-            from pa_agent.ai.api_health import check_api_health
-
-            result = check_api_health(provider)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "API 检测", f"检测失败：{exc}")
-            return
-        finally:
-            self._api_health_btn.setEnabled(True)
-            self._api_health_btn.setText("检测 API 连通性")
-
-        if result.ok:
-            detail = (
-                f"延迟约 {result.latency_ms:.0f} ms\n"
-                f"思考字符: {result.reasoning_chars}\n"
-                f"回答字符: {result.content_chars}"
-            )
-            QMessageBox.information(self, "API 检测", f"API 调用成功。\n\n{detail}")
-            return
-        QMessageBox.warning(self, "API 检测", f"API 调用失败：\n\n{result.message}")
 
     def focus_api_key_field(self) -> None:
         """Focus the API Key field (e.g. when prompting on first launch)."""

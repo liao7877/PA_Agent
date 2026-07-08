@@ -447,7 +447,7 @@ def _get_workbuddy_api_base() -> str:
 def workbuddy_provider_settings(
     model: str | None = None,
     thinking: bool = True,
-    reasoning_effort: str = "max",
+    reasoning_effort: str = "high",
     context_window: int = 2_000_000,
 ) -> "AIProviderSettings | None":
     """Return AIProviderSettings for WorkBuddy's model route."""

@@ -87,7 +87,7 @@ _SIGNAL_BAR: dict = {
 
 _ENTRY_BAR: dict = {
     "type": "object",
-    "required": ["bar", "strength", "follow_through"],
+    "required": ["strength", "follow_through"],
     "properties": {
         "bar": {"type": ["string", "null"]},
         "strength": {"type": "string", "enum": ["strong", "weak", "not_triggered"]},
@@ -148,8 +148,6 @@ _BAR_BY_BAR_ITEM: dict = {
             "enum": [
                 "structure", "signal", "entry", "confirmation",
                 "noise", "trap", "climax", "test",
-                "trend_bull", "trend_bear",
-                "trapped_traders",
             ],
         },
         "bar_type": {
@@ -222,34 +220,6 @@ STAGE1_SCHEMA: dict = {
         "detected_patterns": {"type": "array", "items": {"type": "string"}},
         "key_signals": {"type": "array", "items": {"type": "string"}},
         "htf_context": {"type": "string"},
-        "trend_context": {
-            "type": "object",
-            "properties": {
-                "background_direction": {
-                    "type": "string",
-                    "enum": ["bullish", "bearish", "neutral"],
-                },
-                "trading_direction": {
-                    "type": "string",
-                    "enum": ["bullish", "bearish", "neutral"],
-                },
-                "primary_direction": {
-                    "type": "string",
-                    "enum": ["bullish", "bearish", "neutral"],
-                },
-                "conflict": {"type": "boolean"},
-                "relationship": {
-                    "type": "string",
-                    "enum": ["aligned", "conflict", "neutral_background", "mixed"],
-                },
-                "recent_spike": {
-                    "type": ["string", "null"],
-                    "enum": ["bullish", "bearish", None],
-                },
-                "with_trend_rule": {"type": "string"},
-            },
-            "additionalProperties": True,
-        },
         "entry_setup": {"type": "string"},
         "strategy_files_needed": {"type": "array", "items": {"type": "string"}},
         "risk_warning": {"type": "string"},
@@ -361,6 +331,7 @@ _DECISION_BASE: dict = {
         "watch_points": {"type": "array", "items": {"type": "string"}},
         "risk_assessment": {"type": "string"},
         "invalidation_condition": {"type": ["string", "null"]},
+        # 已有持仓时由 AI 显式填写；无持仓时必须为 null。
         "position_action": {
             "type": ["string", "null"],
             "enum": ["持有", "调整", "平仓", None],
@@ -368,11 +339,38 @@ _DECISION_BASE: dict = {
         "position_advice": {"type": ["string", "null"]},
     },
     "allOf": [
-        # 不下单 → all price fields and direction must be null
+        # 不下单 + 持仓调整：允许 direction / 止盈止损，但 entry 相关必须为 null
+        {
+            "if": {
+                "properties": {
+                    "order_type": {"const": "不下单"},
+                    "position_action": {"const": "调整"},
+                },
+                "required": ["order_type", "position_action"],
+            },
+            "then": {
+                "properties": {
+                    "entry_price": {"type": "null"},
+                    "entry_basis_bar": {"type": "null"},
+                    "entry_basis_extreme": {"type": "null"},
+                    "entry_rule": {"type": "null"},
+                    "order_direction": {"type": "string", "enum": ["做多", "做空"]},
+                    "take_profit_price": {"type": ["number", "null"]},
+                    "stop_loss_price": {"type": ["number", "null"]},
+                    "estimated_win_rate": {"type": "null"},
+                },
+                "required": ["order_direction"],
+            },
+        },
+        # 不下单（默认 / 持有 / 平仓）→ 三价与方向必须为 null
         {
             "if": {
                 "properties": {"order_type": {"const": "不下单"}},
                 "required": ["order_type"],
+                "not": {
+                    "properties": {"position_action": {"const": "调整"}},
+                    "required": ["position_action"],
+                },
             },
             "then": {
                 "properties": {
@@ -581,14 +579,7 @@ _NEXT_CYCLE_PREDICTION: dict = {
 
 STAGE2_SCHEMA: dict = {
     "type": "object",
-    "required": [
-        "decision",
-        "diagnosis_summary",
-        "decision_trace",
-        "terminal",
-        "next_bar_prediction",
-        "next_cycle_prediction",
-    ],
+    "required": ["decision", "diagnosis_summary", "decision_trace", "terminal"],
     "properties": {
         "decision": _DECISION_BASE,
         "diagnosis_summary": {

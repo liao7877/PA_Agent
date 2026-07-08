@@ -11,7 +11,7 @@ from pa_agent.util.trade_metrics import (
     min_risk_reward_ratio,
     passes_trader_equation,
 )
-from pa_agent.ai.cycle_enums import format_cycle_position, format_cycle_with_direction
+from pa_agent.ai.cycle_enums import format_cycle_position, format_cycle_with_direction, format_trend_label
 
 from PyQt6.QtWidgets import (
     QFrame,
@@ -36,9 +36,6 @@ _REASON_EDIT_CSS = (
 _PREDICTION_UNPREDICTABLE_COLOR = "#8b949e"
 _PREDICTION_UNPREDICTABLE_LABEL = "不可预测"
 
-# 以震荡为主的周期类型
-_RANGE_CYCLES = frozenset({"trading_range", "extreme_tr", "trending_tr"})
-
 _MARKET_PHASE_ZH: dict[str, str] = {
     "stable": "稳定",
     "transitioning": "过渡",
@@ -56,30 +53,10 @@ def _format_market_phase(raw: str) -> str:
     return _MARKET_PHASE_ZH.get(key, raw or "—")
 
 
-def _infer_trend_label(direction: str, cycle_position: str) -> str:
-    """Map AI direction + cycle to 上涨 / 下跌 / 震荡."""
-    cp = (cycle_position or "").strip().lower()
-    d = (direction or "").strip().lower()
-
-    if cp in _RANGE_CYCLES:
-        return "震荡"
-
-    if d == "bullish":
-        return "上涨"
-    if d == "bearish":
-        return "下跌"
-    if d == "neutral":
-        return "震荡"
-
-    if cp in ("spike", "micro_channel", "tight_channel"):
-        return "趋势运行中"
-    return "—"
-
-
 def _trend_color(label: str) -> str:
-    if label == "上涨":
+    if label in ("上涨", "震荡偏多"):
         return "#3fb950"
-    if label == "下跌":
+    if label in ("下跌", "震荡偏空"):
         return "#f85149"
     if label in ("震荡", "趋势运行中"):
         return "#e6b800"
@@ -341,7 +318,7 @@ class DecisionPanel(QWidget):
         alt_cycle = src.get("alternative_cycle_position")
         market_phase = str(src.get("market_phase", "") or "")
 
-        trend = _infer_trend_label(direction, cycle_position)
+        trend = format_trend_label(direction, cycle_position)
         trend_color = _trend_color(trend)
         self._trend_label.setText(f"趋势：{trend}")
         self._apply_diag_chip_style(self._trend_label, color=trend_color)

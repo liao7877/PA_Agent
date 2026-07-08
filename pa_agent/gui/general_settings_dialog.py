@@ -1,4 +1,4 @@
-"""通用设置对话框 — 包含交易决策、图表显示、分析行为、通知等通用字段."""
+"""通用设置对话框 — 包含交易决策、图表显示、分析行为等通用字段."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -25,7 +25,7 @@ from pa_agent.config.paths import SETTINGS_JSON_PATH
 
 
 class GeneralSettingsDialog(QDialog):
-    """通用设置对话框 — 交易决策、图表、分析行为、钉钉/微信通知等."""
+    """通用设置对话框 — 交易决策、图表、分析行为等."""
 
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -33,9 +33,6 @@ class GeneralSettingsDialog(QDialog):
         self.setMinimumWidth(540)
         self._settings = settings
         self._decision_flow_play_handler: Callable[[], None] | None = None
-        from pa_agent.trading_agent.settings_ui import TradingAgentSettingsExtension
-
-        self._ta_settings = TradingAgentSettingsExtension(self)
         self._setup_ui()
         self._load_values()
 
@@ -129,9 +126,6 @@ class GeneralSettingsDialog(QDialog):
         self._last_timeframe_edit = QLineEdit()
         analysis_form.addRow("上次周期:", self._last_timeframe_edit)
 
-        # Trading Agent 扩展字段：MT5 路径、自动恢复图表、跟踪时段
-        self._ta_settings.install_general_fields(analysis_form)
-
         form_layout.addWidget(analysis_group)
 
         # ── 图表与界面 ────────────────────────────────────────────────────────
@@ -142,6 +136,9 @@ class GeneralSettingsDialog(QDialog):
         self._refresh_interval_spin.setRange(100, 10_000)
         self._refresh_interval_spin.setSuffix(" ms")
         ui_form.addRow("刷新间隔:", self._refresh_interval_spin)
+
+        self._auto_resume_chart_check = QCheckBox("分析完成后自动恢复「图表实时更新」")
+        ui_form.addRow("图表:", self._auto_resume_chart_check)
 
         self._context_warning_spin = QSpinBox()
         self._context_warning_spin.setRange(1, 100)
@@ -187,9 +184,6 @@ class GeneralSettingsDialog(QDialog):
         flow_form.addRow("", self._flow_play_now_btn)
 
         form_layout.addWidget(flow_group)
-
-        # Trading Agent 扩展字段：钉钉/微信通知
-        self._ta_settings.install_notification_group(form_layout)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -239,9 +233,12 @@ class GeneralSettingsDialog(QDialog):
         self._last_timeframe_edit.setText(g.last_timeframe)
 
         self._refresh_interval_spin.setValue(g.refresh_interval_ms)
+        self._auto_resume_chart_check.setChecked(
+            bool(getattr(g, "auto_resume_chart_after_analysis", False))
+        )
         self._context_warning_spin.setValue(int(g.context_warning_threshold_pct))
         self._stream_font_spin.setValue(int(getattr(g, "stream_pane_font_pt", 11)))
-        self._chart_seq_font_spin.setValue(int(getattr(g, "chart_seq_label_font_pt", 7)))
+        self._chart_seq_font_spin.setValue(int(getattr(g, "chart_seq_label_font_pt", 11)))
 
         self._flow_auto_play_check.setChecked(
             getattr(g, "decision_flow_auto_play", False)
@@ -252,9 +249,6 @@ class GeneralSettingsDialog(QDialog):
         self._flow_default_zoom_spin.setValue(
             int(getattr(g, "decision_flow_default_zoom_pct", 600))
         )
-
-        # Trading Agent 扩展字段加载（MT5路径、跟踪时段、通知）
-        self._ta_settings.load(self._settings)
 
     def _on_save(self) -> None:
         g = self._settings.general
@@ -271,6 +265,7 @@ class GeneralSettingsDialog(QDialog):
         g.last_timeframe = self._last_timeframe_edit.text().strip()
 
         g.refresh_interval_ms = self._refresh_interval_spin.value()
+        g.auto_resume_chart_after_analysis = self._auto_resume_chart_check.isChecked()
         g.context_warning_threshold_pct = float(self._context_warning_spin.value())
         g.stream_pane_font_pt = self._stream_font_spin.value()
         g.chart_seq_label_font_pt = self._chart_seq_font_spin.value()
@@ -278,9 +273,6 @@ class GeneralSettingsDialog(QDialog):
         g.decision_flow_auto_play = self._flow_auto_play_check.isChecked()
         g.decision_flow_play_seconds = self._flow_play_seconds_spin.value()
         g.decision_flow_default_zoom_pct = self._flow_default_zoom_spin.value()
-
-        # Trading Agent 扩展字段保存（MT5路径、跟踪时段、通知）
-        self._ta_settings.save(self._settings)
 
         save_settings(self._settings, SETTINGS_JSON_PATH)
         self.accept()
