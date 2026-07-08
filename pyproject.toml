@@ -9,7 +9,7 @@ description = "Price Action AI assistant: MT5 kline data, two-stage LLM analysis
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
-authors = [{ name = "PA Agent Team" }]
+authors = [{ name = "Trading Agent Team" }]
 dependencies = [
     "PyQt6>=6.6",
     "pyqtgraph>=0.13",
@@ -44,6 +44,8 @@ pa-agent = "pa_agent.main:main"
 
 [tool.setuptools.packages.find]
 include = ["pa_agent*"]
+
+# public_key.pem 不随包分发；正式发布使用 embedded_pubkey.py
 
 [tool.black]
 line-length = 100

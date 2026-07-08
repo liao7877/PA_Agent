@@ -29,6 +29,31 @@ def test_hoists_bar_by_bar_summary_from_bar_analysis() -> None:
     assert "bar_by_bar_summary" not in (out.get("bar_analysis") or {})
 
 
+def test_maps_invented_bar_types() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "bar_analysis": {
+            **VALID_STAGE1.get("bar_analysis", {}),
+            "bar_type": "inside_bear",
+            "last_closed_bar": "K1",
+        },
+        "bar_by_bar_summary": [
+            {
+                "bar": "K3",
+                "role": "structure",
+                "bar_type": "doji_upper_shadow",
+                "context_effect": "neutral",
+                "follow_through": "no",
+                "trapped_side": "none",
+                "reason": "x",
+            }
+        ],
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_analysis"]["bar_type"] == "inside"
+    assert out["bar_by_bar_summary"][0]["bar_type"] == "doji"
+
+
 def test_maps_recommended_strategy_files() -> None:
     raw = {**VALID_STAGE1}
     del raw["strategy_files_needed"]
@@ -353,3 +378,142 @@ def test_fill_incremental_delta_from_risk_warning() -> None:
     assert len(delta["summary"]) >= 16
     assert "direction" in delta["changed_fields"]
     assert "cycle_position" in delta["changed_fields"]
+
+
+def test_maps_signal_bar_quality_low_to_weak() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "bar_analysis": {
+            **VALID_STAGE1.get("bar_analysis", {}),
+            "signal_bar": {
+                "bar": "K2",
+                "quality": "low",
+                "pattern": "none",
+                "reason": "x",
+            },
+        },
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_analysis"]["signal_bar"]["quality"] == "weak"
+
+
+def test_infers_missing_gate_result_proceed() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "gate_result": None,
+        "gate_trace": [
+            {
+                "node_id": "1.2",
+                "question": "q",
+                "answer": "是",
+                "branch": "broad_channel",
+                "reason": "r",
+                "bar_range": "K8-K1",
+            },
+            {
+                "node_id": "2.5",
+                "question": "q",
+                "answer": "是",
+                "reason": "r",
+                "bar_range": "K8-K1",
+            },
+        ],
+    }
+    out = normalize_stage1(raw)
+    assert out["gate_result"] == "proceed"
+
+
+def test_maps_signal_failed_role_to_trap() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "bar_by_bar_summary": [
+            {
+                "bar": "K4",
+                "role": "signal_failed",
+                "bar_type": "trend_bear",
+                "context_effect": "weakens_bull",
+                "follow_through": "failed",
+                "trapped_side": "bulls",
+                "reason": "x",
+            }
+        ],
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_by_bar_summary"][0]["role"] == "trap"
+
+
+def test_fills_missing_follow_through_on_bar_by_bar_summary() -> None:
+    raw = {
+        **VALID_STAGE1,
+        "bar_by_bar_summary": [
+            {
+                "bar": "K2",
+                "role": "structure",
+                "bar_type": "trend_bear",
+                "context_effect": "neutral",
+                "trapped_side": "none",
+                "reason": "无跟随字段",
+            },
+            {
+                "bar": "K1",
+                "role": "signal",
+                "bar_type": "trend_bull",
+                "context_effect": "strengthens_bull",
+                "trapped_side": "bears",
+                "reason": "缺 follow_through",
+            },
+        ],
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_by_bar_summary"][0]["follow_through"] == "no"
+    assert out["bar_by_bar_summary"][1]["follow_through"] == "pending"
+
+
+def test_fills_null_entry_setup_type() -> None:
+    """Regression: model sets entry_setup_type=null and fails schema (blocks stage2)."""
+    import json
+
+    from pa_agent.ai.json_validator import Ok
+
+    raw = {
+        **VALID_STAGE1,
+        "bar_analysis": {
+            **VALID_STAGE1.get("bar_analysis", {}),
+            "entry_setup_type": None,
+        },
+    }
+    out = normalize_stage1(raw)
+    assert out["bar_analysis"]["entry_setup_type"] == "none"
+
+    result = schema_test_validator().validate("stage1", json.dumps(out))
+    assert isinstance(result, Ok), result
+
+
+def test_maps_reversal_attempt_role_to_signal() -> None:
+    """Regression: model uses detected_patterns token as bar_by_bar_summary.role."""
+    import json
+
+    from pa_agent.ai.json_validator import Ok
+
+    out = normalize_stage1(
+        {
+            **VALID_STAGE1,
+            "bar_by_bar_summary": [
+                {
+                    "bar": "K1",
+                    "role": "reversal_attempt",
+                    "bar_type": "trend_bull",
+                    "context_effect": "weakens_bear",
+                    "follow_through": "pending",
+                    "trapped_side": "bears",
+                    "reason": "锤子阳线尝试反转",
+                }
+            ],
+        },
+        normalization_mode="strict",
+    )
+    assert out["bar_by_bar_summary"][0]["role"] == "signal"
+
+    payload = {**VALID_STAGE1, "bar_by_bar_summary": out["bar_by_bar_summary"]}
+    result = schema_test_validator().validate("stage1", json.dumps(payload))
+    assert isinstance(result, Ok), result

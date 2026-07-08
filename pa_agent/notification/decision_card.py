@@ -226,18 +226,6 @@ def build_decision_card(
         plain_lines.append(f"置信度理由: {_truncate(trade_conf_reason, 300)}")
         plain_lines.append("")
 
-    position_action = str(inner.get("position_action") or "").strip()
-    position_advice = str(inner.get("position_advice") or "").strip()
-    if position_action:
-        md_lines.append(f"- 持仓动作 **{position_action}**")
-        plain_lines.append(f"持仓动作: {position_action}")
-    if position_advice:
-        md_lines.append(f"- 持仓建议 {_truncate(position_advice, 300)}")
-        plain_lines.append(f"持仓建议: {_truncate(position_advice, 300)}")
-    if position_action or position_advice:
-        md_lines.append("")
-        plain_lines.append("")
-
     if not no_order:
         entry = inner.get("entry_price")
         tp = inner.get("take_profit_price")

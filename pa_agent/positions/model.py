@@ -44,20 +44,10 @@ class PositionState(BaseModel):
 
     # ── Lifecycle timestamps / provenance ─────────────────────────────────
     planned_at_ms: int = 0
-    # Bar open ts (ms) when the order was placed — only bars at/after this ts count for fills.
-    planned_on_bar_ts: Optional[int] = None
-    # K-line extremes at placement (usually the forming/head bar) to avoid retroactive fills.
-    placement_ref_high: Optional[float] = None
-    placement_ref_low: Optional[float] = None
-    # True when price had already traded through entry at placement (missed pending order).
-    entry_missed: bool = False
     filled_at_ms: Optional[int] = None
     closed_at_ms: Optional[int] = None
     fill_price: Optional[float] = None
-    filled_on_bar_ts: Optional[int] = None  # bar open ts (ms) when filled
-    # Bar extremes at fill time — same-bar SL/TP only count new movement after fill.
-    fill_ref_high: Optional[float] = None
-    fill_ref_low: Optional[float] = None
+    filled_on_bar_ts: Optional[int] = None  # bar open ts (ms) when filled; skip SL/TP on that bar
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None       # take_profit | stop_loss | ai_close | manual
     opened_at_record_id: Optional[str] = None  # pending json basename

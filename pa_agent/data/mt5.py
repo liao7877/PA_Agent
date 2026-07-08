@@ -47,20 +47,23 @@ _TF_MAP: dict[str, str] = {
 
 
 def resolve_mt5_terminal_executable(path: str) -> str | None:
+    """Resolve user config to ``terminal64.exe`` path for ``mt5.initialize(path=...)``."""
     raw = (path or "").strip().strip('"').strip("'")
     if not raw:
         return None
     p = Path(raw)
-    if p.is_file() and p.suffix.lower() == ".exe":
+    if p.is_file():
         return str(p.resolve())
     if p.is_dir():
         for name in ("terminal64.exe", "terminal.exe"):
             candidate = p / name
             if candidate.is_file():
                 return str(candidate.resolve())
+        candidate = p / "terminal64.exe"
+        return str(candidate)
     if raw.lower().endswith(".exe"):
-        return str(p.resolve()) if p.is_file() else None
-    return None
+        return raw
+    return str(Path(raw) / "terminal64.exe")
 
 
 class MT5Source(DataSource):
@@ -100,14 +103,14 @@ class MT5Source(DataSource):
                 "Make sure MetaTrader 5 terminal is open and logged in."
             )
             if exe:
-                hint += f" (path={exe})"
+                hint += f" Configured path: {exe}"
             raise DataSourceTransientError(hint)
 
         info = mt5.terminal_info()
         if info is not None:
             logger.info(
-                "MT5 connected: terminal=%s, build=%s, connected=%s",
-                info.name, info.build, info.connected,
+                "MT5 connected: terminal=%s, build=%s, connected=%s, path=%s",
+                info.name, info.build, info.connected, info.path,
             )
         else:
             logger.info("MT5 connected (terminal info unavailable)")
@@ -266,17 +269,6 @@ class MT5Source(DataSource):
                     vol = float(rate["real_volume"])
                 except (ValueError, KeyError):
                     vol = 0.0
-
-            if i == 0:
-                # Position 0 is the newest (potentially forming) bar in MT5.
-                # Mark it as closed=False so downstream is_bar_still_forming()
-                # can do a proper wall-clock + safety-net check.
-                # (is_bar_still_forming has a 6 h safety margin for daily/weekly
-                # bars to handle stale broker server time during weekends.)
-                is_forming = True
-            else:
-                is_forming = False
-
             bars.append(
                 normalize_kline_bar(
                     KlineBar(
@@ -287,7 +279,7 @@ class MT5Source(DataSource):
                         low=float(rate["low"]),
                         close=float(rate["close"]),
                         volume=vol,
-                        closed=not is_forming,
+                        closed=(i != 0),  # i=0 is the newest (forming) bar
                     )
                 )
             )

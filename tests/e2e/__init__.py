@@ -1,1 +1,1 @@
-# End-to-end smoke tests for PA Agent.
+# End-to-end smoke tests for Trading Agent.

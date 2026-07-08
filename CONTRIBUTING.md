@@ -1,6 +1,6 @@
 # 参与贡献
 
-感谢你对 PA Agent 的关注。本项目欢迎 Issue 与 Pull Request。
+感谢你对 Trading Agent 的关注。本项目欢迎 Issue 与 Pull Request。
 
 ## 开发环境
 

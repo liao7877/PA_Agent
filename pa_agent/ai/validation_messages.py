@@ -62,6 +62,18 @@ def format_validation_errors(
     return "；".join(lines) if lines else ""
 
 
+def format_preflight_failure(exc_info: dict) -> str:
+    """Short Chinese summary for insufficient_data exceptions."""
+    failed_check = str(exc_info.get("failed_check", "") or "")
+    label = PREFLIGHT_FAILED_CHECK_LABELS.get(failed_check, failed_check or "数据不足")
+    message = str(exc_info.get("message", "") or "").strip()
+    lines = [f"原因：{label}"]
+    if message and message not in label:
+        lines.append(message)
+    lines.append("请等待图表加载足够 K 线后重新提交（至少需要 20 根已收盘 K 线）。")
+    return "\n".join(lines)
+
+
 def _label_one(raw: str) -> str:
     text = str(raw).strip()
     for prefix, label in _PREFIX_RULES:

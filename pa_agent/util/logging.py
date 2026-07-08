@@ -1,4 +1,4 @@
-"""Centralised logging configuration for PA Agent.
+"""Centralised logging configuration for Trading Agent.
 
 Public API
 ----------

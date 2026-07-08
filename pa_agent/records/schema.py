@@ -1,4 +1,4 @@
-"""Pydantic v2 data models for PA Agent records persistence.
+"""Pydantic v2 data models for Trading Agent records persistence.
 
 Defines the canonical schema for analysis records, followup turns,
 alarm payloads, validation errors, and experience entries.

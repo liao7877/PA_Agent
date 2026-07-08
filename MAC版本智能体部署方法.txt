@@ -1,5 +1,5 @@
 ================================================================
-  PA Agent 智能体部署方法（Mac 版）
+  Trading Agent 智能体部署方法（Mac 版）
   适用环境：macOS 12+ (Monterey 及以上) + Python 3.11+ 已安装
 ================================================================
 
@@ -360,7 +360,7 @@ EOF
 
 验收标准：
 - 程序窗口成功弹出（PyQt6 GUI 窗口出现）
-- 窗口标题显示 "PA Agent"
+- 窗口标题显示 "Trading Agent"
 - 控制台无 ImportError / ModuleNotFoundError 等致命错误
 - 数据源默认显示为 TradingView（而非 MT5）
 

@@ -11,15 +11,6 @@ if TYPE_CHECKING:
 
 from pa_agent.config.settings import AIProviderSettings
 from pa_agent.util.mask_secret import mask_secret
-from pa_agent.ai.mimo_compat import (
-    ReasoningCache,
-    is_mimo_provider,
-    mimo_max_output_tokens,
-    patch_messages_for_mimo,
-    resolve_mimo_thinking_extra_body,
-    response_message_dict,
-    store_reasoning_from_response,
-)
 
 try:
     from openai import OpenAI as _OpenAI  # type: ignore[import]
@@ -30,8 +21,6 @@ else:
     _OPENAI_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
-
-_MIMO_REASONING_CACHE = ReasoningCache()
 
 
 @dataclass
@@ -79,13 +68,8 @@ def _is_deepseek_native(base_url: str) -> bool:
 
 
 def _is_deepseek_model(model: str) -> bool:
-    """True for DeepSeek model ids; excludes QClaw ``openclaw`` and WorkBuddy ``openclaw_wb`` Agent aliases."""
-    m = (model or "").lower()
-    if m in ("openclaw", "openclaw_wb", "openclaw_cs"):
-        return False
-    if m.startswith("openclaw/") or m.startswith("openclaw_wb/") or m.startswith("openclaw_cs/"):
-        return False
-    return "deepseek" in m
+    """DeepSeek-family models share the same output cap on proxies (e.g. KKAI)."""
+    return "deepseek" in (model or "").lower()
 
 
 def _is_openai_gpt_reasoning_model(model: str) -> bool:
@@ -132,103 +116,9 @@ def _is_opencode_go(base_url: str) -> bool:
     return "opencode.ai" in url and "/zen/go" in url
 
 
-def _is_deepseek_proxy_gateway(base_url: str) -> bool:
-    """Third-party gateways that forward to DeepSeek and enforce its token caps."""
-    url = (base_url or "").lower()
-    return "newapi" in url or "raycloud.cn" in url
-
-
 def _uses_deepseek_api_limits(base_url: str) -> bool:
     """Gateways whose upstream enforces DeepSeek max_tokens / thinking rules."""
-    return (
-        _is_deepseek_native(base_url)
-        or _is_opencode_go(base_url)
-        or _is_deepseek_proxy_gateway(base_url)
-    )
-
-
-def _is_qclaw_openclaw_agent(settings: AIProviderSettings) -> bool:
-    """True when requests go through QClaw's public-gateway OpenClaw Agent."""
-    from pa_agent.ai.cursor_connector import is_openclaw_cs_model
-    from pa_agent.ai.qclaw_connector import detect_qclaw, is_openclaw_model
-
-    if not detect_qclaw():
-        return False
-    model = settings.model or ""
-    return is_openclaw_model(model) or is_openclaw_cs_model(model)
-
-
-def _openclaw_agent_request_extra(settings: AIProviderSettings) -> dict[str, Any]:
-    """Ask QClaw/WorkBuddy Agent to answer in-chat only (no exec/write tool loop)."""
-    if _is_qclaw_openclaw_agent(settings) or _is_workbuddy_agent(settings):
-        return {"tool_choice": "none"}
-    return {}
-
-
-def _is_workbuddy_agent(settings: AIProviderSettings) -> bool:
-    """True when requests go through WorkBuddy's model route."""
-    from pa_agent.ai.workbuddy_connector import is_workbuddy_route
-
-    return is_workbuddy_route(settings)
-
-
-def _is_openclaw_agent_model(model: str) -> bool:
-    """True for QClaw/WorkBuddy/Cursor OpenClaw Agent model aliases."""
-    m = (model or "").lower()
-    return (
-        m in ("openclaw", "openclaw_wb", "openclaw_cs")
-        or m.startswith("openclaw/")
-        or m.startswith("openclaw_wb/")
-        or m.startswith("openclaw_cs/")
-    )
-
-
-def supports_kv_prefix_chain(settings: AIProviderSettings | None) -> bool:
-    """Whether Stage 2 may chain after Stage 1 messages for DeepSeek KV prefix cache.
-
-    OpenClaw Agent routes misread ``system + stage1_user + stage2_user`` as a
-    finished chat and reply with prose menus; those providers stay standalone.
-    """
-    if settings is None:
-        return True
-    if _is_qclaw_openclaw_agent(settings) or _is_workbuddy_agent(settings):
-        return False
-    if _is_openclaw_agent_model(settings.model):
-        return False
-    return _is_deepseek_native(settings.base_url) or _is_deepseek_model(settings.model)
-
-
-def _extract_cached_prompt_tokens(usage: Any) -> int:
-    """Read KV-cache hit count from provider usage (DeepSeek or OpenAI-compat)."""
-    if usage is None:
-        return 0
-    hit = getattr(usage, "prompt_cache_hit_tokens", None)
-    if hit is not None:
-        return int(hit or 0)
-    details = getattr(usage, "prompt_tokens_details", None)
-    if details is not None:
-        cached = getattr(details, "cached_tokens", 0)
-        if cached:
-            return int(cached)
-    return 0
-
-
-def _effective_api_model(settings: AIProviderSettings) -> str:
-    """Model id sent to the upstream API (resolve WorkBuddy aliases)."""
-    if _is_workbuddy_agent(settings):
-        from pa_agent.ai.workbuddy_connector import resolve_workbuddy_api_model
-
-        return resolve_workbuddy_api_model(settings.model)
-    return settings.model
-
-
-def _workbuddy_agent_request_extra(settings: AIProviderSettings) -> dict[str, Any]:
-    """Add WorkBuddy-specific request parameters.
-
-    Returns empty dict if not using WorkBuddy agent route.
-    WorkBuddy uses the same tool_choice: none strategy as QClaw.
-    """
-    return _openclaw_agent_request_extra(settings)
+    return _is_deepseek_native(base_url) or _is_opencode_go(base_url)
 
 
 def _is_kkai_openai_proxy(base_url: str) -> bool:
@@ -244,12 +134,6 @@ def _is_packyapi(base_url: str) -> bool:
 def _is_agnes_ai(base_url: str) -> bool:
     """Agnes AI (Sapiens) OpenAI-compatible gateway."""
     return "agnes-ai.com" in (base_url or "").lower()
-
-
-def _is_minimax(base_url: str) -> bool:
-    """MiniMax (api.minimax.io) OpenAI-compatible gateway."""
-    url = (base_url or "").lower()
-    return "minimax.io" in url or "minimax.com" in url
 
 
 # Packy claude-officially returns 400 if max_tokens exceeds model output cap.
@@ -289,26 +173,10 @@ def _adaptive_output_effort(reasoning_effort: str | None) -> str:
     return _EFFORT_TO_ADAPTIVE_OUTPUT.get(key, "medium")
 
 
-def _use_top_level_reasoning_effort(
-    settings: AIProviderSettings,
-    extra_body: dict[str, Any],
-) -> bool:
-    """DeepSeek/Claude adaptive routes encode effort in extra_body, not top-level kwarg."""
-    model = settings.model or ""
-    if _is_deepseek_model(model) or _uses_deepseek_api_limits(settings.base_url):
-        return False
-    thinking_type = (extra_body.get("thinking") or {}).get("type")
-    if thinking_type == "adaptive":
-        return False
-    if _model_uses_claude_adaptive(model):
-        return False
-    return True
-
-
 # Sent to OpenAI-compatible gateways; upstream may clamp below these values.
-_PRACTICAL_UNLIMITED_MAX_TOKENS = 524288
+_PRACTICAL_UNLIMITED_MAX_TOKENS = 999_999
 # Anthropic-style thinking requires budget_tokens < max_tokens.
-_PRACTICAL_UNLIMITED_THINKING_BUDGET = 524287
+_PRACTICAL_UNLIMITED_THINKING_BUDGET = 999_998
 
 
 def _effort_budget_tokens(effort: str | None, *, max_output: int) -> int:
@@ -319,19 +187,19 @@ def _effort_budget_tokens(effort: str | None, *, max_output: int) -> int:
 
 def _thinking_enabled(extra_body: dict[str, Any], effort: str | None) -> bool:
     if extra_body:
-        if extra_body.get("chat_template_kwargs", {}).get("enable_thinking"):
+        if extra_body.get("thinking", {}).get("type") in ("enabled", "adaptive"):
             return True
-        return extra_body.get("thinking", {}).get("type") in ("enabled", "adaptive")
+        ctk = extra_body.get("chat_template_kwargs") or {}
+        if ctk.get("enable_thinking") is True:
+            return True
+    if effort in ("none", "minimal"):
+        return False
     return effort is not None and effort != "none"
 
 
 def _packy_anthropic_messages_api(settings: AIProviderSettings) -> bool:
     """Packy claude-officially uses Anthropic Messages API (no role=system in messages)."""
     return _is_packyapi(settings.base_url) and "claude" in (settings.model or "").lower()
-
-
-def _is_mimo(settings: AIProviderSettings) -> bool:
-    return is_mimo_provider(settings.base_url, settings.model)
 
 
 def _prepare_chat_messages(
@@ -354,34 +222,17 @@ def _prepare_chat_messages(
     return api_messages, system_param
 
 
-def _prepare_api_messages(
-    settings: AIProviderSettings,
-    messages: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Normalize messages for the active provider before API submission."""
-    api_messages, system_param = _prepare_chat_messages(settings, messages)
-    if _is_mimo(settings):
-        api_messages = patch_messages_for_mimo(
-            api_messages,
-            model=settings.model,
-            reasoning_cache=_MIMO_REASONING_CACHE,
-        )
-    return api_messages, system_param
-
-
 def _provider_max_output_tokens(settings: AIProviderSettings) -> int:
     """Per-gateway completion cap (max_tokens); avoids 400 from provider limits."""
     model = (settings.model or "").lower()
     if _is_packyapi(settings.base_url) and "claude" in model:
         return _PACKY_CLAUDE_MAX_OUTPUT_TOKENS
-    if _is_openai_gpt_reasoning_model(model):
-        return _OPENAI_GPT_MAX_OUTPUT_TOKENS
     if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
         return _DEEPSEEK_MAX_OUTPUT_TOKENS
-    if _is_mimo(settings):
-        return mimo_max_output_tokens(settings.model)
     if _is_agnes_ai(settings.base_url):
         return _AGNES_MAX_OUTPUT_TOKENS
+    if _is_openai_gpt_reasoning_model(model):
+        return _OPENAI_GPT_MAX_OUTPUT_TOKENS
     return _PRACTICAL_UNLIMITED_MAX_TOKENS
 
 
@@ -407,51 +258,17 @@ def _resolve_thinking_params(
     _effort = reasoning_effort if reasoning_effort is not None else settings.reasoning_effort
     model = settings.model or ""
 
+    if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
+        extra_body: dict[str, Any] = {
+            "thinking": {"type": "enabled" if _thinking else "disabled"},
+        }
+        return extra_body, _effort if _thinking else None
+
     if _is_openai_gpt_reasoning_model(model):
         # OpenAI GPT-5.x / o-series: reasoning_effort only (no extra_body.thinking).
         if not _thinking:
             return {}, "none"
         return {}, _map_effort_to_openai_gpt(_effort)
-
-    if _uses_deepseek_api_limits(settings.base_url) or _is_deepseek_model(model):
-        # DeepSeek v4+ requires thinking.type=adaptive + output_config.effort;
-        # the old "enabled"/"disabled" values are no longer accepted.
-        # Also covers DeepSeek models proxied through non-native gateways (e.g. QClaw).
-        if _thinking:
-            extra_body: dict[str, Any] = {
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": _adaptive_output_effort(_effort)},
-            }
-            return extra_body, _effort or "medium"
-        else:
-            extra_body = {
-                "thinking": {"type": "disabled"},
-            }
-            return extra_body, None
-
-    if _is_minimax(settings.base_url):
-        # MiniMax (api.minimax.io):
-        # - thinking.type only accepts "adaptive" (on) or "disabled" (off); no budget_tokens
-        # - reasoning_split=True exposes thinking via reasoning_content / reasoning_details
-        # - M2.x cannot disable thinking; "disabled" is accepted but ignored
-        if _thinking:
-            extra_body = {
-                "thinking": {"type": "adaptive"},
-                "reasoning_split": True,
-            }
-        else:
-            extra_body = {
-                "thinking": {"type": "disabled"},
-                "reasoning_split": True,
-            }
-        # MiniMax does not use reasoning_effort
-        return extra_body, None
-
-    if _is_mimo(settings):
-        # MiMo: DeepSeek-style reasoning via chat_template_kwargs.enable_thinking
-        return resolve_mimo_thinking_extra_body(thinking=_thinking), (
-            _effort or "medium" if _thinking else None
-        )
 
     if not _thinking:
         return {}, None
@@ -511,10 +328,6 @@ class DeepSeekClient:
         self._settings = settings
         self._log = logger_ or logger
 
-    def update_provider(self, settings: AIProviderSettings) -> None:
-        """Replace in-memory provider settings (e.g. after QClaw auto-fallback)."""
-        self._settings = settings
-
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -537,8 +350,7 @@ class DeepSeekClient:
         extra_body, _effort = _resolve_thinking_params(
             self._settings, thinking=thinking, reasoning_effort=reasoning_effort
         )
-        extra_body = {**extra_body, **_openclaw_agent_request_extra(self._settings)}
-        api_messages, system_param = _prepare_api_messages(self._settings, messages)
+        api_messages, system_param = _prepare_chat_messages(self._settings, messages)
         if system_param:
             extra_body = {**extra_body, "system": system_param}
         _thinking_on = _thinking_enabled(extra_body, _effort)
@@ -569,14 +381,14 @@ class DeepSeekClient:
 
         t0 = time.monotonic()
         create_kwargs: dict[str, Any] = {
-            "model": _effective_api_model(self._settings),
+            "model": self._settings.model,
             "messages": api_messages,
             "timeout": timeout_s,
             "max_tokens": _max_tokens,
         }
         if extra_body:
             create_kwargs["extra_body"] = extra_body
-        if _effort is not None and _use_top_level_reasoning_effort(self._settings, extra_body):
+        if _effort is not None:
             create_kwargs["reasoning_effort"] = _effort
         # When thinking mode is OFF, set temperature=0 for maximum instruction-following
         # fidelity and JSON format compliance.  Thinking mode is incompatible with
@@ -599,29 +411,14 @@ class DeepSeekClient:
         msg = response.choices[0].message
         content = msg.content or ""
         reasoning_content = _extract_reasoning_text(msg)
-        # MiniMax with reasoning_split=True may also use reasoning_details
-        if not reasoning_content:
-            details = getattr(msg, "reasoning_details", None)
-            if details:
-                parts = []
-                for detail in details:
-                    t = detail.get("text") if isinstance(detail, dict) else getattr(detail, "text", None)
-                    if t:
-                        parts.append(t)
-                reasoning_content = "".join(parts)
-
-        if _is_mimo(self._settings):
-            store_reasoning_from_response(
-                api_messages,
-                response_message_dict(content, reasoning_content, msg),
-                _MIMO_REASONING_CACHE,
-            )
 
         # Build usage
         u = response.usage
         usage = AIUsage(
             prompt_tokens=getattr(u, "prompt_tokens", 0),
-            cached_prompt_tokens=_extract_cached_prompt_tokens(u),
+            cached_prompt_tokens=getattr(
+                getattr(u, "prompt_tokens_details", None), "cached_tokens", 0
+            ) if u else 0,
             completion_tokens=getattr(u, "completion_tokens", 0),
             total_tokens=getattr(u, "total_tokens", 0),
         )
@@ -705,24 +502,20 @@ class DeepSeekClient:
         extra_body, _effort = _resolve_thinking_params(
             self._settings, thinking=thinking, reasoning_effort=reasoning_effort
         )
-        extra_body = {**extra_body, **_openclaw_agent_request_extra(self._settings)}
-        api_messages, system_param = _prepare_api_messages(self._settings, messages)
+        api_messages, system_param = _prepare_chat_messages(self._settings, messages)
         if system_param:
             extra_body = {**extra_body, "system": system_param}
         _thinking_on = _thinking_enabled(extra_body, _effort)
         _max_tokens = _completion_max_tokens(
             self._settings, extra_body=extra_body, effort=_effort
         )
-        _adaptive_effort = (extra_body.get("output_config") or {}).get("effort")
 
         self._log.info(
             "DeepSeekClient.stream_chat: model=%s thinking=%s reasoning_effort=%s "
-            "adaptive_effort=%s top_level_effort=%s max_tokens=%s system_hoisted=%s msgs=%d",
+            "max_tokens=%s system_hoisted=%s msgs=%d",
             self._settings.model,
             _thinking_on,
             _effort,
-            _adaptive_effort,
-            _effort if _use_top_level_reasoning_effort(self._settings, extra_body) else None,
             _max_tokens,
             bool(system_param),
             len(api_messages),
@@ -751,7 +544,7 @@ class DeepSeekClient:
             # Some providers may not support it; if the create() call itself
             # rejects stream_options we retry without it.
             stream_kwargs: dict[str, Any] = {
-                "model": _effective_api_model(self._settings),
+                "model": self._settings.model,
                 "messages": api_messages,
                 "timeout": timeout_s,
                 "max_tokens": _max_tokens,
@@ -760,7 +553,7 @@ class DeepSeekClient:
             }
             if extra_body:
                 stream_kwargs["extra_body"] = extra_body
-            if _effort is not None and _use_top_level_reasoning_effort(self._settings, extra_body):
+            if _effort is not None:
                 stream_kwargs["reasoning_effort"] = _effort
 
             try:
@@ -782,7 +575,8 @@ class DeepSeekClient:
                     prompt_tokens = getattr(u, "prompt_tokens", 0) or prompt_tokens
                     completion_tokens = getattr(u, "completion_tokens", 0) or completion_tokens
                     total_tokens = getattr(u, "total_tokens", 0) or total_tokens
-                    cached_tokens = _extract_cached_prompt_tokens(u) or cached_tokens
+                    details = getattr(u, "prompt_tokens_details", None)
+                    cached_tokens = getattr(details, "cached_tokens", 0) if details else cached_tokens
 
                 if not getattr(chunk, "choices", None):
                     continue
@@ -795,19 +589,8 @@ class DeepSeekClient:
                 if delta is None:
                     continue
 
-                # Official pattern: reasoning_content is None when absent, not ""
-                # reasoning_content arrives first (thinking phase), then content
-                # MiniMax with reasoning_split=True uses delta.reasoning_details[].text
-                # instead of delta.reasoning_content.
+                # reasoning_content (DeepSeek/proxies) or reasoning (vLLM) may arrive first
                 r = _extract_reasoning_text(delta) or None
-                if not r:
-                    # MiniMax streaming: reasoning_details is a list of dicts
-                    details = getattr(delta, "reasoning_details", None)
-                    if details:
-                        for detail in details:
-                            t = detail.get("text") if isinstance(detail, dict) else getattr(detail, "text", None)
-                            if t:
-                                r = (r or "") + t
                 if r:
                     reasoning_content += r
                     if on_reasoning_token is not None:
@@ -883,17 +666,6 @@ class DeepSeekClient:
                 "check model ID, token group, and reasoning_effort=%s.",
                 len(reasoning_content),
                 _effort,
-            )
-
-        if _is_mimo(self._settings):
-            store_reasoning_from_response(
-                api_messages,
-                {
-                    "role": "assistant",
-                    "content": content,
-                    "reasoning_content": reasoning_content,
-                },
-                _MIMO_REASONING_CACHE,
             )
 
         return AIReply(

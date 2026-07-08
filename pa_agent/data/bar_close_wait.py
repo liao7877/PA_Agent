@@ -78,34 +78,33 @@ def seconds_until_bar_closes(
     return int(math.ceil(remaining_ms / 1000))
 
 
+def uses_server_reference_clock(data_source: object | None) -> bool:
+    """True when *data_source* exposes a live broker/server clock (e.g. MT5)."""
+    if data_source is None:
+        return False
+    server_time_ms = getattr(data_source, "server_time_ms", None)
+    if not callable(server_time_ms):
+        return False
+    try:
+        return server_time_ms() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def reference_now_ms(
     *,
     now_ms: int | None = None,
     data_source: object | None = None,
 ) -> int:
-    """Wall-clock for forming-bar checks: broker/server time when available, else local.
-
-    When the broker server time lags significantly behind local wall-clock time
-    (e.g. over 60 seconds), it means the broker is not sending new ticks
-    (market halted / weekend). In that case, fall back to local time so that
-    ``is_bar_still_forming`` correctly returns False for stale forming bars.
-    """
+    """Wall-clock for forming-bar checks: broker/server time when available, else local."""
     if now_ms is not None:
         return int(now_ms)
-    local_ms = int(time.time() * 1000)
-    if data_source is not None:
+    if uses_server_reference_clock(data_source):
         server_time_ms = getattr(data_source, "server_time_ms", None)
-        if callable(server_time_ms):
-            t = server_time_ms()
-            if t is not None:
-                server_ms = int(t)
-                # If broker time is more than 60 s behind local time, the broker
-                # is not sending ticks (weekend / halt). Use local time so that
-                # expired bars are not mistakenly treated as still forming.
-                if local_ms - server_ms < 60_000:
-                    return server_ms
-                # Broker time is stale — fall through to local time
-    return local_ms
+        t = server_time_ms()
+        if t is not None:
+            return int(t)
+    return int(time.time() * 1000)
 
 
 def _looks_like_ashare_symbol(symbol: str | None) -> bool:
@@ -143,23 +142,7 @@ def is_bar_still_forming(
 
     ts_open = int(ts_open_to_ms(bar.ts_open))
     close_ms = ts_open + duration_s * 1000
-
-    # Primary check: use the provided now_ms (broker or local time).
-    if int(now_ms) >= close_ms:
-        return False
-
-    # Safety net for daily/weekly bars: broker server time may be stale (no
-    # ticks during weekend / halt), causing now_ms to lag behind real time.
-    # If local wall-clock time is more than duration + 6 h past ts_open,
-    # the bar has definitely closed regardless of broker time.
-    if tf in ("1d", "1w"):
-        local_ms = int(time.time() * 1000)
-        # 6 h safety margin covers all known broker UTC offsets (UTC-5 to UTC+5).
-        safety_ms = 6 * 3600 * 1000
-        if local_ms >= close_ms + safety_ms:
-            return False
-
-    return True
+    return int(now_ms) < close_ms
 
 
 def has_forming_bar_at_head(
@@ -213,3 +196,33 @@ def forming_bar_has_closed(
     ):
         return True
     return int(bars_newest_first[0].ts_open) != int(waited_ts_open)
+
+
+def newest_closed_bar_for_tick(bars_newest_first: list) -> object | None:
+    """Newest **closed** bar for SL/TP checks — never the index-0 forming bar."""
+    if not bars_newest_first:
+        return None
+    head = bars_newest_first[0]
+    closed = getattr(head, "closed", None)
+    if closed is None and isinstance(head, dict):
+        closed = head.get("closed", True)
+    if closed is False:
+        return bars_newest_first[1] if len(bars_newest_first) > 1 else None
+    return head
+
+
+def bar_ts_open_ms(bar: object) -> int | None:
+    """Extract bar open timestamp in ms from KlineBar or snapshot dict."""
+    if bar is None:
+        return None
+    ts = getattr(bar, "ts_open", None)
+    if ts is None and isinstance(bar, dict):
+        ts = bar.get("ts_open")
+    if ts is None:
+        return None
+    try:
+        from pa_agent.data.datetime_ts import ts_open_to_ms
+
+        return int(ts_open_to_ms(ts))
+    except (TypeError, ValueError):
+        return None

@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pa_agent.ai.coherence_checks import _CYCLE_BRANCH_ALIASES, _normalize_direction_branch
 from pa_agent.ai.decision_tree import load_decision_tree
@@ -26,18 +26,13 @@ NormalizationMode = str  # "strict" | "lenient"
 _GATE_12_GENERIC_BRANCHES = frozenset(
     {"yes", "no", "y", "n", "是", "否", "true", "false", ""}
 )
+# Models sometimes put direction in node 1.2 branch instead of cycle_position.
+_GATE_12_DIRECTION_BRANCHES = frozenset(
+    {"bullish", "bearish", "neutral", "long", "short", "bull", "bear"}
+)
 
 _BAR_RANGE_RE = re.compile(r"^K(\d+)-K(\d+)$", re.IGNORECASE)
 _SINGLE_BAR_RE = re.compile(r"^K(\d+)$", re.IGNORECASE)
-_PROG_REF_BLOCK_RE = re.compile(r"【程序参考数据（[^】]*）：.*?】", re.DOTALL)
-
-# Model-invented summary nodes (not in decision tree); gate_result belongs in gate_result field.
-_GATE_END_NODE_IDS = frozenset({"gate_end", "gate_summary", "summary"})
-_GATE_RESULT_ANSWER_ALIASES: dict[str, str] = {
-    "proceed": "是",
-    "wait": "等待",
-    "unknown": "中性",
-}
 
 # node_id -> {raw answer -> (canonical answer, branch)}
 _NODE_ANSWER_BY_ID: dict[str, dict[str, tuple[str, str]]] = {
@@ -107,21 +102,6 @@ _NODE_ANSWER_BY_ID: dict[str, dict[str, tuple[str, str]]] = {
         "B": ("是", "path_b"),
         "C": ("是", "path_c"),
     },
-    "2.2": {
-        "冲突": ("是", "conflict"),
-        "背景冲突": ("是", "conflict"),
-        "方向冲突": ("是", "conflict"),
-        "新旧冲突": ("是", "conflict"),
-        "conflict": ("是", "conflict"),
-        "同向": ("是", "aligned"),
-        "共振": ("是", "aligned"),
-        "方向一致": ("是", "aligned"),
-        "aligned": ("是", "aligned"),
-        "中性背景": ("中性", "neutral_background"),
-        "背景中性": ("中性", "neutral_background"),
-        "neutral_background": ("中性", "neutral_background"),
-        "mixed": ("中性", "mixed"),
-    },
 }
 
 _GENERIC_ANSWER: dict[str, str] = {
@@ -137,9 +117,6 @@ _GENERIC_ANSWER: dict[str, str] = {
     "fail": "否",
     "yes": "是",
     "no": "否",
-    "not_applicable": "不适用",
-    "n/a": "不适用",
-    "na": "不适用",
     # Common AI synonyms outside the strict enum (map before schema validation).
     "部分": "中性",
     "部分一致": "中性",
@@ -257,9 +234,14 @@ def _bar_range_from_reason(
     return f"K{older}" if older == newer else f"K{older}-K{newer}"
 
 
+def _rewrite_k0_tokens(text: str) -> str:
+    """K0 is the unclosed bar and must not appear in bar_range."""
+    return re.sub(r"\bK0\b", "K1", text, flags=re.IGNORECASE)
+
+
 def fix_bar_range_string(text: str, *, default_max_seq: int | None = None) -> str:
     """Canonicalize bar_range: order, aliases, spacing."""
-    raw = str(text).strip()
+    raw = _rewrite_k0_tokens(str(text).strip())
     if not raw:
         return ""
 
@@ -282,9 +264,10 @@ def fix_bar_range_string(text: str, *, default_max_seq: int | None = None) -> st
             capped = _cap_bar_seq(a, default_max_seq)
             return f"K{capped}"
         if a < b:
-            logger.debug(
+            logger.warning(
                 "bar_range=%r has reversed order (K%d before K%d); "
-                "K1=newest, K{N}=older. Auto-fixing to K%d-K%d.",
+                "K1=newest, K{N}=older. Auto-fixing to K%d-K%d but this "
+                "may indicate the model misinterprets bar numbering direction.",
                 text, a, b, b, a,
             )
             a, b = b, a
@@ -323,6 +306,36 @@ def _branch_from_tail(per_node: dict[str, tuple[str, str]], tail: str) -> str | 
     return None
 
 
+def _branch_from_composite_tail(node_id: str, tail: str) -> str | None:
+    """Infer branch from composite-answer suffix (e.g. 是，在下边界 / 是（偏多）)."""
+    per_node = _NODE_ANSWER_BY_ID.get(node_id, {})
+    branch = _branch_from_tail(per_node, tail)
+    if branch:
+        return branch
+    return _normalize_direction_branch(tail) or _infer_direction_from_reason(tail)
+
+
+def _strip_composite_answer_format(
+    node_id: str,
+    answer: str,
+) -> tuple[str, str | None] | None:
+    """Peel 「是（偏多）」「是，在下边界」→ canonical enum (+ optional branch).
+
+    Format-only; safe to apply in strict normalization mode.
+    """
+    ans = answer.strip()
+    if not ans:
+        return None
+
+    for pat in (_COMPOSITE_ANSWER_RE, _COMPOSITE_ANSWER_PAREN_RE):
+        m = pat.match(ans)
+        if m:
+            base, tail = m.group(1), m.group(2).strip()
+            branch = _branch_from_composite_tail(node_id, tail) if tail else None
+            return base, branch
+    return None
+
+
 def _resolve_trace_answer(
     node_id: str,
     answer: str,
@@ -337,17 +350,6 @@ def _resolve_trace_answer(
     mapped = per_node.get(ans) or per_node.get(ans.lower())
     if mapped:
         return mapped
-
-    for pat in (_COMPOSITE_ANSWER_RE, _COMPOSITE_ANSWER_PAREN_RE):
-        m = pat.match(ans)
-        if m:
-            base, tail = m.group(1), m.group(2).strip()
-            branch = _branch_from_tail(per_node, tail)
-            if branch:
-                return base, branch
-            if per_node:
-                return base, None
-            return base, None
 
     for key in sorted(per_node.keys(), key=len, reverse=True):
         if key in ans or key.lower() in ans.lower():
@@ -518,27 +520,38 @@ def normalize_trace_item(
     _ensure_trace_string_fields(item)
     lenient = normalization_mode == "lenient"
     nid = str(item.get("node_id", "")).strip()
-    # Strip decorative prefixes like "§" that the model sometimes adds
-    nid = nid.lstrip("§")
-    if nid != str(item.get("node_id", "")).strip():
-        item["node_id"] = nid
-
     if nid == "14":
         item["node_id"] = "14.1"
-        nid = "14.1"
 
     nid = str(item.get("node_id", ""))
 
     ans = str(item.get("answer", "")).strip()
     if ans:
+        format_resolved = _strip_composite_answer_format(nid, ans)
+        if format_resolved is not None:
+            new_ans, branch = format_resolved
+            if new_ans != ans:
+                logger.debug(
+                    "trace answer format %r -> %r (node %s branch=%s)",
+                    ans,
+                    new_ans,
+                    nid,
+                    branch,
+                )
+            item["answer"] = new_ans
+            if branch:
+                item.setdefault("branch", branch)
+            ans = new_ans
+
         resolved = _resolve_trace_answer(nid, ans)
         if resolved is not None:
             new_ans, branch = resolved
-            # Safe enum synonyms (待定→等待、通过→是) and node-specific maps always apply.
-            # Fuzzy partial answers (部分→中性) only in lenient mode.
+            # In strict mode, only apply node-specific deterministic aliases
+            # (e.g. "路径B" → "是" for node 3.5). Generic fuzzy synonyms
+            # (e.g. "部分" → "中性") are gated by lenient mode because they
+            # involve interpretive judgement.
             node_specific = bool(_NODE_ANSWER_BY_ID.get(nid))
-            generic_hit = ans in _GENERIC_ANSWER or ans.lower() in _GENERIC_ANSWER
-            if generic_hit or node_specific or lenient:
+            if lenient or node_specific:
                 if new_ans != ans:
                     logger.debug(
                         "trace answer %r -> %r (node %s branch=%s)",
@@ -564,59 +577,36 @@ def normalize_trace_item(
     )
 
 
-def _strip_ai_gate_14(gate_trace: list[Any]) -> None:
-    """Remove AI-written 14.1 nodes from gate_trace (program injects its own at front).
-
-    The model sometimes outputs node 14.1 (禁止行为扫描) in gate_trace.
-    After program injects its authoritative 14.1 at the front, duplicates
-    cause node ordering errors. We keep the first 14.1 and drop the rest.
-    """
-    if not isinstance(gate_trace, list) or not gate_trace:
-        return
-    kept: list[Any] = []
-    seen_14 = False
-    removed = 0
-    for item in gate_trace:
-        if isinstance(item, dict) and str(item.get("node_id", "")) == "14.1":
-            if not seen_14:
-                seen_14 = True
-                kept.append(item)
-            else:
-                removed += 1
-        else:
-            kept.append(item)
-    if removed:
-        gate_trace[:] = kept
-        logger.debug("Stripped %s duplicate AI-written 14.1 from gate_trace", removed)
-
-
 def normalize_trace_list(
     trace: list[Any] | None,
     *,
     default_max_seq: int | None = None,
     normalization_mode: NormalizationMode = "strict",
+    trace_kind: Literal["gate", "decision"] = "decision",
+    sort_nodes: bool = True,
 ) -> list[Any] | None:
     if not isinstance(trace, list):
         return trace
 
-    # Reorder by chapter: AI may output nodes in any order; the correct
-    # canonical order is by node_id prefix (3.x → 4.x → ... → 14).
-    _CHAPTER_ORDER: dict[str, int] = {
-        "3.": 30, "4.": 40, "5.": 50, "6.": 60,
-        "7.": 70, "8.": 80, "9.": 90, "10.": 100,
-        "11.": 110, "12.": 120, "13.": 130, "14": 140,
-    }
+    # Reorder by chapter — must use the same keys as decision_tree validators.
+    if sort_nodes:
+        from pa_agent.ai.decision_tree import _gate_trace_sort_key, _node_sort_key
 
-    def _chapter_rank(item: Any) -> int:
-        if not isinstance(item, dict):
-            return 999
-        nid = str(item.get("node_id", ""))
-        for prefix, rank in _CHAPTER_ORDER.items():
-            if nid.startswith(prefix) or nid == prefix.rstrip("."):
-                return rank
-        return 500  # unrecognised nodes go in the middle
+        if trace_kind == "gate":
 
-    trace.sort(key=_chapter_rank)
+            def _sort_key(item: Any) -> tuple[int, int, str]:
+                if not isinstance(item, dict):
+                    return (999, 999, "")
+                return _gate_trace_sort_key(str(item.get("node_id", "")))
+
+        else:
+
+            def _sort_key(item: Any) -> tuple[int, str]:
+                if not isinstance(item, dict):
+                    return (999, "")
+                return _node_sort_key(str(item.get("node_id", "")))
+
+        trace.sort(key=_sort_key)
 
     max_seq = default_max_seq or infer_max_bar_seq_from_trace(trace)
     last_br: str | None = None
@@ -658,6 +648,14 @@ def _sync_gate_12_branch_with_cycle(obj: dict[str, Any]) -> None:
         ans = str(item.get("answer", "")).strip()
         br_raw = item.get("branch")
         br = _normalize_cycle_branch_value(br_raw)
+        if br in _GATE_12_DIRECTION_BRANCHES:
+            item["branch"] = cycle if ans == "是" else "unknown"
+            logger.info(
+                "gate_trace 1.2 direction-like branch %r -> %s",
+                br_raw,
+                item["branch"],
+            )
+            return
         if br_raw is not None and br and br not in _GATE_12_GENERIC_BRANCHES:
             if br != str(br_raw).strip().lower().replace(" ", "_"):
                 item["branch"] = br
@@ -703,16 +701,185 @@ def _repair_stage2_decision_trace_questions(trace: list[Any]) -> None:
             item["question"] = canonical_q[nid]
 
 
+_TERMINAL_OUTCOME_DEFAULT_LABELS: dict[str, str] = {
+    "wait": "等待",
+    "reject": "放弃入场",
+    "trade": "执行交易",
+    "proceed": "继续评估",
+}
+
+_TERMINAL_OUTCOME_ALIASES: dict[str, str] = {
+    "持有": "wait",
+    "等待": "wait",
+    "hold": "wait",
+    "holding": "wait",
+    "adjust": "wait",
+    "调整": "wait",
+    "continue": "proceed",
+    "continuing": "proceed",
+    "放弃": "reject",
+    "放弃入场": "reject",
+    "reject_entry": "reject",
+    "execute": "trade",
+    "execution": "trade",
+    "交易": "trade",
+    "下单": "trade",
+}
+
+
+def _normalize_terminal_outcome_aliases(terminal: dict[str, Any]) -> None:
+    outcome = str(terminal.get("outcome", "") or "").strip()
+    if not outcome or outcome in _TERMINAL_OUTCOME_DEFAULT_LABELS:
+        return
+    mapped = _TERMINAL_OUTCOME_ALIASES.get(outcome) or _TERMINAL_OUTCOME_ALIASES.get(
+        outcome.lower()
+    )
+    if mapped:
+        logger.info("Mapped terminal.outcome %r -> %s", outcome, mapped)
+        terminal["outcome"] = mapped
+
+
+def _ensure_stage2_terminal_label(obj: dict[str, Any]) -> None:
+    """Fill missing terminal.label from the cited trace node or outcome defaults."""
+    terminal = obj.get("terminal")
+    if not isinstance(terminal, dict):
+        obj["terminal"] = {
+            "node_id": "AUTO",
+            "outcome": "wait",
+            "label": "模型未提供 terminal，程序自动补全为等待",
+        }
+        terminal = obj["terminal"]
+    label = terminal.get("label")
+    if isinstance(label, str) and label.strip():
+        return
+
+    trace = obj.get("decision_trace")
+    nid = str(terminal.get("node_id", "") or "").strip()
+    outcome = str(terminal.get("outcome", "") or "").strip()
+
+    reason = ""
+    if isinstance(trace, list) and nid:
+        for item in reversed(trace):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("node_id", "") or "").strip() == nid:
+                reason = str(item.get("reason", "") or "").strip()
+                break
+
+    if reason:
+        terminal["label"] = reason[:240]
+        logger.debug(
+            "stage2 terminal.label inferred from decision_trace[%s].reason",
+            nid,
+        )
+        return
+
+    fallback = _TERMINAL_OUTCOME_DEFAULT_LABELS.get(outcome, "决策终止")
+    if nid == "10.3" and outcome == "reject":
+        fallback = "交易者方程不通过，不下单"
+    elif nid == "9.0" and outcome == "wait":
+        fallback = "等待：无可执行信号棒"
+    terminal["label"] = fallback
+    logger.debug(
+        "stage2 terminal.label missing -> default %r (node_id=%s outcome=%s)",
+        fallback,
+        nid,
+        outcome,
+    )
+
+
+_SECTION14_DENIAL_PHRASES = (
+    "未触犯",
+    "未违反",
+    "无触犯",
+    "无违规",
+    "通过扫描",
+    "扫描通过",
+    "无禁止",
+    "未触发",
+)
+
+
+def _trace_node_answer(trace: Any, node_id: str) -> str | None:
+    if not isinstance(trace, list):
+        return None
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("node_id", "")).strip() == node_id:
+            return str(item.get("answer", "") or "").strip()
+    return None
+
+
+def _section14_genuinely_violated(trace: Any) -> bool:
+    if not isinstance(trace, list):
+        return False
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        nid = str(item.get("node_id", "")).strip()
+        if not nid.startswith("14"):
+            continue
+        if str(item.get("answer", "")).strip() != "是":
+            continue
+        reason = str(item.get("reason", "") or "")
+        if any(phrase in reason for phrase in _SECTION14_DENIAL_PHRASES):
+            continue
+        return True
+    return False
+
+
+def _no_entry_plan(trace: Any) -> bool:
+    ans_90 = _trace_node_answer(trace, "9.0")
+    if ans_90 in ("否", "等待"):
+        return True
+    return _trace_node_answer(trace, "10.1") == "否"
+
+
+def _infer_no_order_terminal_outcome(trace: Any) -> str:
+    """Map a mistaken terminal.outcome=trade to wait/reject for 不下单 paths."""
+    if _section14_genuinely_violated(trace):
+        return "reject"
+    if _trace_node_answer(trace, "10.3") == "否":
+        return "reject"
+    return "wait"
+
+
 def _repair_stage2_terminal(obj: dict[str, Any]) -> None:
-    """When 10.3 is 否 on a no-order path, terminal must cite node 10.3."""
+    """Align terminal outcome/node_id with order_type=不下单 decision paths."""
     trace = obj.get("decision_trace")
     terminal = obj.get("terminal")
     decision = obj.get("decision")
     if not isinstance(trace, list) or not isinstance(terminal, dict):
         return
+    _normalize_terminal_outcome_aliases(terminal)
     if not isinstance(decision, dict) or decision.get("order_type") != "不下单":
         return
-    if terminal.get("outcome") not in ("wait", "reject"):
+
+    outcome = str(terminal.get("outcome", "") or "").strip()
+
+    if outcome == "trade":
+        new_outcome = _infer_no_order_terminal_outcome(trace)
+        logger.info(
+            "stage2 terminal.outcome 'trade' -> %r (order_type=不下单)",
+            new_outcome,
+        )
+        terminal["outcome"] = new_outcome
+        outcome = new_outcome
+
+    if (
+        outcome == "reject"
+        and _no_entry_plan(trace)
+        and not _section14_genuinely_violated(trace)
+    ):
+        logger.info(
+            "stage2 terminal.outcome 'reject' -> 'wait' "
+            "(no entry plan: §9.0=否/等待 or §10.1=否)"
+        )
+        terminal["outcome"] = "wait"
+        outcome = "wait"
+
+    if outcome not in ("wait", "reject"):
         return
 
     for item in trace:
@@ -773,82 +940,11 @@ def _sync_gate_23_answer_with_direction(obj: dict[str, Any]) -> None:
         return
 
 
-def _repair_gate_result(obj: dict[str, Any]) -> None:
-    """Fix gate_result when AI incorrectly sets wait/unknown despite passing gates.
-
-    Per prompt rules, gate_result=wait/unknown is only valid for:
-    - §1.2 answer≠是 (cannot identify cycle)
-    - §1.3 answer=否 (extreme chaos, extreme_tr)
-
-    If neither condition holds but gate_result is wait/unknown, force to proceed.
-    """
-    gate_result = str(obj.get("gate_result", "")).strip().lower()
-    if gate_result not in ("wait", "unknown"):
-        return
-    gate = obj.get("gate_trace")
-    if not isinstance(gate, list) or not gate:
-        return
-    # Check for valid blocking conditions
-    node_12_block = any(
-        isinstance(item, dict)
-        and str(item.get("node_id", "")) == "1.2"
-        and str(item.get("answer", "")).strip() != "是"
-        for item in gate
-    )
-    node_13_block = any(
-        isinstance(item, dict)
-        and str(item.get("node_id", "")) == "1.3"
-        and str(item.get("answer", "")).strip() == "否"
-        for item in gate
-    )
-    if not node_12_block and not node_13_block:
-        obj["gate_result"] = "proceed"
-        logger.debug(
-            "gate_result %r -> proceed (no valid blocking condition found)",
-            gate_result,
-        )
-
-
-def _strip_program_reference_blocks(text: str) -> str:
-    """Remove merged program-metric blocks from trace reason (§2.5 cleanup)."""
-    cleaned = _PROG_REF_BLOCK_RE.sub("", text or "")
-    return " ".join(cleaned.split()).strip()
-
-
-def _repair_gate_trace_answer_aliases(gate: list[Any]) -> None:
-    """Map gate_result tokens mistakenly written as trace answer (e.g. proceed → 是)."""
-    for item in gate:
-        if not isinstance(item, dict):
-            continue
-        raw = str(item.get("answer", "") or "").strip()
-        mapped = _GATE_RESULT_ANSWER_ALIASES.get(raw.lower())
-        if mapped:
-            item["answer"] = mapped
-            branch = str(item.get("branch", "") or "").strip()
-            if raw.lower() == "proceed" and not branch:
-                item["branch"] = "proceed"
-
-
-def _strip_gate_end_nodes(gate: list[Any]) -> None:
-    """Drop model-invented gate_end / summary nodes from gate_trace."""
-    gate[:] = [
-        item
-        for item in gate
-        if not (
-            isinstance(item, dict)
-            and str(item.get("node_id", "") or "").strip().lower() in _GATE_END_NODE_IDS
-        )
-    ]
-
-
 def _repair_stage1_gate_trace(obj: dict[str, Any]) -> None:
     """Format-only repairs so strict trace semantics pass on good-faith AI output."""
     gate = obj.get("gate_trace")
     if not isinstance(gate, list) or not gate:
         return
-
-    _repair_gate_trace_answer_aliases(gate)
-    _strip_gate_end_nodes(gate)
 
     canonical_q = _canonical_gate_questions()
     for item in gate:
@@ -857,14 +953,8 @@ def _repair_stage1_gate_trace(obj: dict[str, Any]) -> None:
         nid = str(item.get("node_id", "") or "").strip()
         if nid in canonical_q:
             item["question"] = canonical_q[nid]
-        if nid in ("1.3", "2.5"):
-            reason = str(item.get("reason", "") or "")
-            stripped = _strip_program_reference_blocks(reason)
-            if stripped != reason.strip():
-                item["reason"] = stripped
 
     _sync_gate_23_answer_with_direction(obj)
-    _repair_gate_result(obj)
 
     if str(obj.get("gate_result", "")).lower() == "proceed":
         last = gate[-1]
@@ -879,16 +969,16 @@ def normalize_stage1_traces(
     *,
     normalization_mode: NormalizationMode = "strict",
 ) -> None:
-    gate = obj.get("gate_trace")
-    if isinstance(gate, list):
-        _strip_ai_gate_14(gate)
+    gate_result = str(obj.get("gate_result", "") or "").strip().lower()
     normalize_trace_list(
-        gate,
+        obj.get("gate_trace"),
         normalization_mode=normalization_mode,
+        trace_kind="gate",
+        # wait/unknown: AI terminating node (否/等待) must stay last — do not reorder.
+        sort_nodes=gate_result == "proceed",
     )
     _repair_stage1_gate_trace(obj)
-    if normalization_mode == "lenient":
-        _sync_gate_12_branch_with_cycle(obj)
+    _sync_gate_12_branch_with_cycle(obj)
 
 
 def normalize_stage2_traces(
@@ -903,6 +993,8 @@ def normalize_stage2_traces(
             trace,
             default_max_seq=default_max_seq,
             normalization_mode=normalization_mode,
+            trace_kind="decision",
         )
         _repair_stage2_decision_trace_questions(trace)
     _repair_stage2_terminal(obj)
+    _ensure_stage2_terminal_label(obj)

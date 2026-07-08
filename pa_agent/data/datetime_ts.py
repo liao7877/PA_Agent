@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import calendar
 import time as _time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 _EPOCH = datetime(1970, 1, 1)
 
@@ -71,3 +71,16 @@ def format_epoch_for_display(ts_open: float, *, short: bool = False) -> str:
         sec /= 1000.0
     fmt = "%Y-%m-%d %H:%M" if short else "%Y-%m-%d %H:%M:%S"
     return (_EPOCH + timedelta(seconds=sec)).strftime(fmt)
+
+
+def reference_clock_time(now_ms: int, *, server_wall: bool) -> time:
+    """Extract HH:MM:SS on the K-line reference clock from epoch milliseconds.
+
+    MT5 broker ticks encode server wall time as naive UTC epoch (``server_wall=True``).
+    Local ``time.time()`` uses real UTC and must be converted with ``fromtimestamp``
+  (``server_wall=False``).
+    """
+    sec = float(now_ms) / 1000.0
+    if server_wall:
+        return (_EPOCH + timedelta(seconds=sec)).time()
+    return datetime.fromtimestamp(sec).time()

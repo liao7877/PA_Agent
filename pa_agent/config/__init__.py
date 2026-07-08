@@ -1,1 +1,1 @@
-"""PA Agent configuration package."""
+"""Trading Agent configuration package."""

@@ -1,1 +1,1 @@
-"""PA Agent data layer package."""
+"""Trading Agent data layer package."""

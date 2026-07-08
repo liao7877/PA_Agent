@@ -1,11 +1,13 @@
 """Tests for gate/decision trace normalization."""
 from __future__ import annotations
 
+import copy
 import json
 
 from pa_agent.ai.json_validator import Ok
 from tests.fixtures.validators import schema_test_validator
 from pa_agent.ai.stage2_normalizer import normalize_stage2
+from pa_agent.ai.decision_tree import validate_stage2_trace_consistency
 from pa_agent.ai.trace_normalize import (
     fix_bar_range_string,
     normalize_stage2_traces,
@@ -18,6 +20,7 @@ from tests.integration.conftest import VALID_STAGE2
 def test_fix_reversed_bar_range() -> None:
     assert fix_bar_range_string("K1-K4") == "K4-K1"
     assert fix_bar_range_string("K50-K1") == "K50-K1"
+    assert fix_bar_range_string("K0-K1") == "K1"
 
 
 def test_gate_22_conflict_answer_mapped_to_yes() -> None:
@@ -183,6 +186,47 @@ def test_node_63_composite_boundary_answer() -> None:
     normalize_trace_item(item, normalization_mode="lenient")
     assert item["answer"] == "是"
     assert item["branch"] == "lower"
+
+
+def test_strict_strips_paren_qualified_answer_node_21() -> None:
+    """Regression: AI wrote 是（偏多） on §2.1; strict mode peels enum suffix only."""
+    item = {
+        "node_id": "2.1",
+        "question": "是否存在明确惯性方向？",
+        "answer": "是（偏多）",
+        "branch": "bullish",
+        "reason": "K1强势突破",
+        "bar_range": "K8-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "是"
+    assert item["branch"] == "bullish"
+
+
+def test_strict_strips_comma_boundary_node_63() -> None:
+    item = {
+        "node_id": "6.3",
+        "question": "当前价格是否在区间边界？",
+        "answer": "是，在下边界",
+        "reason": "x",
+        "bar_range": "K5-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "是"
+    assert item["branch"] == "lower"
+
+
+def test_strict_does_not_map_generic_synonyms() -> None:
+    """Interpretive synonyms stay lenient-only; strict only strips composite format."""
+    item = {
+        "node_id": "2.5",
+        "question": "惯性强度",
+        "answer": "部分",
+        "reason": "x",
+        "bar_range": "K8-K1",
+    }
+    normalize_trace_item(item, normalization_mode="strict")
+    assert item["answer"] == "部分"
 
 
 def test_node_62_trending_tr_answer() -> None:
@@ -538,6 +582,28 @@ def test_validator_accepts_stage2_with_null_bar_range_and_forbid_phrase() -> Non
     assert node_14 is not None
 
 
+def test_ensure_stage2_terminal_label_from_trace_reason() -> None:
+    """Models often omit terminal.label; infer from cited node's reason."""
+    reason_103 = (
+        "盈亏比 0.9:1 低于均衡底线 1.2:1，交易者方程不通过，放弃本次突破单。"
+    )
+    obj = {
+        "decision": {"order_type": "不下单"},
+        "decision_trace": [
+            {
+                "node_id": "10.3",
+                "question": "交易者方程是否通过？",
+                "answer": "否",
+                "reason": reason_103,
+                "bar_range": "K4-K1",
+            },
+        ],
+        "terminal": {"node_id": "10.3", "outcome": "reject"},
+    }
+    normalize_stage2_traces(obj, normalization_mode="strict")
+    assert obj["terminal"]["label"] == reason_103
+
+
 def test_repair_stage2_terminal_when_103_no() -> None:
     """Regression: model ends at 9.5 but 10.3 answer=否 → terminal must be 10.3."""
     obj = {
@@ -550,6 +616,92 @@ def test_repair_stage2_terminal_when_103_no() -> None:
     }
     normalize_stage2_traces(obj, normalization_mode="strict")
     assert obj["terminal"]["node_id"] == "10.3"
+
+
+def test_repair_stage2_terminal_trade_outcome_when_no_order() -> None:
+    """Regression: model sets outcome=trade while order_type=不下单 → auto-fix."""
+    obj = copy.deepcopy(VALID_STAGE2)
+    obj["decision"]["order_type"] = "不下单"
+    for field in (
+        "order_direction",
+        "entry_price",
+        "take_profit_price",
+        "stop_loss_price",
+        "entry_basis_bar",
+        "entry_basis_extreme",
+        "entry_rule",
+        "estimated_win_rate",
+    ):
+        obj["decision"][field] = None
+    obj["decision_trace"] = [
+        {
+            "node_id": "10.3",
+            "question": "交易者方程是否通过？",
+            "answer": "否",
+            "reason": "盈亏比不足",
+            "bar_range": "K1",
+        },
+    ]
+    obj["terminal"] = {"node_id": "11.2", "outcome": "trade", "label": "突破做空"}
+    out = normalize_stage2(obj)
+    assert out["terminal"]["outcome"] == "reject"
+    assert out["terminal"]["node_id"] == "10.3"
+
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
+
+
+def test_repair_stage2_terminal_maps_chinese_outcome_aliases() -> None:
+    """Regression: model uses position vocabulary (持有/adjust) for terminal.outcome."""
+    for raw_outcome, expected in (("持有", "wait"), ("adjust", "wait")):
+        obj = copy.deepcopy(VALID_STAGE2)
+        obj["terminal"] = {
+            "node_id": "10.3",
+            "outcome": raw_outcome,
+            "label": "测试",
+        }
+        out = normalize_stage2(obj)
+        assert out["terminal"]["outcome"] == expected
+
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
+
+
+def test_repair_stage2_terminal_reject_to_wait_when_no_entry_plan() -> None:
+    obj = copy.deepcopy(VALID_STAGE2)
+    obj["decision"]["order_type"] = "不下单"
+    for field in (
+        "order_direction",
+        "entry_price",
+        "take_profit_price",
+        "stop_loss_price",
+        "entry_basis_bar",
+        "entry_basis_extreme",
+        "entry_rule",
+        "estimated_win_rate",
+    ):
+        obj["decision"][field] = None
+    obj["decision_trace"] = [
+        {
+            "node_id": "9.0",
+            "question": "是否有可执行信号棒？",
+            "answer": "否",
+            "reason": "无合格信号",
+            "bar_range": "K1",
+        },
+    ]
+    obj["terminal"] = {"node_id": "9.0", "outcome": "reject", "label": "放弃"}
+    out = normalize_stage2(obj)
+    assert out["terminal"]["outcome"] == "wait"
+
+    result = schema_test_validator().validate(
+        "stage2", json.dumps(out, ensure_ascii=False)
+    )
+    assert isinstance(result, Ok), result
 
 
 def test_repair_stage2_canonical_question_42() -> None:
@@ -568,3 +720,59 @@ def test_repair_stage2_canonical_question_42() -> None:
     }
     normalize_stage2_traces(obj, normalization_mode="strict")
     assert obj["decision_trace"][0]["question"] == "通道方向是上涨还是下跌？"
+
+
+def test_gate_12_direction_branch_replaced_with_cycle() -> None:
+    obj = {
+        "gate_result": "proceed",
+        "cycle_position": "broad_channel",
+        "gate_trace": [
+            {
+                "node_id": "1.2",
+                "answer": "是",
+                "branch": "bearish",
+                "reason": "r",
+                "bar_range": "K8-K1",
+            }
+        ],
+    }
+    from pa_agent.ai.trace_normalize import normalize_stage1_traces
+
+    normalize_stage1_traces(obj, normalization_mode="strict")
+    assert obj["gate_trace"][0]["branch"] == "broad_channel"
+
+
+def test_gate_trace_wait_preserves_terminating_node_at_end() -> None:
+    """wait/unknown gate_result: do not reorder gate_trace (terminator stays last)."""
+    obj = {
+        "gate_result": "wait",
+        "gate_trace": [
+            {"node_id": "1.1", "answer": "是", "reason": "r", "bar_range": "K1"},
+            {"node_id": "2.1", "answer": "是", "reason": "r", "bar_range": "K1"},
+            {"node_id": "1.2", "answer": "否", "reason": "终止", "bar_range": "K1"},
+        ],
+    }
+    from pa_agent.ai.trace_normalize import normalize_stage1_traces
+
+    normalize_stage1_traces(obj, normalization_mode="strict")
+    assert obj["gate_trace"][-1]["node_id"] == "1.2"
+    assert obj["gate_trace"][-1]["answer"] == "否"
+
+
+def test_decision_trace_sorts_10_subnodes_before_11() -> None:
+    """Regression: coarse 10.* rank left 11.x before 10.3 → chapter order violation."""
+    trace = [
+        {"node_id": "9.0", "question": "q", "answer": "是", "reason": "r", "bar_range": "K2"},
+        {"node_id": "11.1", "question": "q", "answer": "是", "reason": "r", "bar_range": "K1"},
+        {"node_id": "10.1", "question": "q", "answer": "是", "reason": "r", "bar_range": "K1"},
+        {"node_id": "10.3", "question": "q", "answer": "是", "reason": "r", "bar_range": "K1"},
+    ]
+    normalize_trace_list(trace, trace_kind="decision")
+    ids = [item["node_id"] for item in trace]
+    assert ids.index("10.3") < ids.index("11.1")
+
+    payload = {
+        **VALID_STAGE2,
+        "decision_trace": trace,
+    }
+    assert not validate_stage2_trace_consistency(payload)

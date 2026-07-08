@@ -61,6 +61,9 @@ def test_stage2_invalid_confidence(frame, pending_writer, assembler, exp_reader)
     # Validation error category should be 'c' (invalid value)
     assert record.exception is not None
     assert record.exception["category"] == "c"
+    assert record.stage2_decision is not None
+    assert record.stage2_decision.get("decision", {}).get("order_type")
+    assert record.exception.get("decision_preserved") is True
 
     # Stage1 succeeded, Stage2 failed
     assert OrchestratorEvent.Stage1Done in events

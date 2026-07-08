@@ -49,24 +49,6 @@ def is_position_hold(inner: dict) -> bool:
     return get_position_action(inner) == POSITION_ACTION_HOLD
 
 
-def is_planned_order_cancel(inner: dict) -> bool:
-    """True when AI intends to drop a pending (not yet filled) planned order.
-
-    Matches prompt contract:
-    - ``order_type=不下单`` and ``position_action`` is null / omitted → 撤单
-    - ``position_action=平仓`` on a plan → treat as撤单（尚未成交，无仓可平）
-    Does **not** match ``position_action=持有`` or ``调整`` (the latter may update TP/SL).
-    """
-    if str(inner.get("order_type") or _NO_ORDER_TEXT).strip() != _NO_ORDER_TEXT:
-        return False
-    action = get_position_action(inner)
-    if action == POSITION_ACTION_HOLD:
-        return False
-    if action == POSITION_ACTION_ADJUST:
-        return False
-    return True
-
-
 def has_position_management_intent(inner: dict) -> bool:
     return get_position_action(inner) is not None
 
@@ -150,56 +132,3 @@ def position_advice_text(inner: dict, *, max_len: int = 480) -> str:
     if len(advice) <= max_len:
         return advice
     return advice[: max_len - 1] + "…"
-
-
-def _price_equal(a: Any, b: Any) -> bool:
-    try:
-        if a is None and b is None:
-            return True
-        if a is None or b is None:
-            return False
-        return float(a) == float(b)
-    except (TypeError, ValueError):
-        return False
-
-
-def planned_order_matches_decision(position: Any, inner: dict) -> bool:
-    """True when a planned-order decision keeps the same type, direction, and three prices."""
-    order_type = str(inner.get("order_type") or "").strip()
-    if order_type not in _TRADE_ORDER_TYPES:
-        return False
-    if order_type != str(position.order_type or "").strip():
-        return False
-    if str(inner.get("order_direction") or "").strip() != str(position.order_direction or "").strip():
-        return False
-    return (
-        _price_equal(inner.get("entry_price"), position.entry_price)
-        and _price_equal(inner.get("take_profit_price"), position.take_profit_price)
-        and _price_equal(inner.get("stop_loss_price"), position.stop_loss_price)
-    )
-
-
-def should_notify_analysis_decision(
-    decision_root: dict | None,
-    active_position: Any | None,
-    *,
-    record_id: str | None = None,
-) -> bool:
-    """Whether to send the full analysis decision card to DingTalk.
-
-    Only brand-new entries (or fresh watch/no-trade with no active position) notify.
-    Ongoing hold / maintain-pending / modify / cancel are handled by the position tracker.
-    """
-    if active_position is None:
-        return True
-    if not record_id or not active_position.opened_at_record_id:
-        return False
-    if str(record_id) != str(active_position.opened_at_record_id):
-        return False
-    inner = decision_inner(decision_root)
-    if inner is None:
-        return False
-    order_type = str(inner.get("order_type") or _NO_ORDER_TEXT)
-    if order_type in _TRADE_ORDER_TYPES and is_actionable_trade_decision(decision_root):
-        return True
-    return order_type == "市价单" and str(active_position.order_type or "") == "市价单"

@@ -1,4 +1,4 @@
-"""PA Agent records persistence package."""
+"""Trading Agent records persistence package."""
 
 from pa_agent.records.experience_reader import ExperienceReader
 from pa_agent.records.schema import (
