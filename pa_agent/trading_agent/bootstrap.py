@@ -13,10 +13,17 @@ def enrich_app_context(ctx: AppContext) -> AppContext:
     from pa_agent.notification.service import NotificationService
     from pa_agent.positions.store import PositionStore
     from pa_agent.positions.tracker import PositionTracker
+    from pa_agent.instruments import InstrumentRuntimeManager
 
     logger = ctx.logger
     settings = ctx.settings
-    ctx.notifier = NotificationService(settings=settings, logger=logger)
+    if getattr(ctx, "instrument_manager", None) is None:
+        ctx.instrument_manager = InstrumentRuntimeManager(settings=settings, logger_=logger)
+    ctx.notifier = NotificationService(
+        settings=settings,
+        logger=logger,
+        instrument_manager=ctx.instrument_manager,
+    )
     ctx.position_tracker = PositionTracker(
         store=PositionStore(),
         notifier=ctx.notifier,

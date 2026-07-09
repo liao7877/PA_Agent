@@ -194,6 +194,50 @@ class PushPlusSettings(BaseModel):
     token: str = ""
 
 
+class InstrumentSettings(BaseModel):
+    """One monitored symbol/timeframe with optional per-instrument overrides."""
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = ""
+    name: str = ""
+    enabled: bool = True
+    symbol: str = "XAUUSDm"
+    timeframe: str = "15m"
+    data_source: DataSourceKind = "mt5"
+    tradingview_exchange: str = ""
+    keep_analysis: bool = False
+    provider_override_enabled: bool = False
+    notification_override_enabled: bool = False
+    feishu_override_enabled: bool = False
+    pushplus_override_enabled: bool = False
+    provider: AIProviderSettings = Field(default_factory=AIProviderSettings)
+    notification: NotificationSettings = Field(default_factory=NotificationSettings)
+    feishu: FeishuSettings = Field(default_factory=FeishuSettings)
+    pushplus: PushPlusSettings = Field(default_factory=PushPlusSettings)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v: object) -> object:
+        return str(v or "").strip()
+
+    @field_validator("data_source", mode="before")
+    @classmethod
+    def _coerce_data_source(cls, v: object) -> object:
+        if v == "yfinance":
+            return "mt5"
+        if v in ("adata", "a_share"):
+            return "akshare"
+        return v
+
+
+class InstrumentCollectionSettings(BaseModel):
+    """TradingView-style watchlist persisted in settings.json."""
+    model_config = ConfigDict(extra="ignore")
+
+    max_concurrent_analysis: int = Field(default=1, ge=1, le=4)
+    items: list[InstrumentSettings] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     """Root settings object persisted to config/settings.json."""
     model_config = ConfigDict(extra="ignore")
@@ -206,6 +250,7 @@ class Settings(BaseModel):
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     pushplus: PushPlusSettings = Field(default_factory=PushPlusSettings)
     tushare: TushareSettings = Field(default_factory=TushareSettings)
+    instruments: InstrumentCollectionSettings = Field(default_factory=InstrumentCollectionSettings)
 
 
 def provider_api_key_configured(settings: Settings | None) -> bool:
@@ -213,6 +258,41 @@ def provider_api_key_configured(settings: Settings | None) -> bool:
     if settings is None:
         return False
     return bool((settings.provider.api_key or "").strip())
+
+
+def _default_instrument_from_general(raw: dict) -> dict:
+    general = raw.get("general", {}) if isinstance(raw.get("general"), dict) else {}
+    symbol = str(general.get("last_symbol") or "XAUUSDm").strip() or "XAUUSDm"
+    timeframe = str(general.get("last_timeframe") or "15m").strip() or "15m"
+    data_source = general.get("last_data_source") or "mt5"
+    exchange = str(general.get("last_tradingview_exchange") or "")
+    keep_analysis = bool(general.get("keep_analysis", False))
+    safe_id = f"{data_source}-{symbol}-{timeframe}".lower()
+    safe_id = "".join(ch if ch.isalnum() else "-" for ch in safe_id).strip("-")
+    return {
+        "id": safe_id or "default-instrument",
+        "name": symbol,
+        "enabled": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "data_source": data_source,
+        "tradingview_exchange": exchange,
+        "keep_analysis": keep_analysis,
+    }
+
+
+def _migrate_instruments(raw: dict) -> bool:
+    instruments = raw.get("instruments")
+    if isinstance(instruments, dict) and isinstance(instruments.get("items"), list):
+        return False
+    if isinstance(instruments, list):
+        raw["instruments"] = {"max_concurrent_analysis": 1, "items": instruments}
+        return True
+    raw["instruments"] = {
+        "max_concurrent_analysis": 1,
+        "items": [_default_instrument_from_general(raw)],
+    }
+    return True
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -306,9 +386,10 @@ def load_settings(path: Path | None = None) -> "Settings":
     # Migrate legacy encrypted key: drop it, api_key already in provider dict
     raw.setdefault("provider", {}).setdefault("api_key", "")
 
+    migrated_instruments = _migrate_instruments(raw)
     migrated_feishu = _migrate_legacy_feishu_json(raw, path)
     settings = Settings.model_validate(raw)
-    dirty = migrated_feishu
+    dirty = migrated_feishu or migrated_instruments
     if settings.pushplus.enabled and not settings.pushplus.token.strip():
         if not (os.environ.get("PUSHPLUS_TOKEN") or "").strip():
             settings.pushplus.enabled = False

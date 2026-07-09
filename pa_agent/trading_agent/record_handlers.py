@@ -29,7 +29,14 @@ def dispatch_decision_notification(window: Any, record: Any) -> None:
     except Exception:  # noqa: BLE001
         active_position = None
     try:
-        notifier.notify_record(record, active_position=active_position)
+        instrument = None
+        manager = getattr(window._ctx, "instrument_manager", None)  # noqa: SLF001
+        if manager is not None and symbol and timeframe:
+            for runtime in manager.runtimes():
+                if runtime.config.symbol == symbol and runtime.config.timeframe == timeframe:
+                    instrument = runtime.config
+                    break
+        notifier.notify_record(record, active_position=active_position, instrument=instrument)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Decision notification dispatch failed: %s", exc)
 

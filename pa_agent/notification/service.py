@@ -28,14 +28,21 @@ class NotificationService:
         Optional logger; defaults to the ``pa_agent`` logger.
     """
 
-    def __init__(self, *, settings: Any, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Any,
+        logger: logging.Logger | None = None,
+        instrument_manager: Any = None,
+    ) -> None:
         self._settings = settings
         self._logger = logger or logging.getLogger("pa_agent")
+        self._instrument_manager = instrument_manager
 
     # ── Public API ────────────────────────────────────────────────────────
-    def notify(self, message: NotificationMessage) -> None:
+    def notify(self, message: NotificationMessage, *, instrument: Any = None) -> None:
         """Dispatch *message* if enabled. Non-blocking (runs in background)."""
-        cfg = self._notification_cfg()
+        cfg = self._notification_cfg(instrument, message)
         if cfg is None or not getattr(cfg, "enabled", False):
             return
         if not self._scene_enabled(cfg, message.event):
@@ -63,6 +70,7 @@ class NotificationService:
         stage: str = "",
         source: str = "analysis",
         exception: dict | None = None,
+        instrument: Any = None,
     ) -> None:
         """Dispatch an API connectivity/upstream failure notification."""
         self.notify(
@@ -73,17 +81,19 @@ class NotificationService:
                 stage=stage,
                 source=source,
                 exception=exception,
-            )
+            ),
+            instrument=instrument,
         )
 
-    def notify_record(self, record: Any) -> None:
+    def notify_record(self, record: Any, *, active_position: Any = None, instrument: Any = None) -> None:
         """Convenience: classify an ``AnalysisRecord`` and dispatch.
 
         Handles the NEW_ORDER / NO_TRADE / ERROR scenes derived from a single
         analysis run. ENTRY_FILLED / EXIT / MANAGE come from the position
         tracker via :meth:`notify`.
         """
-        cfg = self._notification_cfg()
+        del active_position
+        cfg = self._notification_cfg(instrument)
         if cfg is None or not getattr(cfg, "enabled", False):
             return
         try:
@@ -106,6 +116,7 @@ class NotificationService:
                     stage=str(exc.get("stage") or ""),
                     source=str(exc.get("source") or "analysis"),
                     exception=exc,
+                    instrument=instrument,
                 )
                 return
             actionable = is_actionable_trade_decision(decision)
@@ -117,14 +128,16 @@ class NotificationService:
                     self.notify(
                         formatter.format_error(
                             symbol=symbol, timeframe=timeframe, exception=exc
-                        )
+                        ),
+                        instrument=instrument,
                     )
                     return
                 if not decision and not exc.get("decision_preserved"):
                     self.notify(
                         formatter.format_error(
                             symbol=symbol, timeframe=timeframe, exception=exc
-                        )
+                        ),
+                        instrument=instrument,
                     )
                     return
             if not decision:
@@ -136,13 +149,32 @@ class NotificationService:
                     timeframe=timeframe,
                     decision=decision,
                     stage1_diagnosis=stage1,
-                )
+                ),
+                instrument=instrument,
             )
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("notify_record failed: %s", exc)
 
     # ── Internals ─────────────────────────────────────────────────────────
-    def _notification_cfg(self) -> Any:
+    def _notification_cfg(self, instrument: Any = None, message: NotificationMessage | None = None) -> Any:
+        if instrument is None and message is not None and self._instrument_manager is not None:
+            fields = getattr(message, "fields", {}) or {}
+            symbol = str(fields.get("symbol") or "")
+            timeframe = str(fields.get("timeframe") or "")
+            for runtime in self._instrument_manager.runtimes():
+                cfg = runtime.config
+                if cfg.symbol == symbol and cfg.timeframe == timeframe:
+                    instrument = cfg
+                    break
+        if instrument is not None:
+            manager = self._instrument_manager
+            if manager is not None:
+                try:
+                    return manager.effective_settings(instrument).notification
+                except Exception:  # noqa: BLE001
+                    pass
+            if getattr(instrument, "notification_override_enabled", False):
+                return getattr(instrument, "notification", None)
         if self._settings is None:
             return None
         return getattr(self._settings, "notification", None)

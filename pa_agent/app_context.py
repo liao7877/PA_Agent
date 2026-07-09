@@ -32,6 +32,9 @@ class AppContext:
     # Position tracking layer
     position_tracker: Any = None  # PositionTracker
 
+    # Multi-instrument runtime layer
+    instrument_manager: Any = None  # InstrumentRuntimeManager
+
     @classmethod
     def bootstrap(cls) -> "AppContext":
         """Wire all real components and return a fully initialised AppContext."""
@@ -56,6 +59,7 @@ class AppContext:
         from pa_agent.notification.service import NotificationService
         from pa_agent.positions.store import PositionStore
         from pa_agent.positions.tracker import PositionTracker
+        from pa_agent.instruments import InstrumentRuntimeManager
 
         # ── Settings ──────────────────────────────────────────────────────────
         settings = load_settings(SETTINGS_JSON_PATH)
@@ -74,6 +78,10 @@ class AppContext:
 
         # ── Event bus ─────────────────────────────────────────────────────────
         event_bus = EventBus()
+
+        # ── Instrument runtime manager ─────────────────────────────────────────
+        instrument_manager = InstrumentRuntimeManager(settings=settings, logger_=app_logger)
+        instrument_manager.reload_from_settings()
 
         # ── Data layer ────────────────────────────────────────────────────────
         ds_kind = normalize_data_source_kind(
@@ -136,7 +144,11 @@ class AppContext:
         )
 
         # ── Notification service ──────────────────────────────────────────────
-        notifier = NotificationService(settings=settings, logger=app_logger)
+        notifier = NotificationService(
+            settings=settings,
+            logger=app_logger,
+            instrument_manager=instrument_manager,
+        )
 
         # ── Position tracker ──────────────────────────────────────────────────
         position_tracker = PositionTracker(store=PositionStore(), notifier=notifier)
@@ -155,4 +167,5 @@ class AppContext:
             ledger=ledger,
             notifier=notifier,
             position_tracker=position_tracker,
+            instrument_manager=instrument_manager,
         )
