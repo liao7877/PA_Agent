@@ -80,6 +80,9 @@ class PositionTracker:
         record_id: str | None = None,
         current_price: float | None = None,
         fill_bar_ts: int | None = None,
+        first_tracked_bar_ts: int | None = None,
+        placement_ref_high: float | None = None,
+        placement_ref_low: float | None = None,
     ) -> Optional[PositionState]:
         """Reconcile a new stage-2 decision with the current active position.
 
@@ -97,7 +100,11 @@ class PositionTracker:
                     timeframe=timeframe,
                     inner=inner,
                     record_id=record_id,
+                    current_price=current_price,
                     fill_bar_ts=fill_bar_ts,
+                    first_tracked_bar_ts=first_tracked_bar_ts,
+                    placement_ref_high=placement_ref_high,
+                    placement_ref_low=placement_ref_low,
                 )
             return None
 
@@ -113,11 +120,16 @@ class PositionTracker:
         timeframe: str,
         inner: dict,
         record_id: str | None,
+        current_price: float | None = None,
         fill_bar_ts: int | None = None,
+        first_tracked_bar_ts: int | None = None,
+        placement_ref_high: float | None = None,
+        placement_ref_low: float | None = None,
     ) -> Optional[PositionState]:
         entry = _to_float(inner.get("entry_price"))
         if entry is None:
             return None
+        live_price = _to_float(current_price)
         position = PositionState(
             status=PositionStatus.PLANNED,
             symbol=symbol,
@@ -131,17 +143,21 @@ class PositionTracker:
             invalidation_condition=inner.get("invalidation_condition"),
             planned_at_ms=_now_ms(),
             opened_at_record_id=record_id,
+            first_tracked_bar_ts=first_tracked_bar_ts,
+            first_tracked_price=live_price,
+            first_tracked_seen=first_tracked_bar_ts is None,
         )
-        # 市价单 is considered immediately filled at entry.
         if position.order_type == "市价单":
             position.status = PositionStatus.FILLED
             position.filled_at_ms = position.planned_at_ms
-            position.fill_price = entry
+            position.fill_price = live_price if live_price is not None else entry
             if fill_bar_ts is not None:
                 position.filled_on_bar_ts = int(fill_bar_ts)
         self._store.upsert_active(position)
         logger.info("Position opened (%s) %s %s @ %s",
                     position.status.value, symbol, timeframe, entry)
+        if position.status == PositionStatus.FILLED:
+            self._notify_entry(position)
         return position
 
     def _manage_existing(
@@ -228,6 +244,7 @@ class PositionTracker:
         *,
         high: float,
         low: float,
+        current_price: float | None = None,
         bar_ts: int | None = None,
     ) -> Optional[PositionState]:
         """Update the active position against a **closed** bar's high/low.
@@ -244,7 +261,20 @@ class PositionTracker:
             return position
 
         if position.status == PositionStatus.PLANNED:
-            if self._price_touched(position.entry_price, hi, lo):
+            check_hi, check_lo = hi, lo
+            if not position.first_tracked_seen:
+                position.first_tracked_seen = True
+                if (
+                    bar_ts is not None
+                    and position.first_tracked_bar_ts is not None
+                    and int(bar_ts) == int(position.first_tracked_bar_ts)
+                ):
+                    live_price = _to_float(current_price)
+                    if live_price is not None:
+                        check_hi = max(position.first_tracked_price or live_price, live_price)
+                        check_lo = min(position.first_tracked_price or live_price, live_price)
+                self._store.upsert_active(position)
+            if self._price_touched(position.entry_price, check_hi, check_lo):
                 position.status = PositionStatus.FILLED
                 position.filled_at_ms = _now_ms()
                 position.fill_price = position.entry_price

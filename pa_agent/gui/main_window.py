@@ -615,11 +615,12 @@ class MainWindow(QMainWindow):
                 pass
 
         self._resume_chart_btn = QPushButton("图表实时更新")
-        self._resume_chart_btn.setEnabled(False)
+        self._resume_chart_btn.setCheckable(True)
+        self._resume_chart_btn.setChecked(True)
         self._resume_chart_btn.setToolTip(
-            "恢复 K 线实时刷新；最右侧未收盘 K 线为浅色空心 K 线，不参与 AI 分析"
+            "开关：开启后图表持续刷新，最右侧未收盘 K 线为浅色空心 K 线（不参与 AI 分析）；关闭后只显示已收盘 K 线"
         )
-        self._resume_chart_btn.clicked.connect(self._on_resume_chart_refresh)
+        self._resume_chart_btn.toggled.connect(self._on_chart_live_toggled)
         ctrl_layout.addWidget(self._resume_chart_btn)
 
         self._fit_chart_btn = QPushButton("恢复图表")
@@ -1764,18 +1765,37 @@ class MainWindow(QMainWindow):
         """Pause or resume live chart updates from RefreshLoop."""
         self._chart_refresh_paused = paused
         btn = getattr(self, "_resume_chart_btn", None)
-        if btn is not None:
-            btn.setEnabled(paused)
+        if btn is not None and btn.isCheckable():
+            btn.blockSignals(True)
+            btn.setChecked(not paused)
+            btn.blockSignals(False)
+
+    def _on_chart_live_toggled(self, enabled: bool) -> None:
+        """User toggled live chart updates."""
+        if enabled:
+            if self._chart_refresh_paused:
+                self._refresh_keep_analysis_sentinel()
+            self._set_chart_refresh_paused(False)
+            self._status_bar.showMessage("图表实时更新已开启")
+            self._refresh_chart_once()
+            return
+
+        self._set_chart_refresh_paused(True)
+        frame = self._pull_chart_frame_from_source(include_forming=False)
+        chart = getattr(self, "_chart_widget", None)
+        if frame is not None and chart is not None:
+            chart.set_frame_now(frame)
+            import time as _time
+
+            self._last_refresh_ts = _time.monotonic()
+        self._status_bar.showMessage("图表实时更新已关闭，仅显示已收盘 K 线")
+        self._update_refresh_elapsed()
 
     def _on_resume_chart_refresh(self) -> None:
         """User requested live chart updates again."""
         if not self._chart_refresh_paused:
             return
-        # 恢复图表前先刷新哨兵，防止立即触发持续跟踪分析
-        self._refresh_keep_analysis_sentinel()
-        self._set_chart_refresh_paused(False)
-        self._status_bar.showMessage("图表已恢复实时更新")
-        self._refresh_chart_once()
+        self._on_chart_live_toggled(True)
 
     def _on_fetch_data_clicked(self) -> None:
         """Start (or restart) continuous data refresh for the current symbol/timeframe."""
@@ -3531,8 +3551,12 @@ class MainWindow(QMainWindow):
         # Start AI worker before heavy chart/UI work so the UI stays responsive.
         self._worker.start()
 
-        self._chart_widget.set_frame_now(frame, fit_view=True)
-        self._set_chart_refresh_paused(True)
+        live_chart_on = self._chart_wants_forming_bar()
+        if live_chart_on:
+            self._refresh_chart_once()
+        else:
+            self._chart_widget.set_frame_now(frame, fit_view=True)
+            self._set_chart_refresh_paused(True)
         self._update_submit_button_state()
 
         # Reset FlowBar and SummaryStrip at the start of every analysis
@@ -3553,6 +3577,7 @@ class MainWindow(QMainWindow):
         if settings is not None:
             stance_raw = getattr(settings.general, "decision_stance", "balanced")
         stance_label = stance_label_zh(stance_raw)
+        chart_state = "图表实时更新保持开启" if live_chart_on else "图表已冻结"
         if incremental_new_bar_count is not None:
             prefix = "强制增量分析中" if force_incremental else "增量分析中"
             if incremental_new_bar_count > 0:
@@ -3560,12 +3585,12 @@ class MainWindow(QMainWindow):
             else:
                 detail = "无新增K线，基于上一轮结论复核"
             self._status_bar.showMessage(
-                f"{prefix}…（倾向:{stance_label}，{detail}，图表已冻结）"
+                f"{prefix}…（倾向:{stance_label}，{detail}，{chart_state}）"
             )
             logger.info("Incremental submit: %s", detail)
         else:
             self._status_bar.showMessage(
-                f"分析中…（倾向:{stance_label}，图表已冻结，K1=最新已收盘K线）"
+                f"分析中…（倾向:{stance_label}，{chart_state}，K1=最新已收盘K线）"
             )
         self._decision_badge.setText("分析中…")
         self._ai_sidebar.focus_stream()
