@@ -48,6 +48,9 @@ class OverlayLines:
         *,
         tp2: float | None = None,
         continuity: bool = False,
+        solid: bool = False,
+        label_prefix: str = "",
+        width: int = 1,
     ) -> None:
         """Draw (or redraw) horizontal price lines.
 
@@ -58,19 +61,25 @@ class OverlayLines:
         self._plot = plot
 
         wait_suffix = " (延续)" if continuity else ""
+        prefix = f"{label_prefix} " if label_prefix else ""
         specs: list[tuple[float, QColor, str]] = [
-            (entry, _COLOR_ENTRY, f"Entry{wait_suffix}"),
-            (tp, _COLOR_TP, f"TP1{wait_suffix}"),
-            (sl, _COLOR_SL, f"SL{wait_suffix}"),
+            (entry, _COLOR_ENTRY, f"{prefix}Entry{wait_suffix}"),
+            (tp, _COLOR_TP, f"{prefix}TP1{wait_suffix}"),
+            (sl, _COLOR_SL, f"{prefix}SL{wait_suffix}"),
         ]
         if tp2 is not None:
-            specs.insert(2, (tp2, _COLOR_TP2, f"TP2{wait_suffix}"))
+            specs.insert(2, (tp2, _COLOR_TP2, f"{prefix}TP2{wait_suffix}"))
 
+        style = (
+            pg.QtCore.Qt.PenStyle.SolidLine
+            if solid
+            else pg.QtCore.Qt.PenStyle.DashLine
+        )
         for price, color, label_text in specs:
             line = pg.InfiniteLine(
                 pos=price,
                 angle=0,
-                pen=pg.mkPen(color=color, width=1, style=pg.QtCore.Qt.PenStyle.DashLine),
+                pen=pg.mkPen(color=color, width=width, style=style),
                 movable=False,
             )
             label = pg.TextItem(

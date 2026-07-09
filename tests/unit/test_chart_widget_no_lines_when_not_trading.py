@@ -45,6 +45,17 @@ def _count_text_items(plot_widget) -> int:
     )
 
 
+def _line_styles(plot_widget) -> list:
+    """Return pen styles for all InfiniteLine items."""
+    import pyqtgraph as pg
+
+    return [
+        item.pen.style()
+        for item in plot_widget.getPlotItem().items
+        if isinstance(item, pg.InfiniteLine)
+    ]
+
+
 class TestNoLinesWhenNotTrading:
     """ChartWidget must not show InfiniteLine items for '不下单' decisions."""
 
@@ -202,3 +213,27 @@ class TestNoLinesWhenNotTrading:
 
         assert _count_infinite_lines(chart_widget) == 3
         assert _count_text_items(chart_widget) == 3
+
+    def test_active_position_uses_dashed_for_planned_and_solid_for_filled(
+        self, chart_widget
+    ):
+        """Tracked planned orders are dashed; filled positions are solid."""
+        from PyQt6.QtCore import Qt
+
+        chart_widget.set_active_position({
+            "status": "planned",
+            "entry_price": 4340.0,
+            "take_profit_price": 4350.0,
+            "stop_loss_price": 4333.0,
+        })
+        assert _line_styles(chart_widget)
+        assert all(style == Qt.PenStyle.DashLine for style in _line_styles(chart_widget))
+
+        chart_widget.set_active_position({
+            "status": "filled",
+            "fill_price": 4340.0,
+            "take_profit_price": 4350.0,
+            "stop_loss_price": 4333.0,
+        })
+        assert _line_styles(chart_widget)
+        assert all(style == Qt.PenStyle.SolidLine for style in _line_styles(chart_widget))

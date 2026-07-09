@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -130,6 +131,7 @@ class _AnalysisWorker(QThread):
         cancel_token: Any,
         previous_record: Any = None,
         incremental_new_bar_count: int | None = None,
+        active_position: Any = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -138,6 +140,7 @@ class _AnalysisWorker(QThread):
         self._cancel_token = cancel_token
         self._previous_record = previous_record
         self._incremental_new_bar_count = incremental_new_bar_count
+        self._active_position = active_position
 
     def _persist_program_error_record(self, exc: Exception) -> Any:
         """Write a minimal failed record to pending when submit() raises unexpectedly."""
@@ -219,6 +222,7 @@ class _AnalysisWorker(QThread):
                 on_stage2_files=on_stage2_files,
                 previous_record=self._previous_record,
                 incremental_new_bar_count=self._incremental_new_bar_count,
+                active_position=self._active_position,
             )
             decision = record.stage2_decision or {}
         except Exception as exc:  # noqa: BLE001
@@ -980,6 +984,7 @@ class MainWindow(QMainWindow):
             cancel_token=CancelToken(),
             previous_record=getattr(prep, "previous_record", None),
             incremental_new_bar_count=getattr(prep, "incremental_new_bar_count", None),
+            active_position=self._active_position_for(runtime.config.symbol, runtime.config.timeframe),
             parent=None,
         )
         runtime.last_analysis_frame = frame
@@ -995,8 +1000,8 @@ class MainWindow(QMainWindow):
             else:
                 from pa_agent.trading_agent.record_handlers import update_position_from_record, dispatch_decision_notification
 
-                update_position_from_record(self, record)
                 dispatch_decision_notification(self, record)
+                update_position_from_record(self, record)
                 decision = getattr(record, "stage2_decision", None)
                 if isinstance(decision, dict):
                     from pa_agent.gui.stage2_payload import prepare_stage2_for_ui
@@ -2459,16 +2464,19 @@ class MainWindow(QMainWindow):
         self._update_wait_close_countdown_display()
         self._update_keep_analysis_status_display()
 
-    def _has_active_position(self, symbol: str, timeframe: str) -> bool:
+    def _active_position_for(self, symbol: str, timeframe: str) -> Any:
         if getattr(self, "_demo_mode", False):
-            return False
+            return None
         tracker = getattr(self._ctx, "position_tracker", None)
         if tracker is None:
-            return False
+            return None
         try:
-            return tracker.get_active(symbol, timeframe) is not None
+            return tracker.get_active(symbol, timeframe)
         except Exception:  # noqa: BLE001
-            return False
+            return None
+
+    def _has_active_position(self, symbol: str, timeframe: str) -> bool:
+        return self._active_position_for(symbol, timeframe) is not None
 
     def _keep_analysis_tracking_allowed(self, symbol: str, timeframe: str) -> bool:
         from pa_agent.config.tracking_schedule import keep_analysis_tracking_allowed
@@ -3517,6 +3525,7 @@ class MainWindow(QMainWindow):
             cancel_token=self._cancel_token,
             previous_record=previous_record,
             incremental_new_bar_count=incremental_new_bar_count,
+            active_position=self._active_position_for(symbol, timeframe),
             parent=None,
         )
         def _on_worker_finished(decision: dict) -> None:
@@ -4077,8 +4086,8 @@ class MainWindow(QMainWindow):
             update_position_from_record,
         )
 
-        update_position_from_record(self, record)
         dispatch_decision_notification(self, record)
+        update_position_from_record(self, record)
         import json as _json
 
         exc_info = getattr(record, "exception", None)

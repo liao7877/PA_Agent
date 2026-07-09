@@ -168,6 +168,30 @@ def test_short_position_stop_and_target(store, notifier):
     assert tracker.get_active("X", "15m") is None
 
 
+def test_apply_decision_does_not_fill_replacement_plan_from_analysis_price(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    replacement = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 100.0,
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+        }
+    }
+    pos = tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=replacement,
+        current_price=100.0,
+        fill_bar_ts=1_700_000_000_000,
+    )
+    assert pos is not None
+    assert pos.status is PositionStatus.PLANNED
+    assert not any(m.event.value == "entry_filled" for m in notifier.messages)
+
+
 # ── Tracker: management via new decision ────────────────────────────────────────
 def test_filled_position_manage_adjusts_sl(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
@@ -277,6 +301,32 @@ def test_planned_cancelled_by_no_trade(store, notifier):
     )
     assert pos is None
     assert tracker.get_active("X", "15m") is None
+    cancelled = [m for m in notifier.messages if m.event.value == "order_cancelled"]
+    assert cancelled
+    assert "撤销" in cancelled[-1].text
+
+
+def test_planned_replaced_by_new_order_notifies_old_order_handling(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    replacement = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 106.0,
+            "take_profit_price": 116.0,
+            "stop_loss_price": 101.0,
+        }
+    }
+    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=replacement)
+    assert pos is not None
+    assert pos.order_type == "突破单"
+    assert pos.entry_price == 106.0
+    cancelled = [m for m in notifier.messages if m.event.value == "order_cancelled"]
+    assert cancelled
+    assert "原计划" in cancelled[-1].text
+    assert "新计划" in cancelled[-1].text
+    assert "106" in cancelled[-1].text
 
 
 def test_reversal_closes_and_opens_opposite(store, notifier):

@@ -209,6 +209,47 @@ def format_manage(
     )
 
 
+def format_order_cancelled(
+    *,
+    symbol: str,
+    timeframe: str,
+    direction: str,
+    order_type: str,
+    entry_price: Any,
+    reason: str,
+    replacement_order_type: str = "",
+    replacement_direction: str = "",
+    replacement_entry_price: Any = None,
+) -> NotificationMessage:
+    pair = f"{symbol} {timeframe}".strip()
+    title = f"撤销计划单 · {pair} · {direction or '—'}"
+    lines = [
+        f"原计划: {order_type or '—'} {direction or '—'} @ {_fmt_price(entry_price)}",
+        f"处理: {reason}",
+    ]
+    if replacement_order_type:
+        lines.append(
+            "新计划: "
+            f"{replacement_order_type} {replacement_direction or '—'} "
+            f"@ {_fmt_price(replacement_entry_price)}"
+        )
+    return NotificationMessage(
+        event=NotificationEvent.ORDER_CANCELLED,
+        title=title,
+        text="\n".join(lines),
+        fields={
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "order_direction": direction,
+            "order_type": order_type,
+            "entry_price": entry_price,
+            "replacement_order_type": replacement_order_type,
+            "replacement_direction": replacement_direction,
+            "replacement_entry_price": replacement_entry_price,
+        },
+    )
+
+
 def _truncate(text: str, limit: int) -> str:
     text = " ".join(text.split())
     if len(text) <= limit:

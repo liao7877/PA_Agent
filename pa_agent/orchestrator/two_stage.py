@@ -350,6 +350,7 @@ class TwoStageOrchestrator:
         on_stage2_files: Callable[[list[str]], None] | None = None,
         previous_record: AnalysisRecord | None = None,
         incremental_new_bar_count: int | None = None,
+        active_position: Any | None = None,
     ) -> AnalysisRecord:
         """Run the two-stage analysis pipeline and return an AnalysisRecord.
 
@@ -705,6 +706,7 @@ class TwoStageOrchestrator:
             experience_entries=experience_entries,
             decision_stance=record.meta.decision_stance,
             previous_record=previous_record,
+            active_position=active_position,
             enable_next_bar_prediction=_enable_next_bar,
             provider_settings=getattr(self._settings, "provider", None),
             structure_flip_cooldown_bars=_flip_cooldown,

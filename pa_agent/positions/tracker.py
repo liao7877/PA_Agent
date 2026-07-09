@@ -110,7 +110,12 @@ class PositionTracker:
 
         # An active position exists → manage it instead of re-deciding entry.
         return self._manage_existing(
-            existing, inner, order_type, current_price=current_price
+            existing,
+            inner,
+            order_type,
+            current_price=current_price,
+            fill_bar_ts=fill_bar_ts,
+            first_tracked_bar_ts=first_tracked_bar_ts,
         )
 
     def _open_planned(
@@ -167,6 +172,8 @@ class PositionTracker:
         order_type: str,
         *,
         current_price: float | None = None,
+        fill_bar_ts: int | None = None,
+        first_tracked_bar_ts: int | None = None,
     ) -> Optional[PositionState]:
         # 1) 方向反转 → 先平再开反向计划单
         new_dir = is_long_direction(inner.get("order_direction"))
@@ -209,7 +216,26 @@ class PositionTracker:
             self._store.clear_active(existing.symbol, existing.timeframe)
             logger.info("Planned position cancelled by new decision: %s %s",
                         existing.symbol, existing.timeframe)
+            self._notify_order_cancelled(existing, "AI 新结论为不下单，撤销尚未成交的计划单")
             return None
+
+        if existing.status == PositionStatus.PLANNED and order_type in _ORDER_TYPES:
+            replacement = self._open_planned(
+                symbol=existing.symbol,
+                timeframe=existing.timeframe,
+                inner=inner,
+                record_id=existing.opened_at_record_id,
+                current_price=current_price,
+                fill_bar_ts=fill_bar_ts,
+                first_tracked_bar_ts=first_tracked_bar_ts,
+            )
+            if replacement is not None:
+                self._notify_order_cancelled(
+                    existing,
+                    "新下单决策已替换旧计划单，请撤销原挂单后按新计划处理",
+                    replacement=replacement,
+                )
+            return replacement
 
         # 3) TP/SL 调整（持仓管理）；position_action=调整 或同向下单三价变化
         new_tp = _to_float(inner.get("take_profit_price"))
@@ -400,5 +426,30 @@ class PositionTracker:
                 take_profit_price=position.take_profit_price,
                 stop_loss_price=position.stop_loss_price,
                 advisory_only=advisory_only,
+            )
+        )
+
+    def _notify_order_cancelled(
+        self,
+        position: PositionState,
+        reason: str,
+        *,
+        replacement: PositionState | None = None,
+    ) -> None:
+        if self._notifier is None:
+            return
+        from pa_agent.notification import formatter
+
+        self._notifier.notify(
+            formatter.format_order_cancelled(
+                symbol=position.symbol,
+                timeframe=position.timeframe,
+                direction=position.order_direction,
+                order_type=position.order_type,
+                entry_price=position.entry_price,
+                reason=reason,
+                replacement_order_type=replacement.order_type if replacement else "",
+                replacement_direction=replacement.order_direction if replacement else "",
+                replacement_entry_price=replacement.entry_price if replacement else None,
             )
         )

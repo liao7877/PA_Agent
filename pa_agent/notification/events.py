@@ -17,6 +17,7 @@ class NotificationEvent(str, Enum):
     ENTRY_FILLED = "entry_filled"    # 计划单被市场触及、确认入场成交
     EXIT = "exit"                    # 持仓出场（止盈/止损/AI 平仓）
     MANAGE = "manage"                # 持仓管理调整（移动止损/止盈）
+    ORDER_CANCELLED = "order_cancelled"  # 撤销尚未成交的计划单
     NO_TRADE = "no_trade"            # 观望/不下单结论
     ERROR = "error"                  # 分析失败/异常
     API_ERROR = "api_error"          # AI API 调用失败（网络/鉴权/限流等）

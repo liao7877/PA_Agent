@@ -187,6 +187,30 @@ def test_stage2_user_prompt_uses_routed_strategy_only_by_default(
     assert "极速下跌分析识别" not in user
 
 
+def test_stage2_user_prompt_includes_active_position(assembler: PromptAssembler):
+    frame = _make_frame()
+    messages = assembler.build_stage2(
+        frame,
+        {"cycle_position": "normal_channel", "direction": "bullish"},
+        [],
+        [],
+        active_position={
+            "status": "filled",
+            "order_direction": "做多",
+            "order_type": "限价单",
+            "entry_price": 100.0,
+            "fill_price": 100.0,
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+        },
+    )
+    user = messages[1]["content"]
+    assert "当前软件跟踪持仓状态" in user
+    assert "已有持仓" in user
+    assert "不得当作无持仓重新开同向单" in user
+    assert "position_action=调整" in user
+
+
 def test_stage1_output_reminder_present(assembler: PromptAssembler):
     """Stage 1 user turn must contain the output format reminder."""
     frame = _make_frame()

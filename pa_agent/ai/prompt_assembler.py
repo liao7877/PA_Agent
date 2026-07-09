@@ -1473,6 +1473,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         *,
         decision_stance: str = "conservative",
+        active_position: Any | None = None,
     ) -> list[dict]:
         """Build a standalone Stage 2 request (kept for tests/tools)."""
         system_content = self._build_stage2_system_prompt()
@@ -1482,6 +1483,7 @@ class PromptAssembler:
             strategy_files=strategy_files,
             experience_entries=experience_entries,
             decision_stance=decision_stance,
+            active_position=active_position,
             enable_next_bar_prediction=False,
         )
         return [
@@ -1549,6 +1551,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         decision_stance: str = "conservative",
         previous_record: Any | None = None,
+        active_position: Any | None = None,
         enable_next_bar_prediction: bool = False,
         provider_settings: Any | None = None,
         use_prefix_chain: bool | None = None,
@@ -1575,6 +1578,7 @@ class PromptAssembler:
             experience_entries=experience_entries,
             decision_stance=decision_stance,
             previous_record=previous_record,
+            active_position=active_position,
             enable_next_bar_prediction=enable_next_bar_prediction,
             omit_kline_block=chain_after_s1,
             structure_flip_cooldown_bars=structure_flip_cooldown_bars,
@@ -1605,6 +1609,7 @@ class PromptAssembler:
         experience_entries: list[Any],
         decision_stance: str = "conservative",
         previous_record: Any | None = None,
+        active_position: Any | None = None,
         enable_next_bar_prediction: bool = False,
         omit_kline_block: bool = False,
         structure_flip_cooldown_bars: int = 3,
@@ -1673,6 +1678,7 @@ class PromptAssembler:
         n_bars = len(frame.bars)
         breakout_tick_hint = format_breakout_tick_hint(frame)
         prev_pred_block = self._render_previous_prediction(previous_record)
+        active_position_block = self._render_active_position_block(active_position)
         compact_s1 = json.dumps(
             self._compact_stage1_for_stage2(stage1_json),
             ensure_ascii=False,
@@ -1729,6 +1735,7 @@ class PromptAssembler:
             f"\n```\n\n"
             f"{kline_block}"
             f"{prev_pred_block + chr(10) if prev_pred_block else ''}"
+            f"{active_position_block + chr(10) if active_position_block else ''}"
             f"请根据以上诊断和K线数据,按《二元决策.txt》§3–§11、§14 输出 JSON 决策结果"
             f"(含 decision_trace 与 terminal)。\n"
             f"注意:如果判断不下单,entry_price、take_profit_price、take_profit_price_2、stop_loss_price、order_direction 必须全部为 null。\n\n"
@@ -1742,6 +1749,38 @@ class PromptAssembler:
     ) -> str:
         """Return the shared system prompt used by Stage 2 requests."""
         return self._build_stage2_system_prompt()
+
+    @staticmethod
+    def _render_active_position_block(active_position: Any | None) -> str:
+        if active_position is None:
+            return ""
+        data = (
+            active_position.model_dump(mode="json")
+            if hasattr(active_position, "model_dump")
+            else dict(active_position)
+            if isinstance(active_position, dict)
+            else {}
+        )
+        if not data:
+            return ""
+        status = str(data.get("status") or "")
+        direction = str(data.get("order_direction") or "—")
+        order_type = str(data.get("order_type") or "—")
+        entry = data.get("fill_price") if status == "filled" else data.get("entry_price")
+        lines = [
+            "## 当前软件跟踪持仓状态",
+            "",
+            f"状态：{status or '—'}；方向：{direction}；类型：{order_type}；入场/计划价：{entry if entry is not None else '—'}。",
+            f"当前止盈：{data.get('take_profit_price') if data.get('take_profit_price') is not None else '—'}；当前止损：{data.get('stop_loss_price') if data.get('stop_loss_price') is not None else '—'}。",
+        ]
+        if status == "filled":
+            lines.extend([
+                "已有持仓，阶段二必须优先做持仓管理，不得当作无持仓重新开同向单。",
+                "若需要调整，输出 position_action=调整 并给出新的止盈/止损或 position_advice；若应离场，输出 position_action=平仓。",
+            ])
+        elif status == "planned":
+            lines.append("已有未成交计划单，阶段二必须评估保留、撤销或替换该计划，避免重复开单。")
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _compact_stage1_for_stage2(stage1_json: dict) -> dict:

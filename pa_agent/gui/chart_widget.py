@@ -205,6 +205,8 @@ class ChartWidget(pg.PlotWidget):
             self._active_position = None
             self._position_overlay.clear_lines(self)
             return
+        self._overlay.clear_lines(self)
+        self._pending_decision = None
         self._active_position = dict(position)
         self._draw_active_position()
 

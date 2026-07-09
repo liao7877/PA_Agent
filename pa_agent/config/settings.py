@@ -146,6 +146,8 @@ class NotificationSettings(BaseModel):
     notify_exit: bool = True
     #: 持仓管理调整（移动止损/止盈等）。
     notify_manage: bool = True
+    #: 撤销尚未成交的计划单。
+    notify_order_cancelled: bool = True
     #: 观望/不下单的结论也通知。
     notify_no_trade: bool = False
     #: 分析失败/异常时通知。

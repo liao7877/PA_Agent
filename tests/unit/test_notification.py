@@ -137,6 +137,14 @@ def test_format_entry_exit_manage():
         stop_loss_price=2350,
     )
     assert managed.event is NotificationEvent.MANAGE
+    cancelled = formatter.format_order_cancelled(
+        symbol="XAUUSD", timeframe="15m", direction="做多", order_type="限价单",
+        entry_price=2350, reason="新计划替换", replacement_order_type="突破单",
+        replacement_direction="做多", replacement_entry_price=2365,
+    )
+    assert cancelled.event is NotificationEvent.ORDER_CANCELLED
+    assert "原计划" in cancelled.text
+    assert "新计划" in cancelled.text
 
 
 # ── Service toggle filtering ──────────────────────────────────────────────────
