@@ -17,10 +17,11 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import QTime, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QFont
 
 from pa_agent.config.settings import Settings, save_settings
@@ -54,6 +55,11 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("设置")
         self.setMinimumWidth(520)
         self._settings = settings
+        self._data_source = None
+        if parent is not None:
+            ctx = getattr(parent, "_ctx", None)
+            if ctx is not None:
+                self._data_source = getattr(ctx, "data_source", None)
         self._setup_ui()
         self._load_values()
 
@@ -157,9 +163,9 @@ class SettingsDialog(QDialog):
 
         self._auto_resume_chart_check = QCheckBox("分析完成后自动恢复「图表实时更新」")
         self._auto_resume_chart_check.setToolTip(
-            "提交分析时图表会暂停刷新并冻结为已收盘 K 线；"
+            "若提交分析时「图表实时更新」为关闭，图表会冻结为已收盘 K 线；"
             "勾选后，分析结束（成功或校验失败但流程已跑完）将自动恢复实时刷新，"
-            "并重新显示最右侧未收盘空心 K 线。演示模式不受影响。"
+            "并重新显示最右侧未收盘空心 K 线。分析中保持开启时不受此项影响。演示模式不受影响。"
         )
         general_form.addRow("图表:", self._auto_resume_chart_check)
 
@@ -168,6 +174,59 @@ class SettingsDialog(QDialog):
             "勾选后，每当有新的K线收盘时自动触发分析（与主界面「持续跟踪分析」勾选框同步）"
         )
         general_form.addRow("持续跟踪分析:", self._keep_analysis_check)
+
+        self._keep_analysis_time_window_check = QCheckBox("仅在指定时段内持续跟踪")
+        self._keep_analysis_time_window_check.setToolTip(
+            "开启后，持续跟踪只在下方时段内自动提交分析；"
+            "时段外若无持仓则暂停跟踪，进入时段时会根据 K 线与上次分析能否衔接，"
+            "自动选择完整分析或增量分析。\n"
+            "支持跨午夜：开始时间晚于结束时间即表示到次日，"
+            "例如 08:00 至 02:00 = 早上 8 点到次日凌晨 2 点。"
+        )
+        general_form.addRow("跟踪时段:", self._keep_analysis_time_window_check)
+
+        tracking_time_row = QHBoxLayout()
+        self._keep_analysis_time_start_edit = QTimeEdit()
+        self._keep_analysis_time_start_edit.setDisplayFormat("HH:mm")
+        self._keep_analysis_time_start_edit.setToolTip(
+            "跟踪开始时刻（按本机当地时区填写，程序会自动检测并换算 MT5 经纪商时钟）。\n"
+            "若开始晚于结束，表示跨到次日，如 08:00 开始、02:00 结束 = 至次日凌晨 2 点。"
+        )
+        tracking_time_row.addWidget(self._keep_analysis_time_start_edit)
+        self._keep_analysis_time_sep_label = QLabel("至")
+        tracking_time_row.addWidget(self._keep_analysis_time_sep_label)
+        self._keep_analysis_time_end_edit = QTimeEdit()
+        self._keep_analysis_time_end_edit.setDisplayFormat("HH:mm")
+        self._keep_analysis_time_end_edit.setToolTip(
+            "跟踪结束时刻（不含该分钟，本机当地时区）。\n"
+            "结束早于开始时表示次日，例如 08:00 至 02:00："
+            "当天 08:00 起跟踪，次日 02:00 前停止（02:00 起算时段外）。"
+        )
+        tracking_time_row.addWidget(self._keep_analysis_time_end_edit)
+        general_form.addRow("跟踪起止时间:", tracking_time_row)
+
+        self._keep_analysis_time_hint_label = QLabel()
+        self._keep_analysis_time_hint_label.setWordWrap(True)
+        self._keep_analysis_time_hint_label.setStyleSheet(
+            "color: #8b949e; font-size: 11px;"
+        )
+        general_form.addRow("", self._keep_analysis_time_hint_label)
+
+        self._keep_analysis_bypass_position_check = QCheckBox("有持仓时不受跟踪时段限制")
+        self._keep_analysis_bypass_position_check.setToolTip(
+            "勾选后，只要软件持仓跟踪中有活跃持仓，时段外仍会在 K 线收盘时自动分析"
+        )
+        general_form.addRow("", self._keep_analysis_bypass_position_check)
+
+        self._keep_analysis_time_window_check.toggled.connect(
+            self._sync_keep_analysis_time_widgets_enabled
+        )
+        self._keep_analysis_time_start_edit.timeChanged.connect(
+            self._update_keep_analysis_time_hint
+        )
+        self._keep_analysis_time_end_edit.timeChanged.connect(
+            self._update_keep_analysis_time_hint
+        )
 
         self._cancel_keep_on_retry_check = QCheckBox("重试后取消持续跟踪分析")
         self._cancel_keep_on_retry_check.setToolTip(
@@ -254,6 +313,83 @@ class SettingsDialog(QDialog):
 
         form_layout.addWidget(general_group)
 
+        notification_group = QGroupBox("通知")
+        notification_form = QFormLayout(notification_group)
+
+        self._notify_enabled_check = QCheckBox("启用通知（总开关）")
+        self._notify_enabled_check.setToolTip(
+            "开启后，分析决策与持仓事件将推送到下方配置的渠道。"
+        )
+        notification_form.addRow("启用:", self._notify_enabled_check)
+
+        ding_row = QHBoxLayout()
+        self._dingtalk_webhook_edit = QLineEdit()
+        self._dingtalk_webhook_edit.setPlaceholderText("钉钉群机器人 Webhook URL")
+        ding_row.addWidget(self._dingtalk_webhook_edit)
+        show_ding_btn = QPushButton("隐藏")
+        show_ding_btn.setCheckable(True)
+        show_ding_btn.setFixedWidth(52)
+        show_ding_btn.toggled.connect(
+            lambda checked: self._dingtalk_webhook_edit.setEchoMode(
+                QLineEdit.EchoMode.Password if checked else QLineEdit.EchoMode.Normal
+            )
+        )
+        ding_row.addWidget(show_ding_btn)
+        notification_form.addRow("钉钉 Webhook:", ding_row)
+
+        self._dingtalk_secret_edit = QLineEdit()
+        self._dingtalk_secret_edit.setPlaceholderText("可选：加签 Secret")
+        self._dingtalk_secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        notification_form.addRow("钉钉加签 Secret:", self._dingtalk_secret_edit)
+
+        wechat_row = QHBoxLayout()
+        self._wechat_webhook_edit = QLineEdit()
+        self._wechat_webhook_edit.setPlaceholderText("Bark / Server酱 / 企业微信 Webhook")
+        wechat_row.addWidget(self._wechat_webhook_edit)
+        show_wechat_btn = QPushButton("隐藏")
+        show_wechat_btn.setCheckable(True)
+        show_wechat_btn.setFixedWidth(52)
+        show_wechat_btn.toggled.connect(
+            lambda checked: self._wechat_webhook_edit.setEchoMode(
+                QLineEdit.EchoMode.Password if checked else QLineEdit.EchoMode.Normal
+            )
+        )
+        wechat_row.addWidget(show_wechat_btn)
+        notification_form.addRow("微信 Webhook:", wechat_row)
+
+        self._notify_new_order_check = QCheckBox("产生新的下单决策（入场/止盈/止损）")
+        notification_form.addRow("场景 · 新下单:", self._notify_new_order_check)
+
+        self._notify_entry_filled_check = QCheckBox("计划单被触及、确认入场成交")
+        notification_form.addRow("场景 · 入场成交:", self._notify_entry_filled_check)
+
+        self._notify_exit_check = QCheckBox("持仓出场（止盈/止损/AI 平仓）")
+        notification_form.addRow("场景 · 出场:", self._notify_exit_check)
+
+        self._notify_manage_check = QCheckBox("持仓管理调整（移动止盈/止损）")
+        notification_form.addRow("场景 · 持仓调整:", self._notify_manage_check)
+
+        self._notify_no_trade_check = QCheckBox("观望/不下单结论也通知")
+        notification_form.addRow("场景 · 观望:", self._notify_no_trade_check)
+
+        self._notify_error_check = QCheckBox("分析失败/异常时通知")
+        notification_form.addRow("场景 · 异常:", self._notify_error_check)
+
+        self._notify_api_error_check = QCheckBox("API 调用异常时通知（网络/鉴权/限流等）")
+        notification_form.addRow("场景 · API 异常:", self._notify_api_error_check)
+
+        self._notify_timeout_spin = QSpinBox()
+        self._notify_timeout_spin.setRange(3, 120)
+        self._notify_timeout_spin.setSuffix(" s")
+        notification_form.addRow("请求超时:", self._notify_timeout_spin)
+
+        notify_test_btn = QPushButton("发送测试通知")
+        notify_test_btn.setToolTip("使用当前填写的 Webhook 发送一条测试消息（无需保存）")
+        notify_test_btn.clicked.connect(self._on_send_test_notification)
+        notification_form.addRow("", notify_test_btn)
+
+        form_layout.addWidget(notification_group)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -283,6 +419,24 @@ class SettingsDialog(QDialog):
         self._keep_analysis_check.setChecked(
             bool(getattr(g, "keep_analysis", False))
         )
+        self._keep_analysis_time_window_check.setChecked(
+            bool(getattr(g, "keep_analysis_time_window_enabled", False))
+        )
+        from pa_agent.config.tracking_schedule import parse_hhmm
+
+        start_h, start_m = parse_hhmm(
+            getattr(g, "keep_analysis_time_start", "09:00"), default=(9, 0)
+        )
+        end_h, end_m = parse_hhmm(
+            getattr(g, "keep_analysis_time_end", "23:00"), default=(23, 0)
+        )
+        self._keep_analysis_time_start_edit.setTime(QTime(start_h, start_m))
+        self._keep_analysis_time_end_edit.setTime(QTime(end_h, end_m))
+        self._keep_analysis_bypass_position_check.setChecked(
+            bool(getattr(g, "keep_analysis_bypass_with_position", True))
+        )
+        self._sync_keep_analysis_time_widgets_enabled()
+        self._update_keep_analysis_time_hint()
         self._cancel_keep_on_retry_check.setChecked(
             bool(getattr(g, "cancel_keep_analysis_on_retry", False))
         )
@@ -320,6 +474,31 @@ class SettingsDialog(QDialog):
         self._flow_default_zoom_spin.setValue(
             int(getattr(g, "decision_flow_default_zoom_pct", 600))
         )
+
+        n = getattr(self._settings, "notification", None)
+        if n is not None:
+            self._notify_enabled_check.setChecked(bool(getattr(n, "enabled", False)))
+            self._dingtalk_webhook_edit.setText(getattr(n, "dingtalk_webhook", "") or "")
+            self._dingtalk_secret_edit.setText(getattr(n, "dingtalk_secret", "") or "")
+            self._wechat_webhook_edit.setText(getattr(n, "wechat_webhook", "") or "")
+            self._notify_new_order_check.setChecked(
+                bool(getattr(n, "notify_new_order", True))
+            )
+            self._notify_entry_filled_check.setChecked(
+                bool(getattr(n, "notify_entry_filled", True))
+            )
+            self._notify_exit_check.setChecked(bool(getattr(n, "notify_exit", True)))
+            self._notify_manage_check.setChecked(bool(getattr(n, "notify_manage", True)))
+            self._notify_no_trade_check.setChecked(
+                bool(getattr(n, "notify_no_trade", False))
+            )
+            self._notify_error_check.setChecked(bool(getattr(n, "notify_error", False)))
+            self._notify_api_error_check.setChecked(
+                bool(getattr(n, "notify_api_error", False))
+            )
+            self._notify_timeout_spin.setValue(
+                int(getattr(n, "request_timeout_s", 10) or 10)
+            )
 
     @staticmethod
     def _validate_provider_fields(model: str, base_url: str) -> str | None:
@@ -438,6 +617,18 @@ class SettingsDialog(QDialog):
         g.refresh_interval_ms = self._refresh_interval_spin.value()
         g.auto_resume_chart_after_analysis = self._auto_resume_chart_check.isChecked()
         g.keep_analysis = self._keep_analysis_check.isChecked()
+        g.keep_analysis_time_window_enabled = (
+            self._keep_analysis_time_window_check.isChecked()
+        )
+        g.keep_analysis_time_start = (
+            self._keep_analysis_time_start_edit.time().toString("HH:mm")
+        )
+        g.keep_analysis_time_end = self._keep_analysis_time_end_edit.time().toString(
+            "HH:mm"
+        )
+        g.keep_analysis_bypass_with_position = (
+            self._keep_analysis_bypass_position_check.isChecked()
+        )
         g.cancel_keep_analysis_on_retry = self._cancel_keep_on_retry_check.isChecked()
         g.context_warning_threshold_pct = float(self._context_warning_spin.value())
         g.stream_pane_font_pt = self._stream_font_spin.value()
@@ -453,8 +644,45 @@ class SettingsDialog(QDialog):
         g.decision_flow_default_zoom_pct = self._flow_default_zoom_spin.value()
         g.decision_confidence_threshold = self._decision_conf_threshold_spin.value()
 
+        n = getattr(self._settings, "notification", None)
+        if n is not None:
+            n.enabled = self._notify_enabled_check.isChecked()
+            n.dingtalk_webhook = self._dingtalk_webhook_edit.text().strip()
+            n.dingtalk_secret = self._dingtalk_secret_edit.text().strip()
+            n.wechat_webhook = self._wechat_webhook_edit.text().strip()
+            n.notify_new_order = self._notify_new_order_check.isChecked()
+            n.notify_entry_filled = self._notify_entry_filled_check.isChecked()
+            n.notify_exit = self._notify_exit_check.isChecked()
+            n.notify_manage = self._notify_manage_check.isChecked()
+            n.notify_no_trade = self._notify_no_trade_check.isChecked()
+            n.notify_error = self._notify_error_check.isChecked()
+            n.notify_api_error = self._notify_api_error_check.isChecked()
+            n.request_timeout_s = self._notify_timeout_spin.value()
+
         save_settings(self._settings, SETTINGS_JSON_PATH)
         self.accept()
+
+    def _sync_keep_analysis_time_widgets_enabled(self, *_args: object) -> None:
+        enabled = self._keep_analysis_time_window_check.isChecked()
+        self._keep_analysis_time_start_edit.setEnabled(enabled)
+        self._keep_analysis_time_end_edit.setEnabled(enabled)
+        self._keep_analysis_bypass_position_check.setEnabled(enabled)
+        self._keep_analysis_time_hint_label.setEnabled(enabled)
+        self._update_keep_analysis_time_hint()
+
+    def _update_keep_analysis_time_hint(self, *_args: object) -> None:
+        from pa_agent.config.tracking_schedule import (
+            format_tracking_window_hint,
+            is_overnight_window,
+        )
+
+        start = self._keep_analysis_time_start_edit.time().toString("HH:mm")
+        end = self._keep_analysis_time_end_edit.time().toString("HH:mm")
+        overnight = is_overnight_window(start, end)
+        self._keep_analysis_time_sep_label.setText("至次日" if overnight else "至")
+        self._keep_analysis_time_hint_label.setText(
+            format_tracking_window_hint(start, end, data_source=self._data_source)
+        )
 
     def focus_api_key_field(self) -> None:
         """Focus the API Key field (e.g. when prompting on first launch)."""
@@ -493,6 +721,48 @@ class SettingsDialog(QDialog):
 
         if self._decision_flow_play_handler is not None:
             self._decision_flow_play_handler()
+
+    def _on_send_test_notification(self) -> None:
+        n = getattr(self._settings, "notification", None)
+        if n is None:
+            return
+        webhook = self._dingtalk_webhook_edit.text().strip()
+        secret = self._dingtalk_secret_edit.text().strip()
+        wechat_webhook = self._wechat_webhook_edit.text().strip()
+        timeout = int(self._notify_timeout_spin.value())
+
+        from pa_agent.notification.channels import DingTalkChannel, WeChatChannel
+        from pa_agent.notification.events import NotificationEvent, NotificationMessage
+
+        message = NotificationMessage(
+            event=NotificationEvent.NEW_ORDER,
+            title="🔔 Trading Agent 测试通知",
+            text="这是一条来自 Trading Agent 的测试消息。\n若你收到它，说明通知渠道配置正确。",
+            plain_text="Trading Agent 测试通知：渠道配置正确。",
+        )
+        channels = []
+        if webhook:
+            channels.append(
+                DingTalkChannel(
+                    webhook=webhook,
+                    secret=secret,
+                    timeout_s=timeout,
+                )
+            )
+        if wechat_webhook:
+            channels.append(WeChatChannel(webhook=wechat_webhook, timeout_s=timeout))
+        if not channels:
+            QMessageBox.warning(self, "测试通知", "请先填写至少一个 Webhook 地址。")
+            return
+        errors: list[str] = []
+        for channel in channels:
+            result = channel.send(message)
+            if not result.ok:
+                errors.append(f"{channel.name}: {result.error or result.status}")
+        if errors:
+            QMessageBox.warning(self, "测试通知", "发送失败：\n" + "\n".join(errors))
+        else:
+            QMessageBox.information(self, "测试通知", "测试消息已发送，请检查手机/群消息。")
 
     def _show_unlimited_token_info(self) -> None:
         dlg = QDialog(self)

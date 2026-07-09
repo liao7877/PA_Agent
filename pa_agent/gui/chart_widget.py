@@ -62,6 +62,7 @@ class ChartWidget(pg.PlotWidget):
         self._pending_decision: dict | None = None
         self._position_overlay = OverlayLines()
         self._active_position: dict | None = None
+        self._support_resistance_overlay = OverlayLines()
         self._direction_items: list[pg.GraphicsItem] = []
         self._seq_label_font_pt: int = 11
         self._fit_on_next_render: bool = False
@@ -210,6 +211,30 @@ class ChartWidget(pg.PlotWidget):
     def clear_active_position(self) -> None:
         self._active_position = None
         self._position_overlay.clear_lines(self)
+
+    def set_support_resistance(self, levels: list) -> None:
+        self.clear_support_resistance()
+        if not levels:
+            return
+        specs = []
+        for level in levels:
+            raw_price = getattr(level, "price", None)
+            if raw_price is None and isinstance(level, dict):
+                raw_price = level.get("price")
+            try:
+                price = float(raw_price)
+            except (TypeError, ValueError):
+                continue
+            kind = str(getattr(level, "kind", ""))
+            if not kind and isinstance(level, dict):
+                kind = str(level.get("kind", ""))
+            label = str(getattr(level, "label", "") or (level.get("label", "") if isinstance(level, dict) else "") or ("支撑" if kind == "support" else "阻力"))
+            color = (88, 166, 255) if kind == "support" else (255, 123, 114)
+            specs.append((price, color, label))
+        self._support_resistance_overlay.set_custom_lines(self, specs)
+
+    def clear_support_resistance(self) -> None:
+        self._support_resistance_overlay.clear_lines(self)
 
     def _draw_active_position(self) -> None:
         position = self._active_position

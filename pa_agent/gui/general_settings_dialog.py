@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PyQt6.QtCore import QTime
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,11 +12,13 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -32,6 +35,11 @@ class GeneralSettingsDialog(QDialog):
         self.setWindowTitle("通用设置")
         self.setMinimumWidth(540)
         self._settings = settings
+        self._data_source = None
+        if parent is not None:
+            ctx = getattr(parent, "_ctx", None)
+            if ctx is not None:
+                self._data_source = getattr(ctx, "data_source", None)
         self._decision_flow_play_handler: Callable[[], None] | None = None
         self._setup_ui()
         self._load_values()
@@ -114,11 +122,62 @@ class GeneralSettingsDialog(QDialog):
         )
         analysis_form.addRow("持续跟踪分析:", self._keep_analysis_check)
 
+        self._keep_analysis_time_window_check = QCheckBox("仅在指定时段内持续跟踪")
+        self._keep_analysis_time_window_check.setToolTip(
+            "开启后，持续跟踪只在下方时段内自动提交分析；"
+            "时段外若无持仓则暂停跟踪，进入时段时会根据 K 线与上次分析能否衔接，"
+            "自动选择完整分析或增量分析。\n"
+            "支持跨午夜：开始时间晚于结束时间即表示到次日。"
+        )
+        analysis_form.addRow("跟踪时段:", self._keep_analysis_time_window_check)
+
+        tracking_time_row = QHBoxLayout()
+        self._keep_analysis_time_start_edit = QTimeEdit()
+        self._keep_analysis_time_start_edit.setDisplayFormat("HH:mm")
+        tracking_time_row.addWidget(self._keep_analysis_time_start_edit)
+        self._keep_analysis_time_sep_label = QLabel("至")
+        tracking_time_row.addWidget(self._keep_analysis_time_sep_label)
+        self._keep_analysis_time_end_edit = QTimeEdit()
+        self._keep_analysis_time_end_edit.setDisplayFormat("HH:mm")
+        tracking_time_row.addWidget(self._keep_analysis_time_end_edit)
+        analysis_form.addRow("跟踪起止时间:", tracking_time_row)
+
+        self._keep_analysis_time_hint_label = QLabel()
+        self._keep_analysis_time_hint_label.setWordWrap(True)
+        self._keep_analysis_time_hint_label.setStyleSheet(
+            "color: #8b949e; font-size: 11px;"
+        )
+        analysis_form.addRow("", self._keep_analysis_time_hint_label)
+
+        self._keep_analysis_bypass_position_check = QCheckBox("有持仓时不受跟踪时段限制")
+        analysis_form.addRow("", self._keep_analysis_bypass_position_check)
+
+        self._keep_analysis_time_window_check.toggled.connect(
+            self._sync_keep_analysis_time_widgets_enabled
+        )
+        self._keep_analysis_time_start_edit.timeChanged.connect(
+            self._update_keep_analysis_time_hint
+        )
+        self._keep_analysis_time_end_edit.timeChanged.connect(
+            self._update_keep_analysis_time_hint
+        )
+
         self._cancel_keep_on_retry_check = QCheckBox("重试后取消持续跟踪分析")
         self._cancel_keep_on_retry_check.setToolTip(
             "勾选后，当 AI 输出触发校验重试时，自动关闭「持续跟踪分析」开关。"
         )
         analysis_form.addRow("重试行为:", self._cancel_keep_on_retry_check)
+
+        self._mt5_terminal_path_edit = QLineEdit()
+        self._mt5_terminal_path_edit.setPlaceholderText(
+            "留空=自动；或填 MT5 目录 / terminal64.exe 完整路径"
+        )
+        self._mt5_terminal_path_edit.setToolTip(
+            "本机装有多套 MT5 时，指定要连接的那一套。\n"
+            "可填安装目录（程序会自动找 terminal64.exe），\n"
+            "或直接填 terminal64.exe 的完整路径。"
+        )
+        analysis_form.addRow("MT5 终端路径:", self._mt5_terminal_path_edit)
 
         self._last_symbol_edit = QLineEdit()
         analysis_form.addRow("上次品种:", self._last_symbol_edit)
@@ -138,6 +197,10 @@ class GeneralSettingsDialog(QDialog):
         ui_form.addRow("刷新间隔:", self._refresh_interval_spin)
 
         self._auto_resume_chart_check = QCheckBox("分析完成后自动恢复「图表实时更新」")
+        self._auto_resume_chart_check.setToolTip(
+            "若提交分析时「图表实时更新」为关闭，图表会冻结为已收盘 K 线；"
+            "勾选后，分析结束将自动恢复实时刷新。分析中保持开启时不受此项影响。"
+        )
         ui_form.addRow("图表:", self._auto_resume_chart_check)
 
         self._context_warning_spin = QSpinBox()
@@ -226,9 +289,28 @@ class GeneralSettingsDialog(QDialog):
             int(getattr(g, "incremental_max_new_bars", 10))
         )
         self._keep_analysis_check.setChecked(bool(getattr(g, "keep_analysis", False)))
+        self._keep_analysis_time_window_check.setChecked(
+            bool(getattr(g, "keep_analysis_time_window_enabled", False))
+        )
+        from pa_agent.config.tracking_schedule import parse_hhmm
+
+        start_h, start_m = parse_hhmm(
+            getattr(g, "keep_analysis_time_start", "09:00"), default=(9, 0)
+        )
+        end_h, end_m = parse_hhmm(
+            getattr(g, "keep_analysis_time_end", "23:00"), default=(23, 0)
+        )
+        self._keep_analysis_time_start_edit.setTime(QTime(start_h, start_m))
+        self._keep_analysis_time_end_edit.setTime(QTime(end_h, end_m))
+        self._keep_analysis_bypass_position_check.setChecked(
+            bool(getattr(g, "keep_analysis_bypass_with_position", True))
+        )
+        self._sync_keep_analysis_time_widgets_enabled()
+        self._update_keep_analysis_time_hint()
         self._cancel_keep_on_retry_check.setChecked(
             bool(getattr(g, "cancel_keep_analysis_on_retry", False))
         )
+        self._mt5_terminal_path_edit.setText(getattr(g, "mt5_terminal_path", "") or "")
         self._last_symbol_edit.setText(g.last_symbol)
         self._last_timeframe_edit.setText(g.last_timeframe)
 
@@ -260,7 +342,20 @@ class GeneralSettingsDialog(QDialog):
         g.analysis_bar_count = self._analysis_bar_count_spin.value()
         g.incremental_max_new_bars = self._incremental_max_new_bars_spin.value()
         g.keep_analysis = self._keep_analysis_check.isChecked()
+        g.keep_analysis_time_window_enabled = (
+            self._keep_analysis_time_window_check.isChecked()
+        )
+        g.keep_analysis_time_start = (
+            self._keep_analysis_time_start_edit.time().toString("HH:mm")
+        )
+        g.keep_analysis_time_end = self._keep_analysis_time_end_edit.time().toString(
+            "HH:mm"
+        )
+        g.keep_analysis_bypass_with_position = (
+            self._keep_analysis_bypass_position_check.isChecked()
+        )
         g.cancel_keep_analysis_on_retry = self._cancel_keep_on_retry_check.isChecked()
+        g.mt5_terminal_path = self._mt5_terminal_path_edit.text().strip()
         g.last_symbol = self._last_symbol_edit.text().strip()
         g.last_timeframe = self._last_timeframe_edit.text().strip()
 
@@ -278,6 +373,28 @@ class GeneralSettingsDialog(QDialog):
         self.accept()
 
     # ── 辅助 ──────────────────────────────────────────────────────────────────
+
+    def _sync_keep_analysis_time_widgets_enabled(self, *_args: object) -> None:
+        enabled = self._keep_analysis_time_window_check.isChecked()
+        self._keep_analysis_time_start_edit.setEnabled(enabled)
+        self._keep_analysis_time_end_edit.setEnabled(enabled)
+        self._keep_analysis_bypass_position_check.setEnabled(enabled)
+        self._keep_analysis_time_hint_label.setEnabled(enabled)
+        self._update_keep_analysis_time_hint()
+
+    def _update_keep_analysis_time_hint(self, *_args: object) -> None:
+        from pa_agent.config.tracking_schedule import (
+            format_tracking_window_hint,
+            is_overnight_window,
+        )
+
+        start = self._keep_analysis_time_start_edit.time().toString("HH:mm")
+        end = self._keep_analysis_time_end_edit.time().toString("HH:mm")
+        overnight = is_overnight_window(start, end)
+        self._keep_analysis_time_sep_label.setText("至次日" if overnight else "至")
+        self._keep_analysis_time_hint_label.setText(
+            format_tracking_window_hint(start, end, data_source=self._data_source)
+        )
 
     def set_decision_flow_play_handler(self, handler: Callable[[], None] | None) -> None:
         self._decision_flow_play_handler = handler

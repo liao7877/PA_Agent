@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -86,6 +87,11 @@ class AIModelSettingsDialog(QDialog):
         self._reasoning_effort_combo.addItems(["low", "medium", "high", "max"])
         form.addRow("Reasoning Effort:", self._reasoning_effort_combo)
 
+        self._context_window_spin = QSpinBox()
+        self._context_window_spin.setRange(1_000, 2_000_000)
+        self._context_window_spin.setSingleStep(1_000)
+        form.addRow("Context Window:", self._context_window_spin)
+
         self._api_key_help_btn = QPushButton("小白点这里！获取程序无限Token，无限分析")
         self._api_key_help_btn.setStyleSheet(
             "QPushButton { font-size: 13pt; font-weight: bold; "
@@ -126,6 +132,7 @@ class AIModelSettingsDialog(QDialog):
         idx = self._reasoning_effort_combo.findText(p.reasoning_effort)
         if idx >= 0:
             self._reasoning_effort_combo.setCurrentIndex(idx)
+        self._context_window_spin.setValue(int(getattr(p, "context_window", 2_000_000)))
 
     def _on_save(self) -> None:
         p = self._settings.provider
@@ -164,6 +171,7 @@ class AIModelSettingsDialog(QDialog):
 
         p.thinking = self._thinking_check.isChecked()
         p.reasoning_effort = self._reasoning_effort_combo.currentText()  # type: ignore[assignment]
+        p.context_window = self._context_window_spin.value()
 
         save_settings(self._settings, SETTINGS_JSON_PATH)
         self.accept()

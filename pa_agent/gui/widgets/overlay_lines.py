@@ -1,7 +1,7 @@
 """Overlay horizontal lines for entry / TP / SL on a pyqtgraph PlotWidget."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pyqtgraph as pg
 from PyQt6.QtGui import QColor
@@ -88,6 +88,35 @@ class OverlayLines:
         self._update_label_positions()
 
         # Keep labels anchored to the left edge when the view changes
+        vb = plot.getViewBox()
+        self._range_conn = vb.sigRangeChanged.connect(self._update_label_positions)
+
+    def set_custom_lines(
+        self,
+        plot: "PlotItem",
+        specs: list[tuple[float, Any, str]],
+        *,
+        width: int = 1,
+    ) -> None:
+        self.clear_lines(plot)
+        self._plot = plot
+        for price, color, label_text in specs:
+            line = pg.InfiniteLine(
+                pos=price,
+                angle=0,
+                pen=pg.mkPen(color=color, width=width, style=pg.QtCore.Qt.PenStyle.DashLine),
+                movable=False,
+            )
+            label = pg.TextItem(
+                text=f"{label_text}: {price:.5g}",
+                color=color,
+                anchor=(0.0, 0.5),
+            )
+            plot.addItem(line)
+            plot.addItem(label)
+            self._items.extend([line, label])
+            self._labels.append((label, float(price)))
+        self._update_label_positions()
         vb = plot.getViewBox()
         self._range_conn = vb.sigRangeChanged.connect(self._update_label_positions)
 
