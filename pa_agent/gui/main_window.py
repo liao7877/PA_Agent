@@ -1049,8 +1049,12 @@ class MainWindow(QMainWindow):
         runtime = manager.get(self._active_instrument_key) if manager is not None and self._active_instrument_key else None
         if runtime is not None and runtime.refresh_loop is not None:
             self._ctx.data_source = runtime.data_source
-            self._refresh_loop = runtime.refresh_loop
-            self._refresh_cancel_token = runtime.refresh_cancel_token
+            if isinstance(runtime.refresh_loop, QTimer):
+                self._refresh_loop = None
+                self._refresh_cancel_token = None
+            else:
+                self._refresh_loop = runtime.refresh_loop
+                self._refresh_cancel_token = runtime.refresh_cancel_token
             self._status_bar.showMessage(f"{runtime.config.symbol} 已在后台刷新")
             return
         if data_source is None:
@@ -4566,7 +4570,10 @@ class MainWindow(QMainWindow):
         """Stop background work before Qt destroys widgets."""
         self._window_closing = True
         try:
-            self._cancel_analysis_worker()
+            panel = getattr(self, "_stream_panel", None)
+            if panel is not None and hasattr(panel, "shutdown"):
+                panel.shutdown(wait_ms=_WORKER_JOIN_TIMEOUT_MS)
+            self._cancel_analysis_worker(join_ms=_WORKER_JOIN_TIMEOUT_MS)
             self._cancel_snapshot_fetch_worker()
             manager = getattr(self._ctx, "instrument_manager", None)
             if manager is not None:
@@ -4675,7 +4682,9 @@ class MainWindow(QMainWindow):
             return
         manager = getattr(self._ctx, "instrument_manager", None)
         if manager is not None:
-            manager.stop_all(wait_ms=500)
+            if not manager.stop_all(wait_ms=_WORKER_JOIN_TIMEOUT_MS):
+                self._status_bar.showMessage("刷新线程仍在停止中，请稍后重试")
+                return
             manager.disconnect_all_sources()
             manager.reload_from_settings()
             self._active_instrument_key = manager.first_enabled_key()

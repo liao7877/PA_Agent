@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from pa_agent.records.experience_reader import ExperienceReader
     from pa_agent.records.pending_writer import PendingWriter
 
-from pa_agent.ai.json_validator import Ok, ValidationError
+from pa_agent.ai.json_validator import Ok, ValidationError, coalesce_model_json_text, try_extract_parsed_object
 from pa_agent.orchestrator.validation_retry import validate_with_retry
 from pa_agent.data.base import KlineFrame
 from pa_agent.records.schema import AnalysisRecord, RecordMeta
@@ -192,6 +192,118 @@ def _emit_buffered_stream(
     for i in range(0, len(text), chunk_size):
         on_token(text[i : i + chunk_size])
     return True
+
+
+def _reply_with_resolved_content(reply: Any, content: str, *, raw_note: dict[str, Any] | None = None) -> Any:
+    raw = dict(reply.raw)
+    if raw_note:
+        raw.update(raw_note)
+    raw["content"] = content
+    return dataclasses.replace(reply, content=content, raw=raw)
+
+
+def _merge_stage_replies(first: Any, second: Any, *, fallback_reason: str) -> Any:
+    from pa_agent.ai.deepseek_client import AIUsage
+
+    usage = AIUsage(
+        prompt_tokens=first.usage.prompt_tokens + second.usage.prompt_tokens,
+        cached_prompt_tokens=first.usage.cached_prompt_tokens + second.usage.cached_prompt_tokens,
+        completion_tokens=first.usage.completion_tokens + second.usage.completion_tokens,
+        total_tokens=first.usage.total_tokens + second.usage.total_tokens,
+    )
+    raw = dict(second.raw)
+    raw.update({
+        "empty_content_fallback": True,
+        "fallback_reason": fallback_reason,
+        "first_attempt_reasoning_chars": len(first.reasoning_content or ""),
+        "first_attempt_request_id": first.request_id,
+    })
+    return dataclasses.replace(
+        second,
+        reasoning_content=first.reasoning_content or second.reasoning_content,
+        usage=usage,
+        latency_ms=first.latency_ms + second.latency_ms,
+        raw=raw,
+    )
+
+
+def _needs_thinking_fallback(content: str) -> bool:
+    stripped = (content or "").strip()
+    if not stripped:
+        return True
+    if not stripped.startswith("{"):
+        return False
+    depth = 0
+    in_string = False
+    escape = False
+    for char in stripped:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    return depth > 0 or not stripped.endswith("}")
+
+
+def _stream_stage_with_empty_content_fallback(
+    client: Any,
+    messages: list[dict[str, Any]],
+    *,
+    stage: str,
+    thinking: bool,
+    reasoning_effort: str,
+    cancel_token: CancelToken | None,
+    on_reasoning_token: Callable[[str], None] | None,
+    on_content_token: Callable[[str], None] | None,
+) -> Any:
+    """Call stream_chat and retry once without thinking when JSON is unavailable."""
+    reply = client.stream_chat(
+        messages,
+        on_reasoning_token=on_reasoning_token,
+        on_content_token=on_content_token,
+        cancel_token=cancel_token,
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+    )
+    resolved = coalesce_model_json_text(reply.content, reply.reasoning_content)
+    if resolved.strip() and not _needs_thinking_fallback(resolved):
+        if resolved != (reply.content or "").strip():
+            return _reply_with_resolved_content(
+                reply, resolved, raw_note={"json_recovered_from": "reasoning_content"}
+            )
+        return reply
+    if not thinking:
+        return reply
+
+    fallback_reason = (
+        "truncated_json_after_thinking" if (reply.content or "").strip() else "empty_content_after_thinking"
+    )
+    logger.warning(
+        "Stage %s: %s; retrying once with thinking disabled",
+        stage,
+        fallback_reason,
+    )
+    retry = client.stream_chat(
+        messages,
+        on_content_token=on_content_token,
+        cancel_token=cancel_token,
+        thinking=False,
+        reasoning_effort=None,
+    )
+    retry_resolved = coalesce_model_json_text(retry.content, retry.reasoning_content)
+    if retry_resolved.strip() and retry_resolved != (retry.content or "").strip():
+        retry = _reply_with_resolved_content(
+            retry, retry_resolved, raw_note={"json_recovered_from": "reasoning_content"}
+        )
+    return _merge_stage_replies(reply, retry, fallback_reason=fallback_reason)
 
 
 def _build_empty_record(
@@ -524,8 +636,10 @@ class TwoStageOrchestrator:
             on_event(OrchestratorEvent.Stage1Retry)
             s1_streamed_reasoning = False
             s1_streamed_content = False
-            r = self._client.stream_chat(
+            r = _stream_stage_with_empty_content_fallback(
+                self._client,
                 msgs,
+                stage="Stage 1 retry",
                 on_reasoning_token=_on_s1_reasoning,
                 on_content_token=_on_s1_content,
                 cancel_token=cancel_token,
@@ -561,6 +675,13 @@ class TwoStageOrchestrator:
 
         if isinstance(result_s1, ValidationError):
             err = result_s1
+            preserved_s1 = err.partial_obj or try_extract_parsed_object(
+                "stage1",
+                err.raw_text,
+                kline_frame=frame,
+                incremental_new_bar_count=int(incremental_new_bar_count or 0),
+                incremental_previous_stage1=prev_s1,
+            )
             err_message = _enrich_stage1_validation_message(err, reply_s1)
             logger.warning(
                 "Stage 1 validation failed: category=%s message=%s",
@@ -571,6 +692,7 @@ class TwoStageOrchestrator:
                 update={
                     "stage1_messages": messages_s1,
                     "stage1_response": reply_s1.raw,
+                    "stage1_diagnosis": preserved_s1,
                     "usage_total": _accumulate_usage_calls(record.usage_total, s1_usage_calls),
                     "exception": {
                         "type": "provider_error" if err.category == "e" else "validation_error",
@@ -582,6 +704,7 @@ class TwoStageOrchestrator:
                         "raw_text": err.raw_text,
                         "parse_position": err.parse_position,
                         "validation_attempts": vr_s1.attempts,
+                        "decision_preserved": preserved_s1 is not None,
                     },
                 }
             )
@@ -831,8 +954,10 @@ class TwoStageOrchestrator:
             on_event(OrchestratorEvent.Stage2Retry)
             s2_streamed_reasoning = False
             s2_streamed_content = False
-            r = self._client.stream_chat(
+            r = _stream_stage_with_empty_content_fallback(
+                self._client,
                 msgs,
+                stage="Stage 2 retry",
                 on_reasoning_token=_on_s2_reasoning,
                 on_content_token=_on_s2_content,
                 cancel_token=cancel_token,
@@ -871,6 +996,16 @@ class TwoStageOrchestrator:
 
         if isinstance(result_s2, ValidationError):
             err = result_s2
+            preserved_s2 = err.partial_obj or try_extract_parsed_object(
+                "stage2",
+                err.raw_text,
+                kline_frame=frame,
+                decision_stance=record.meta.decision_stance,
+                stage1_json=stage1_json,
+            )
+            if not _enable_next_bar and isinstance(preserved_s2, dict):
+                preserved_s2 = copy.deepcopy(preserved_s2)
+                preserved_s2.pop("next_bar_prediction", None)
             err_message = _enrich_stage2_validation_message(err, reply_s2)
             logger.warning(
                 "Stage 2 validation failed: category=%s message=%s",
@@ -884,6 +1019,7 @@ class TwoStageOrchestrator:
                     "stage1_diagnosis": stage1_json,
                     "stage2_messages": messages_s2,
                     "stage2_response": reply_s2.raw,
+                    "stage2_decision": preserved_s2,
                     "strategy_files_used": strategy_files,
                     "experience_loaded": [
                         e.model_dump() if hasattr(e, "model_dump") else dict(e)
@@ -903,6 +1039,7 @@ class TwoStageOrchestrator:
                         "raw_text": err.raw_text,
                         "parse_position": err.parse_position,
                         "validation_attempts": vr_s2.attempts,
+                        "decision_preserved": preserved_s2 is not None,
                     },
                 }
             )
@@ -1012,10 +1149,13 @@ class TwoStageOrchestrator:
         tried_qclaw = False
         tried_cursor = False
         tried_workbuddy = False
+        tried_stream_retry = False
         while True:
             try:
-                return self._client.stream_chat(
+                return _stream_stage_with_empty_content_fallback(
+                    self._client,
                     messages,
+                    stage=stage_label,
                     on_reasoning_token=on_reasoning_token,
                     on_content_token=on_content_token,
                     cancel_token=cancel_token,
@@ -1025,6 +1165,14 @@ class TwoStageOrchestrator:
             except Exception as exc:
                 if not self._is_network_error(exc):
                     raise
+                if not tried_stream_retry and self._is_interrupted_stream_error(exc):
+                    tried_stream_retry = True
+                    logger.warning(
+                        "%s stream interrupted (%s); retrying once with the same provider",
+                        stage_label,
+                        exc,
+                    )
+                    continue
                 # Try WorkBuddy fallback first (if model is openclaw_wb),
                 # then QClaw fallback (if model is openclaw)
                 if not tried_workbuddy and self._try_workbuddy_fallback(
@@ -1166,6 +1314,16 @@ class TwoStageOrchestrator:
         return True
 
     @staticmethod
+    def _is_interrupted_stream_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        if "unexpected eof" in message:
+            return True
+        cause = exc.__cause__
+        if cause is not None and cause is not exc:
+            return TwoStageOrchestrator._is_interrupted_stream_error(cause)
+        return False
+
+    @staticmethod
     def _is_network_error(exc: Exception) -> bool:
         """Return True if *exc* is a network/timeout error (SDK, httpx, or OS reset)."""
         from pa_agent.ai.deepseek_client import CancelledError
@@ -1176,6 +1334,8 @@ class TwoStageOrchestrator:
         try:
             import openai  # type: ignore[import]
 
+            if isinstance(exc, openai.APIError) and TwoStageOrchestrator._is_interrupted_stream_error(exc):
+                return True
             if isinstance(
                 exc,
                 (

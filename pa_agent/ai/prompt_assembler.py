@@ -1779,7 +1779,10 @@ class PromptAssembler:
                 "若需要调整，输出 position_action=调整 并给出新的止盈/止损或 position_advice；若应离场，输出 position_action=平仓。",
             ])
         elif status == "planned":
-            lines.append("已有未成交计划单，阶段二必须评估保留、撤销或替换该计划，避免重复开单。")
+            lines.extend([
+                "已有未成交计划单，阶段二必须评估保留、撤销或替换该计划，避免重复开单。",
+                "若维持原计划，输出 order_type=不下单 且 reasoning/position_advice 写明继续等待原计划；只有明确应撤销计划单时才输出 position_action=撤销；若要修改，输出新的下单决策替换原计划。",
+            ])
         return "\n".join(lines) + "\n"
 
     @staticmethod

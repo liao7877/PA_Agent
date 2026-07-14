@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from pa_agent.config.settings import (
     AIProviderSettings,
@@ -150,23 +150,16 @@ class InstrumentRuntimeManager(QObject):
         status_handler: Callable[[str, str], None] | None = None,
     ) -> None:
         runtime = self._runtimes[key]
-        if runtime.refresh_loop is not None and runtime.refresh_loop.isRunning():
+        loop = runtime.refresh_loop
+        if loop is not None and ((hasattr(loop, "isRunning") and loop.isRunning()) or (hasattr(loop, "isActive") and loop.isActive())):
             return
         source = self.ensure_data_source(key)
+        from pa_agent.data.mt5 import MT5Source
         from pa_agent.data.refresh_loop import RefreshLoop
         from pa_agent.util.threading import CancelToken
 
         if runtime.config.data_source in ("akshare", "eastmoney", "tushare") and interval_ms < 2500:
             interval_ms = 2500
-        token = CancelToken()
-        loop = RefreshLoop(
-            data_source=source,
-            n_bars=n_bars,
-            interval_ms=interval_ms,
-            cancel_token=token,
-        )
-        runtime.refresh_cancel_token = token
-        runtime.refresh_loop = loop
 
         def _on_bars(bars: list) -> None:
             runtime.last_bars = list(bars)
@@ -186,47 +179,88 @@ class InstrumentRuntimeManager(QObject):
             if status_handler is not None:
                 status_handler(key, text)
 
-        loop.frame_ready.connect(_on_bars)
-        loop.status_changed.connect(_on_status)
-        loop.start()
+        if isinstance(source, MT5Source):
+            timer = QTimer(self)
+            timer.setInterval(interval_ms)
+
+            def _poll_mt5() -> None:
+                try:
+                    bars = source.latest_snapshot(n_bars + 5)
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.warning("MT5 refresh failed (%s): %s", key, exc)
+                    _on_status(str(exc))
+                    return
+                if bars:
+                    _on_bars(bars)
+
+            timer.timeout.connect(_poll_mt5)
+            runtime.refresh_loop = timer
+            runtime.refresh_cancel_token = None
+            _poll_mt5()
+            timer.start()
+        else:
+            token = CancelToken()
+            loop = RefreshLoop(
+                data_source=source,
+                n_bars=n_bars,
+                interval_ms=interval_ms,
+                cancel_token=token,
+            )
+            runtime.refresh_cancel_token = token
+            runtime.refresh_loop = loop
+            loop.frame_ready.connect(_on_bars)
+            loop.status_changed.connect(_on_status)
+            loop.start()
+
         runtime.status = "运行中"
         self.runtime_changed.emit(key)
 
-    def stop_runtime(self, key: str, *, wait_ms: int = 5000) -> None:
+    def stop_runtime(self, key: str, *, wait_ms: int = 5000) -> bool:
         runtime = self._runtimes.get(key)
         if runtime is None:
-            return
+            return True
         loop = runtime.refresh_loop
         token = runtime.refresh_cancel_token
-        if token is not None:
-            token.set()
-        if runtime.data_source is not None:
-            close_ws = getattr(runtime.data_source, "_close_tv_socket", None)
-            if callable(close_ws):
-                try:
-                    close_ws()
-                except Exception:  # noqa: BLE001
-                    pass
-        if loop is not None:
-            try:
-                loop.frame_ready.disconnect()
-                loop.status_changed.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-            if loop.isRunning():
-                loop.wait(wait_ms)
+        if isinstance(loop, QTimer):
+            loop.stop()
             loop.deleteLater()
+        else:
+            if token is not None:
+                token.set()
+            if runtime.data_source is not None:
+                close_ws = getattr(runtime.data_source, "_close_tv_socket", None)
+                if callable(close_ws):
+                    try:
+                        close_ws()
+                    except Exception:  # noqa: BLE001
+                        pass
+            if loop is not None:
+                try:
+                    loop.frame_ready.disconnect()
+                    loop.status_changed.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                if loop.isRunning():
+                    loop.wait(wait_ms)
+                if loop.isRunning():
+                    self._logger.warning("refresh loop still running; retaining runtime %s", key)
+                    return False
+                loop.deleteLater()
         runtime.refresh_loop = None
         runtime.refresh_cancel_token = None
         runtime.status = "已停止"
         self.runtime_changed.emit(key)
+        return True
 
-    def stop_all(self, *, wait_ms: int = 5000) -> None:
-        for key in list(self._runtimes):
-            self.stop_runtime(key, wait_ms=wait_ms)
+    def stop_all(self, *, wait_ms: int = 5000) -> bool:
+        return all(self.stop_runtime(key, wait_ms=wait_ms) for key in list(self._runtimes))
 
     def disconnect_all_sources(self) -> None:
         for runtime in self._runtimes.values():
+            loop = runtime.refresh_loop
+            if loop is not None and hasattr(loop, "isRunning") and loop.isRunning():
+                self._logger.warning("source still has active refresh loop; deferring disconnect for %s", runtime.key)
+                continue
             source = runtime.data_source
             if source is None:
                 continue

@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from pa_agent.positions.decision_fields import (
     is_position_adjust,
+    is_position_cancel,
     is_position_close,
     position_advice_text,
 )
@@ -212,12 +213,13 @@ class PositionTracker:
             return None
 
         if existing.status == PositionStatus.PLANNED and order_type == _NO_ORDER_TEXT:
-            # Planned (not yet filled) and AI no longer wants the trade → drop it.
-            self._store.clear_active(existing.symbol, existing.timeframe)
-            logger.info("Planned position cancelled by new decision: %s %s",
-                        existing.symbol, existing.timeframe)
-            self._notify_order_cancelled(existing, "AI 新结论为不下单，撤销尚未成交的计划单")
-            return None
+            if is_position_cancel(inner):
+                self._store.clear_active(existing.symbol, existing.timeframe)
+                logger.info("Planned position cancelled by new decision: %s %s",
+                            existing.symbol, existing.timeframe)
+                self._notify_order_cancelled(existing, "AI 明确建议撤销尚未成交的计划单")
+                return None
+            return existing
 
         if existing.status == PositionStatus.PLANNED and order_type in _ORDER_TYPES:
             replacement = self._open_planned(

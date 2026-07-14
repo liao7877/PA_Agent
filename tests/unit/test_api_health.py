@@ -22,6 +22,23 @@ def test_is_api_error_detects_timeout():
         assert is_api_error(TimeoutError("timeout"))
 
 
+def test_check_api_health_rejects_empty_success_response():
+    provider = AIProviderSettings(
+        api_key="sk-test",
+        base_url="http://localhost:8088",
+        model="m",
+    )
+    mock_reply = MagicMock()
+    mock_reply.latency_ms = 120.0
+    mock_reply.reasoning_content = ""
+    mock_reply.content = ""
+    with patch("pa_agent.ai.deepseek_client.DeepSeekClient") as mock_client_cls:
+        mock_client_cls.return_value.stream_chat.return_value = mock_reply
+        result = check_api_health(provider)
+    assert result.ok is False
+    assert "/v1" in result.message
+
+
 def test_check_api_health_success():
     provider = AIProviderSettings(api_key="sk-test", base_url="https://x/v1", model="m")
     mock_reply = MagicMock()

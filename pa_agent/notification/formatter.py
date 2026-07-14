@@ -73,6 +73,7 @@ def format_decision(
             "order_direction": inner.get("order_direction"),
             "entry_price": inner.get("entry_price"),
             "take_profit_price": inner.get("take_profit_price"),
+            "take_profit_price_2": inner.get("take_profit_price_2"),
             "stop_loss_price": inner.get("stop_loss_price"),
         },
     )

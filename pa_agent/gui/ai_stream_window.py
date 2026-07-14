@@ -503,6 +503,12 @@ class AIStreamPanel(QWidget):
         elif text == "已取消" and self._stage:
             self.finalize_stage(self._stage)
 
+    def mark_retry(self, stage: str) -> None:
+        title = self._stage_title(stage)
+        if self._stage != stage:
+            self._begin_stage(stage, title)
+        self._phase_label.setText(f"↻ {title} — 重试中…")
+
     def on_reasoning_token(self, stage: str, chunk: str) -> None:
         self._append_stream_text_for_stage(stage, chunk, kind="reasoning")
 
@@ -621,4 +627,25 @@ class AIStreamPanel(QWidget):
         self._send_btn.style().unpolish(self._send_btn)
         self._send_btn.style().polish(self._send_btn)
         self._input_edit.setEnabled(True)
+        worker = self._worker
         self._worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def shutdown(self, *, wait_ms: int = 5000) -> None:
+        worker = self._worker
+        self._worker = None
+        if self._cancel_token is not None:
+            self._cancel_token.set()
+        if worker is None:
+            return
+        try:
+            worker.reasoning_token.disconnect()
+            worker.content_token.disconnect()
+            worker.finished.disconnect()
+            worker.error.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        if worker.isRunning():
+            worker.wait(wait_ms)
+        worker.deleteLater()

@@ -52,6 +52,49 @@ def test_stream_chat_retries_after_qclaw_fallback() -> None:
     assert client.stream_chat.call_count == 2
 
 
+def test_stream_chat_retries_same_provider_after_unexpected_eof() -> None:
+    settings = Settings()
+    client = MagicMock()
+    client.stream_chat.side_effect = [
+        openai.APIError("unexpected EOF", request=MagicMock(), body=None),
+        MagicMock(
+            content='{"gate_result":"wait"}',
+            reasoning_content="",
+            raw={},
+            usage=MagicMock(
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+                cached_prompt_tokens=0,
+            ),
+            latency_ms=1.0,
+        ),
+    ]
+
+    orchestrator = TwoStageOrchestrator(
+        client=client,
+        assembler=MagicMock(),
+        router=MagicMock(),
+        validator=schema_test_validator(),
+        pending_writer=MagicMock(),
+        exp_reader=MagicMock(),
+        settings=settings,
+    )
+
+    reply = orchestrator._stream_chat_resilient(
+        [{"role": "user", "content": "hi"}],
+        on_reasoning_token=None,
+        on_content_token=None,
+        cancel_token=MagicMock(is_set=MagicMock(return_value=False)),
+        thinking=True,
+        reasoning_effort="max",
+        stage_label="Stage 1",
+    )
+
+    assert reply.content == '{"gate_result":"wait"}'
+    assert client.stream_chat.call_count == 2
+
+
 def test_stream_chat_does_not_retry_when_qclaw_unavailable() -> None:
     settings = Settings()
     client = MagicMock()

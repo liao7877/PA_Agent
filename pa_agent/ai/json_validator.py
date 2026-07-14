@@ -58,6 +58,7 @@ class ValidationError:
     invalid_fields: list[str] = field(default_factory=list)
     allowed_values: dict[str, list] = field(default_factory=dict)
     message: str = ""
+    partial_obj: dict[str, Any] | None = None
 
 
 Result = Ok | ValidationError
@@ -756,7 +757,9 @@ class JsonValidator:
             invalid_fields=invalid,
             allowed_values=allowed,
             message=f"{len(errors)} schema error(s): {first_message}",
+            partial_obj=obj,
         )
+
 
     @staticmethod
     def _check_no_order_invariant(obj: dict) -> dict | None:
@@ -1137,13 +1140,12 @@ class JsonValidator:
         return errors
 
 
+
 def _parse_k_seq(value: object) -> int | None:
     if value is None:
         return None
-    m = re.search(r"K\s*(\d+)", str(value), flags=re.IGNORECASE)
-    if not m:
-        return None
-    return int(m.group(1))
+    match = re.search(r"K\s*(\d+)", str(value), flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _bar_by_seq(kline_frame: Any, seq: int) -> Any | None:
@@ -1151,6 +1153,87 @@ def _bar_by_seq(kline_frame: Any, seq: int) -> Any | None:
         if getattr(bar, "seq", None) == seq:
             return bar
     return None
+
+
+def _has_usable_stage1_diagnosis(obj: dict[str, Any]) -> bool:
+    decision = obj.get("decision")
+    if isinstance(decision, dict) and decision.get("order_type"):
+        return False
+    return bool(
+        obj.get("cycle_position")
+        or obj.get("gate_trace")
+        or obj.get("bar_by_bar_summary")
+        or obj.get("direction")
+    )
+
+
+def _has_usable_stage2_decision(obj: dict[str, Any]) -> bool:
+    decision = obj.get("decision")
+    return isinstance(decision, dict) and bool(str(decision.get("order_type", "")).strip())
+
+
+def try_extract_parsed_object(
+    stage: Literal["stage1", "stage2"],
+    raw_text: str,
+    *,
+    kline_frame: Any = None,
+    decision_stance: str | None = None,
+    stage1_json: dict[str, Any] | None = None,
+    incremental_new_bar_count: int = 0,
+    incremental_previous_stage1: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Best-effort parse + lenient normalize for partial-record display."""
+    stripped = _strip_fences(raw_text)
+    if not stripped.startswith("{"):
+        return None
+
+    obj: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            obj = parsed
+    except json.JSONDecodeError:
+        for candidate in (
+            _try_repair_json_syntax(stripped, stage, allow_tail_inject=False),
+            _balance_json_brackets(stripped),
+        ):
+            if not candidate:
+                continue
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                obj = parsed
+                break
+
+    if obj is None:
+        return None
+
+    if stage == "stage1":
+        from pa_agent.ai.stage1_normalizer import normalize_stage1
+
+        obj = normalize_stage1(
+            obj,
+            normalization_mode="lenient",
+            kline_frame=kline_frame,
+            incremental_new_bar_count=int(incremental_new_bar_count or 0),
+            incremental_previous_stage1=incremental_previous_stage1
+            if incremental_new_bar_count > 0
+            else None,
+        )
+        return obj if _has_usable_stage1_diagnosis(obj) else None
+
+    from pa_agent.ai.stage2_normalizer import normalize_stage2
+
+    obj = normalize_stage2(
+        obj,
+        normalization_mode="lenient",
+        kline_frame=kline_frame,
+        decision_stance=decision_stance,
+        stage1_json=stage1_json,
+    )
+    return obj if _has_usable_stage2_decision(obj) else None
 
 
 def _all_stage2_reasons(obj: dict) -> str:

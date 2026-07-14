@@ -224,6 +224,17 @@ def _effective_api_model(settings: AIProviderSettings) -> str:
     return settings.model
 
 
+def _normalized_api_base_url(base_url: str) -> str:
+    """Ensure OpenAI-compatible routes target their ``/v1`` API prefix."""
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return url
+    path = url.split("?", 1)[0].lower()
+    if path.endswith("/v1") or "/v1/" in path:
+        return url
+    return f"{url}/v1"
+
+
 def _workbuddy_agent_request_extra(settings: AIProviderSettings) -> dict[str, Any]:
     """Add WorkBuddy-specific request parameters.
 
@@ -553,7 +564,7 @@ class DeepSeekClient:
             raise RuntimeError("openai package is not installed") from _OPENAI_IMPORT_ERROR
 
         client = _OpenAI(
-            base_url=self._settings.base_url,
+            base_url=_normalized_api_base_url(self._settings.base_url),
             api_key=self._settings.api_key,
         )
 
@@ -727,7 +738,7 @@ class DeepSeekClient:
             raise RuntimeError("openai package is not installed") from _OPENAI_IMPORT_ERROR
 
         client = _OpenAI(
-            base_url=self._settings.base_url,
+            base_url=_normalized_api_base_url(self._settings.base_url),
             api_key=self._settings.api_key,
         )
 

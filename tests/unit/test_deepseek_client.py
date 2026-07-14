@@ -12,6 +12,7 @@ from pa_agent.ai.deepseek_client import (
     CancelledError,
     _completion_max_tokens,
     _map_effort_to_openai_gpt,
+    _normalized_api_base_url,
     _resolve_thinking_params,
 )
 
@@ -40,6 +41,38 @@ def _make_mock_response(content: str = "hello", reasoning: str = "thinking...") 
     resp.id = "req-abc123"
     resp.model = "deepseek-v4-pro"
     return resp
+
+
+def test_normalized_api_base_url_adds_v1_for_gateway_root():
+    assert _normalized_api_base_url("http://localhost:8088") == "http://localhost:8088/v1"
+    assert _normalized_api_base_url("https://relay.example.com/") == "https://relay.example.com/v1"
+
+
+def test_normalized_api_base_url_preserves_existing_api_path():
+    assert (
+        _normalized_api_base_url("https://relay.example.com/v1")
+        == "https://relay.example.com/v1"
+    )
+    assert (
+        _normalized_api_base_url("https://opencode.ai/zen/go/v1")
+        == "https://opencode.ai/zen/go/v1"
+    )
+
+
+def test_chat_uses_normalized_gateway_base_url():
+    settings = _make_settings()
+    settings.base_url = "http://localhost:8088"
+    settings.model = "gpt-5.5"
+    client = DeepSeekClient(settings)
+
+    mock_resp = _make_mock_response()
+    mock_openai = MagicMock()
+    mock_openai.return_value.chat.completions.create.return_value = mock_resp
+
+    with patch("pa_agent.ai.deepseek_client._OpenAI", mock_openai):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:8088/v1"
 
 
 def test_chat_does_not_send_forbidden_params():

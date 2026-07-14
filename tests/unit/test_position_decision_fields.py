@@ -4,6 +4,7 @@ from __future__ import annotations
 from pa_agent.positions.decision_fields import (
     is_actionable_trade_decision,
     is_position_adjust,
+    is_position_cancel,
     is_position_close,
     position_advice_text,
     should_apply_position_despite_validation,
@@ -25,6 +26,14 @@ def test_position_action_adjust():
 def test_position_action_close():
     inner = {"order_type": "不下单", "position_action": "平仓", "reasoning": "动能衰竭。"}
     assert is_position_close(inner)
+    assert not is_position_cancel(inner)
+    assert not is_position_adjust(inner)
+
+
+def test_position_action_cancel():
+    inner = {"order_type": "不下单", "position_action": "撤销", "reasoning": "计划单已失效。"}
+    assert is_position_cancel(inner)
+    assert not is_position_close(inner)
     assert not is_position_adjust(inner)
 
 

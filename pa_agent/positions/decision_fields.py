@@ -14,15 +14,17 @@ _SUBSTANTIVE_INVALID_PREFIXES = (
     "s2:",
 )
 
-# AI 在「已有持仓」场景下必须填写的显式意图（枚举，不靠正文关键词猜测）。
+# AI 在「已有持仓/计划单」场景下必须填写的显式意图（枚举，不靠正文关键词猜测）。
 POSITION_ACTION_HOLD = "持有"
 POSITION_ACTION_ADJUST = "调整"
 POSITION_ACTION_CLOSE = "平仓"
+POSITION_ACTION_CANCEL = "撤销"
 
 _VALID_POSITION_ACTIONS = frozenset({
     POSITION_ACTION_HOLD,
     POSITION_ACTION_ADJUST,
     POSITION_ACTION_CLOSE,
+    POSITION_ACTION_CANCEL,
 })
 
 
@@ -39,6 +41,10 @@ def get_position_action(inner: dict) -> str | None:
 
 def is_position_close(inner: dict) -> bool:
     return get_position_action(inner) == POSITION_ACTION_CLOSE
+
+
+def is_position_cancel(inner: dict) -> bool:
+    return get_position_action(inner) == POSITION_ACTION_CANCEL
 
 
 def is_position_adjust(inner: dict) -> bool:

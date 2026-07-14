@@ -32,6 +32,7 @@ def test_format_decision_new_order_includes_prices():
             "order_direction": "做多",
             "entry_price": 2350.5,
             "take_profit_price": 2360.0,
+            "take_profit_price_2": 2372.0,
             "stop_loss_price": 2345.0,
             "reasoning": "趋势回踩支撑",
             "diagnosis_confidence": 72,
@@ -47,12 +48,17 @@ def test_format_decision_new_order_includes_prices():
     assert msg.event is NotificationEvent.NEW_ORDER
     assert "做多" in msg.title
     assert "2350.5" in msg.text
+    assert "TP1" in msg.text
+    assert "TP2" in msg.text
     assert "2360" in msg.text
+    assert "2372" in msg.text
     assert "2345" in msg.text
     assert "市场诊断" in msg.text
     assert "72/100" in msg.text
     assert msg.plain_text
     assert msg.fields["entry_price"] == 2350.5
+    assert msg.fields["take_profit_price"] == 2360.0
+    assert msg.fields["take_profit_price_2"] == 2372.0
 
 
 def test_format_decision_no_trade_includes_watch_points():

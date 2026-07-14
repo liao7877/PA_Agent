@@ -114,6 +114,16 @@ def check_api_health(
     except Exception as exc:  # noqa: BLE001
         return ApiHealthResult(ok=False, message=str(exc).strip() or repr(exc))
 
+    if not (reply.content or "").strip() and not (reply.reasoning_content or "").strip():
+        return ApiHealthResult(
+            ok=False,
+            message=(
+                "API 返回空响应。请确认 Base URL 指向 OpenAI 兼容接口（通常以 /v1 结尾），"
+                "而不是中转站网页首页。"
+            ),
+            latency_ms=reply.latency_ms,
+        )
+
     return ApiHealthResult(
         ok=True,
         message="API 调用成功",

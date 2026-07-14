@@ -331,10 +331,10 @@ _DECISION_BASE: dict = {
         "watch_points": {"type": "array", "items": {"type": "string"}},
         "risk_assessment": {"type": "string"},
         "invalidation_condition": {"type": ["string", "null"]},
-        # 已有持仓时由 AI 显式填写；无持仓时必须为 null。
+        # 已有持仓/计划单时由 AI 显式填写；无持仓时必须为 null。
         "position_action": {
             "type": ["string", "null"],
-            "enum": ["持有", "调整", "平仓", None],
+            "enum": ["持有", "调整", "平仓", "撤销", None],
         },
         "position_advice": {"type": ["string", "null"]},
     },
@@ -362,7 +362,7 @@ _DECISION_BASE: dict = {
                 "required": ["order_direction"],
             },
         },
-        # 不下单（默认 / 持有 / 平仓）→ 三价与方向必须为 null
+        # 不下单（默认 / 持有 / 平仓 / 撤销）→ 三价与方向必须为 null
         {
             "if": {
                 "properties": {"order_type": {"const": "不下单"}},

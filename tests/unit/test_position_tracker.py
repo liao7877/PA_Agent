@@ -292,12 +292,25 @@ def test_filled_position_no_trade_without_close_phrase_does_not_exit(store, noti
     assert not any(m.event.value == "exit" for m in notifier.messages)
 
 
-def test_planned_cancelled_by_no_trade(store, notifier):
+def test_planned_no_trade_keeps_existing_plan(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
     pos = tracker.apply_decision(
         symbol="X", timeframe="15m",
-        decision={"decision": {"order_type": "不下单"}},
+        decision={"decision": {"order_type": "不下单", "reasoning": "维持原计划单，继续等待触及入场价。"}},
+    )
+    assert pos is not None
+    assert pos.status is PositionStatus.PLANNED
+    assert tracker.get_active("X", "15m") is not None
+    assert not any(m.event.value == "order_cancelled" for m in notifier.messages)
+
+
+def test_planned_cancelled_by_explicit_cancel_action(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    pos = tracker.apply_decision(
+        symbol="X", timeframe="15m",
+        decision={"decision": {"order_type": "不下单", "position_action": "撤销"}},
     )
     assert pos is None
     assert tracker.get_active("X", "15m") is None

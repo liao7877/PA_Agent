@@ -229,16 +229,19 @@ def build_decision_card(
     if not no_order:
         entry = inner.get("entry_price")
         tp = inner.get("take_profit_price")
+        tp2 = inner.get("take_profit_price_2")
         sl = inner.get("stop_loss_price")
         md_lines.extend([
             f"- 入场 **{_fmt_price(entry)}**",
-            f"- 止盈 **{_fmt_price(tp)}**",
+            f"- TP1 **{_fmt_price(tp)}**",
+            f"- TP2 **{_fmt_price(tp2)}**",
             f"- 止损 **{_fmt_price(sl)}**",
             "",
         ])
         plain_lines.extend([
             f"入场: {_fmt_price(entry)}",
-            f"止盈: {_fmt_price(tp)}",
+            f"TP1: {_fmt_price(tp)}",
+            f"TP2: {_fmt_price(tp2)}",
             f"止损: {_fmt_price(sl)}",
             "",
         ])
