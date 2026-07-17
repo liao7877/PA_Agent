@@ -1780,8 +1780,8 @@ class PromptAssembler:
             ])
         elif status == "planned":
             lines.extend([
-                "已有未成交计划单，阶段二必须评估保留、撤销或替换该计划，避免重复开单。",
-                "若维持原计划，输出 order_type=不下单 且 reasoning/position_advice 写明继续等待原计划；只有明确应撤销计划单时才输出 position_action=撤销；若要修改，输出新的下单决策替换原计划。",
+                "已有未成交计划单，阶段二必须评估保留、撤销或替换该计划，避免重复开单。即使阶段一 gate_result=wait/unknown，也必须只针对现有计划完成这项管理判断，不得据此创建风险更高的新计划。",
+                "若维持原计划，输出 order_type=不下单、position_action=持有，并在 reasoning/position_advice 写明继续等待原计划；只有明确应撤销计划单时才输出 position_action=撤销；若要修改，输出新的下单决策替换原计划。position_action 禁止使用“保留”，必须使用 schema 枚举“持有”。",
             ])
         return "\n".join(lines) + "\n"
 

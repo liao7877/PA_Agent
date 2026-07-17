@@ -73,6 +73,7 @@ class AIStreamPanel(QWidget):
         self._session: Optional["FreeChatSession"] = None
         self._cancel_token: Optional["CancelToken"] = None
         self._worker: Optional[_ChatWorker] = None
+        self._zombie_workers: list[_ChatWorker] = []
         self._sending = False
         self._red_warned = False
         self._settings: Optional["Settings"] = None
@@ -632,6 +633,15 @@ class AIStreamPanel(QWidget):
         if worker is not None:
             worker.deleteLater()
 
+    def _reap_zombie_workers(self) -> None:
+        still_running: list[_ChatWorker] = []
+        for worker in self._zombie_workers:
+            if worker.isRunning():
+                still_running.append(worker)
+            else:
+                worker.deleteLater()
+        self._zombie_workers = still_running
+
     def shutdown(self, *, wait_ms: int = 5000) -> None:
         worker = self._worker
         self._worker = None
@@ -648,4 +658,8 @@ class AIStreamPanel(QWidget):
             pass
         if worker.isRunning():
             worker.wait(wait_ms)
-        worker.deleteLater()
+        if worker.isRunning():
+            self._zombie_workers.append(worker)
+        else:
+            worker.deleteLater()
+        self._reap_zombie_workers()

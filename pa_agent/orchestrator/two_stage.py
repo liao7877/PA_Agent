@@ -772,7 +772,14 @@ class TwoStageOrchestrator:
             on_stage2_files(list(strategy_files))
 
         gate_result = str(stage1_json.get("gate_result", "proceed")).lower()
-        if gate_result in ("wait", "unknown"):
+        active_status = (
+            active_position.get("status")
+            if isinstance(active_position, dict)
+            else getattr(active_position, "status", None)
+        )
+        active_status = getattr(active_status, "value", active_status)
+        must_manage_planned_order = str(active_status or "").lower() == "planned"
+        if gate_result in ("wait", "unknown") and not must_manage_planned_order:
             from pa_agent.ai.decision_tree import build_stage2_gate_wait_response
 
             if on_stage_prompt is not None:
@@ -1334,7 +1341,7 @@ class TwoStageOrchestrator:
         try:
             import openai  # type: ignore[import]
 
-            if isinstance(exc, openai.APIError) and TwoStageOrchestrator._is_interrupted_stream_error(exc):
+            if isinstance(exc, openai.APIError):
                 return True
             if isinstance(
                 exc,

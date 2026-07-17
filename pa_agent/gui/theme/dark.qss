@@ -264,6 +264,29 @@ QTextEdit#answerPane, QPlainTextEdit#answerPane {
     font-size: 12px;
 }
 
+QListWidget#instrumentWatchlist {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 5px;
+    outline: none;
+}
+QListWidget#instrumentWatchlist::item {
+    background-color: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 9px 10px;
+}
+QListWidget#instrumentWatchlist::item:hover {
+    background-color: #1c2128;
+    border-color: #484f58;
+}
+QListWidget#instrumentWatchlist::item:selected {
+    background-color: #21262d;
+    color: #e6edf3;
+    border-color: #58a6ff;
+}
+
 QListWidget#timelineList {
     background-color: #0d1117;
     border: 1px solid #30363d;

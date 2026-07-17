@@ -308,17 +308,30 @@ class PositionTracker:
                 position.fill_price = position.entry_price
                 if bar_ts is not None:
                     position.filled_on_bar_ts = int(bar_ts)
+                live_price = _to_float(current_price)
+                position.post_fill_high = live_price
+                position.post_fill_low = live_price
                 self._store.upsert_active(position)
                 self._notify_entry(position)
             return position
 
         if position.status == PositionStatus.FILLED:
-            if (
+            same_fill_bar = (
                 bar_ts is not None
                 and position.filled_on_bar_ts is not None
                 and int(bar_ts) == int(position.filled_on_bar_ts)
-            ):
-                return position
+            )
+            if same_fill_bar:
+                live_price = _to_float(current_price)
+                if live_price is None:
+                    return position
+                previous_high = position.post_fill_high
+                previous_low = position.post_fill_low
+                position.post_fill_high = max(previous_high or live_price, live_price)
+                position.post_fill_low = min(previous_low or live_price, live_price)
+                self._store.upsert_active(position)
+                hi = position.post_fill_high
+                lo = position.post_fill_low
             long = position.is_long
             tp = position.take_profit_price
             sl = position.stop_loss_price

@@ -47,7 +47,9 @@ class PositionState(BaseModel):
     filled_at_ms: Optional[int] = None
     closed_at_ms: Optional[int] = None
     fill_price: Optional[float] = None
-    filled_on_bar_ts: Optional[int] = None  # bar open ts (ms) when filled; skip SL/TP on that bar
+    filled_on_bar_ts: Optional[int] = None
+    post_fill_high: Optional[float] = None
+    post_fill_low: Optional[float] = None
     first_tracked_bar_ts: Optional[int] = None
     first_tracked_price: Optional[float] = None
     first_tracked_seen: bool = False

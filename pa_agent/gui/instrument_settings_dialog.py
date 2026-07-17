@@ -33,7 +33,13 @@ from pa_agent.instruments import instrument_key
 class InstrumentSettingsDialog(QDialog):
     """Edit the background monitored instruments list."""
 
-    def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        parent: QWidget | None = None,
+        *,
+        initial_key: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("多品种监控设置")
         self.setMinimumSize(900, 620)
@@ -41,7 +47,14 @@ class InstrumentSettingsDialog(QDialog):
         self._items: list[InstrumentSettings] = [copy.deepcopy(x) for x in settings.instruments.items]
         if not self._items:
             self._items.append(InstrumentSettings())
-        self._current_index = 0
+        self._current_index = next(
+            (
+                index
+                for index, item in enumerate(self._items)
+                if instrument_key(item) == initial_key
+            ),
+            0,
+        )
         self._loading = False
         self._setup_ui()
         self._reload_list()

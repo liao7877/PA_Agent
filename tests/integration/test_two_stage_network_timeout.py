@@ -48,6 +48,37 @@ def test_httpx_read_error_stage1(frame, pending_writer, assembler, exp_reader):
     assert pending_writer.save_partial.call_args[0][1] == "network_error"
 
 
+def test_generic_api_error_stage1(frame, pending_writer, assembler, exp_reader):
+    """OpenAI-compatible upstream APIError is treated as a recoverable provider failure."""
+    client = MagicMock()
+    client.stream_chat.side_effect = openai.APIError(
+        "Upstream request failed",
+        request=MagicMock(),
+        body=None,
+    )
+
+    orchestrator = TwoStageOrchestrator(
+        client=client,
+        assembler=assembler,
+        router=route_strategy_files,
+        validator=schema_test_validator(),
+        pending_writer=pending_writer,
+        exp_reader=exp_reader,
+    )
+
+    events: list[OrchestratorEvent] = []
+    orchestrator.submit(
+        frame=frame,
+        cancel_token=CancelToken(),
+        on_event=events.append,
+    )
+
+    assert OrchestratorEvent.Stage1Failed in events
+    assert OrchestratorEvent.Stage2Started not in events
+    pending_writer.save_partial.assert_called_once()
+    assert pending_writer.save_partial.call_args[0][1] == "network_error"
+
+
 def test_network_timeout_stage1(frame, pending_writer, assembler, exp_reader):
     """APITimeoutError on stage1 → Stage1Failed emitted."""
     client = MagicMock()

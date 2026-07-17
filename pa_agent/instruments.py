@@ -253,7 +253,11 @@ class InstrumentRuntimeManager(QObject):
         return True
 
     def stop_all(self, *, wait_ms: int = 5000) -> bool:
-        return all(self.stop_runtime(key, wait_ms=wait_ms) for key in list(self._runtimes))
+        stopped = True
+        for key in list(self._runtimes):
+            if not self.stop_runtime(key, wait_ms=wait_ms):
+                stopped = False
+        return stopped
 
     def disconnect_all_sources(self) -> None:
         for runtime in self._runtimes.values():
@@ -281,6 +285,19 @@ class InstrumentRuntimeManager(QObject):
         if runtime is None:
             raise KeyError(config_or_key)
         return runtime.config
+
+
+def reorder_instrument_settings(
+    items: list[InstrumentSettings], ordered_keys: list[str]
+) -> list[InstrumentSettings]:
+    """Return the same instrument objects arranged by a complete key order."""
+    current_keys = [instrument_key(item) for item in items]
+    if len(set(current_keys)) != len(current_keys):
+        raise ValueError("Instrument keys must be unique")
+    if len(ordered_keys) != len(current_keys) or set(ordered_keys) != set(current_keys):
+        raise ValueError("Instrument order must contain every key exactly once")
+    by_key = dict(zip(current_keys, items, strict=True))
+    return [by_key[key] for key in ordered_keys]
 
 
 def instrument_key(config: InstrumentSettings) -> str:

@@ -120,6 +120,17 @@ _ORDER_TYPE_ALIASES: dict[str, str] = {
     "market": "市价单",
     "market_order": "市价单",
 }
+_POSITION_ACTION_ALIASES: dict[str, str] = {
+    "保留": "持有",
+    "继续持有": "持有",
+    "维持": "持有",
+    "keep": "持有",
+    "hold": "持有",
+    "cancel": "撤销",
+    "revoke": "撤销",
+    "adjust": "调整",
+    "close": "平仓",
+}
 _NO_ORDER_PRICE_FIELDS = (
     "order_direction",
     "entry_price",
@@ -240,6 +251,19 @@ def _normalize_order_type_aliases(decision: dict[str, Any]) -> bool:
     if mapped and mapped != raw:
         decision["order_type"] = mapped
         logger.debug("order_type %r -> %r", raw, mapped)
+        return True
+    return False
+
+
+def _normalize_position_action_aliases(decision: dict[str, Any]) -> bool:
+    raw = str(decision.get("position_action", "") or "").strip()
+    if not raw:
+        return False
+    key = raw.lower().replace(" ", "_").replace("-", "_")
+    mapped = _POSITION_ACTION_ALIASES.get(key) or _POSITION_ACTION_ALIASES.get(raw)
+    if mapped and mapped != raw:
+        decision["position_action"] = mapped
+        logger.debug("position_action %r -> %r", raw, mapped)
         return True
     return False
 
@@ -1555,6 +1579,7 @@ def normalize_stage2(
     decision = out.get("decision")
     if isinstance(decision, dict):
         _normalize_order_type_aliases(decision)
+        _normalize_position_action_aliases(decision)
     _ensure_decision_required_fields(out, stage1_json=stage1_json)
     decision = out.get("decision")
     if isinstance(decision, dict):

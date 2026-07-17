@@ -170,13 +170,20 @@ def _bar_high_low_ts(bar: object) -> tuple[float, float, int | None] | None:
         return None
 
 
-def check_position_on_tick(window: Any, bars: Any) -> None:
-    """Track active positions on each live data refresh from the chart feed."""
+def check_position_on_tick(
+    window: Any,
+    bars: Any,
+    *,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    sync_chart: bool = True,
+) -> None:
+    """Track active positions on each live data refresh from a runtime feed."""
     tracker = getattr(window._ctx, "position_tracker", None)  # noqa: SLF001
     if tracker is None or getattr(window, "_demo_mode", False) or not bars:  # noqa: SLF001
         return
-    symbol = window._symbol_combo.currentText().strip()  # noqa: SLF001
-    timeframe = window._tf_combo.currentText()  # noqa: SLF001
+    symbol = symbol or window._symbol_combo.currentText().strip()  # noqa: SLF001
+    timeframe = timeframe or window._tf_combo.currentText()  # noqa: SLF001
     position = tracker.get_active(symbol, timeframe)
     if position is None:
         return
@@ -205,7 +212,8 @@ def check_position_on_tick(window: Any, bars: Any) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Position tick check failed: %s", exc)
-    sync_chart_active_position(window, symbol, timeframe)
+    if sync_chart:
+        sync_chart_active_position(window, symbol, timeframe)
 
 
 def has_active_position(window: Any, symbol: str, timeframe: str) -> bool:

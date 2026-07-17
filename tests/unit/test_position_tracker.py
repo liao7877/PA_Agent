@@ -133,6 +133,54 @@ def test_tick_exit_stop_loss_long(store, notifier):
     assert exits and "止损" in exits[-1].text
 
 
+def test_planned_fill_tracks_post_fill_range_and_notifies_take_profit(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    bar_ts = 1_700_000_000_000
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=_long_decision(),
+        current_price=101.0,
+        first_tracked_bar_ts=bar_ts,
+    )
+
+    tracker.on_tick(
+        "X", "15m", high=101.0, low=99.0, current_price=100.0, bar_ts=bar_ts,
+    )
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+
+    tracker.on_tick(
+        "X", "15m", high=111.0, low=99.0, current_price=110.5, bar_ts=bar_ts,
+    )
+
+    assert tracker.get_active("X", "15m") is None
+    exits = [m for m in notifier.messages if m.event.value == "exit"]
+    assert exits and "止盈" in exits[-1].text
+
+
+def test_planned_fill_ignores_prefill_stop_range_on_same_bar(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    bar_ts = 1_700_000_000_000
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=_long_decision(),
+        current_price=94.0,
+        first_tracked_bar_ts=bar_ts,
+    )
+
+    tracker.on_tick(
+        "X", "15m", high=100.0, low=94.0, current_price=100.0, bar_ts=bar_ts,
+    )
+    tracker.on_tick(
+        "X", "15m", high=101.0, low=94.0, current_price=100.5, bar_ts=bar_ts,
+    )
+
+    pos = tracker.get_active("X", "15m")
+    assert pos is not None and pos.status is PositionStatus.FILLED
+    assert not any(m.event.value == "exit" for m in notifier.messages)
+
+
 def test_market_short_not_stopped_on_entry_bar_same_bar(store, notifier):
     """SCS market short: SL above signal high must not fire on the entry bar itself."""
     tracker = PositionTracker(store=store, notifier=notifier)

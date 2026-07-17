@@ -7,6 +7,7 @@ from typing import Any
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QAction, QCloseEvent, QShowEvent
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -36,6 +37,22 @@ logger = logging.getLogger(__name__)
 
 # Zombie timeout in milliseconds (5 seconds)
 _WORKER_JOIN_TIMEOUT_MS = 5000
+_ORPHANED_THREADS: list[QThread] = []
+
+
+def _retain_running_thread(worker: QThread) -> None:
+    if worker in _ORPHANED_THREADS:
+        return
+    _ORPHANED_THREADS.append(worker)
+
+    def _release() -> None:
+        try:
+            _ORPHANED_THREADS.remove(worker)
+        except ValueError:
+            pass
+        worker.deleteLater()
+
+    worker.finished.connect(_release)
 
 
 def _qobject_alive(obj: QObject | None) -> bool:
@@ -298,6 +315,8 @@ class MainWindow(QMainWindow):
         self._startup_tv_connectivity_check_done = False
         self._active_instrument_key = ""
         self._instrument_switching = False
+        self._watchlist_rebuilding = False
+        self._watchlist_reordering = False
         self._symbol_switch_timer: QTimer | None = None
         self._pending_symbol_switch: tuple[str, str] | None = None
         # RefreshLoop runs in its own QThread
@@ -691,11 +710,35 @@ class MainWindow(QMainWindow):
         workbench = QSplitter(Qt.Orientation.Horizontal)
 
         self._watchlist = QListWidget()
+        self._watchlist.setObjectName("instrumentWatchlist")
         self._watchlist.setMinimumWidth(210)
         self._watchlist.setMaximumWidth(320)
-        self._watchlist.setToolTip("后台监控品种列表；点击切换右侧图表与分析面板")
+        self._watchlist.setSpacing(5)
+        self._watchlist.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self._watchlist.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self._watchlist.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self._watchlist.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._watchlist.setDropIndicatorShown(True)
+        self._watchlist.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._watchlist.setToolTip(
+            "点击切换品种；右键设置；按住品种并拖动可调整监控顺序"
+        )
         self._watchlist.currentItemChanged.connect(self._on_watchlist_current_item_changed)
-        self._watchlist.itemDoubleClicked.connect(lambda _item: self._open_instrument_settings_dialog())
+        self._watchlist.itemDoubleClicked.connect(
+            lambda item: self._open_instrument_settings_dialog(
+                initial_key=str(item.data(Qt.ItemDataRole.UserRole) or "")
+            )
+        )
+        self._watchlist.customContextMenuRequested.connect(
+            self._on_watchlist_context_menu_requested
+        )
+        self._watchlist.model().rowsMoved.connect(self._on_watchlist_rows_moved)
         workbench.addWidget(self._watchlist)
 
         self._chart_widget = ChartWidget()
@@ -748,20 +791,72 @@ class MainWindow(QMainWindow):
         widget = getattr(self, "_watchlist", None)
         if manager is None or widget is None:
             return
+        self._watchlist_rebuilding = True
         widget.blockSignals(True)
-        widget.clear()
-        active_row = 0
-        for row, runtime in enumerate(manager.runtimes()):
-            item = QListWidgetItem(self._watchlist_text(runtime))
-            item.setData(Qt.ItemDataRole.UserRole, runtime.key)
-            if not runtime.config.enabled:
-                item.setForeground(Qt.GlobalColor.gray)
-            widget.addItem(item)
-            if runtime.key == self._active_instrument_key:
-                active_row = row
-        if widget.count() > 0:
-            widget.setCurrentRow(active_row)
-        widget.blockSignals(False)
+        try:
+            widget.clear()
+            active_row = 0
+            for row, runtime in enumerate(manager.runtimes()):
+                item = QListWidgetItem(self._watchlist_text(runtime))
+                item.setData(Qt.ItemDataRole.UserRole, runtime.key)
+                if not runtime.config.enabled:
+                    item.setForeground(Qt.GlobalColor.gray)
+                widget.addItem(item)
+                if runtime.key == self._active_instrument_key:
+                    active_row = row
+            if widget.count() > 0:
+                widget.setCurrentRow(active_row)
+        finally:
+            widget.blockSignals(False)
+            self._watchlist_rebuilding = False
+
+    def _watchlist_keys_in_visual_order(self) -> list[str]:
+        return [
+            str(self._watchlist.item(row).data(Qt.ItemDataRole.UserRole) or "")
+            for row in range(self._watchlist.count())
+        ]
+
+    def _on_watchlist_rows_moved(self, *_args: Any) -> None:
+        if self._watchlist_rebuilding or self._watchlist_reordering:
+            return
+        settings = getattr(self._ctx, "settings", None)
+        if settings is None:
+            return
+        from pa_agent.config.settings import save_settings
+        from pa_agent.instruments import reorder_instrument_settings
+
+        old_items = list(settings.instruments.items)
+        try:
+            settings.instruments.items = reorder_instrument_settings(
+                old_items, self._watchlist_keys_in_visual_order()
+            )
+            save_settings(settings)
+        except (OSError, ValueError) as exc:
+            settings.instruments.items = old_items
+            self._watchlist_reordering = True
+            try:
+                self._populate_watchlist()
+            finally:
+                self._watchlist_reordering = False
+            self._status_bar.showMessage(f"监控顺序保存失败：{exc}")
+            return
+        self._status_bar.showMessage("监控品种顺序已保存")
+
+    def _on_watchlist_context_menu_requested(self, pos: Any) -> None:
+        item = self._watchlist.itemAt(pos)
+        if item is None:
+            return
+        key = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not key:
+            return
+        menu = QMenu(self._watchlist)
+        edit_action = menu.addAction("设置此品种…")
+        try:
+            selected = menu.exec(self._watchlist.viewport().mapToGlobal(pos))
+        finally:
+            menu.deleteLater()
+        if selected is edit_action:
+            self._open_instrument_settings_dialog(initial_key=key)
 
     def _watchlist_text(self, runtime: Any) -> str:
         status = runtime.status or ("已停用" if not runtime.config.enabled else "未启动")
@@ -800,14 +895,34 @@ class MainWindow(QMainWindow):
             self._active_instrument_key = key
             cfg = runtime.config
             self._active_data_source_kind = cfg.data_source
-            self._ctx.data_source = runtime.data_source or getattr(self._ctx, "data_source", None)
-            self._data_source_combo.setCurrentIndex(max(0, self._data_source_combo.findData(cfg.data_source)))
-            idx_ex = self._tv_exchange_combo.findData(cfg.tradingview_exchange or "")
-            if idx_ex >= 0:
-                self._tv_exchange_combo.setCurrentIndex(idx_ex)
-            self._symbol_combo.setCurrentText(cfg.symbol)
-            self._tf_combo.setCurrentText(cfg.timeframe)
-            self._keep_analysis_checkbox.setChecked(bool(cfg.keep_analysis))
+            self._ctx.data_source = runtime.data_source
+            self._data_source_combo.blockSignals(True)
+            self._tv_exchange_combo.blockSignals(True)
+            try:
+                self._data_source_combo.setCurrentIndex(
+                    max(0, self._data_source_combo.findData(cfg.data_source))
+                )
+                idx_ex = self._tv_exchange_combo.findData(cfg.tradingview_exchange or "")
+                if idx_ex >= 0:
+                    self._tv_exchange_combo.setCurrentIndex(idx_ex)
+                self._symbol_combo.setCurrentText(cfg.symbol)
+                self._tf_combo.setCurrentText(cfg.timeframe)
+                self._populate_symbol_combo_for_source()
+                self._populate_timeframe_combo_for_source()
+                if self._symbol_combo.findText(cfg.symbol) < 0:
+                    self._symbol_combo.addItem(cfg.symbol)
+                self._symbol_combo.setCurrentText(cfg.symbol)
+                if self._tf_combo.findText(cfg.timeframe) < 0:
+                    self._tf_combo.addItem(cfg.timeframe)
+                self._tf_combo.setCurrentText(cfg.timeframe)
+            finally:
+                self._data_source_combo.blockSignals(False)
+                self._tv_exchange_combo.blockSignals(False)
+            self._keep_analysis_checkbox.blockSignals(True)
+            try:
+                self._keep_analysis_checkbox.setChecked(bool(cfg.keep_analysis))
+            finally:
+                self._keep_analysis_checkbox.blockSignals(False)
             self._last_frame_ready_bars = list(runtime.last_bars) if runtime.last_bars else None
             self._last_analysis_record = runtime.last_analysis_record
             self._last_analysis_frame = runtime.last_analysis_frame
@@ -817,6 +932,8 @@ class MainWindow(QMainWindow):
             self._keep_analysis_outside_window = runtime.keep_outside_window
             self._sync_tv_exchange_visibility()
             self._update_symbol_data_alert()
+            self._refresh_api_key_ui_state()
+            self._update_ai_mode_label()
             frame = self._pull_chart_frame_from_source()
             if frame is not None:
                 self._chart_widget.set_frame_now(frame, fit_view=True)
@@ -866,8 +983,18 @@ class MainWindow(QMainWindow):
         if key == self._active_instrument_key:
             self._ctx.data_source = runtime.data_source
             self._on_refresh_frame_ready(bars)
-        elif runtime.config.keep_analysis:
-            self._check_background_keep_analysis(runtime, bars)
+        else:
+            from pa_agent.trading_agent.record_handlers import check_position_on_tick
+
+            check_position_on_tick(
+                self,
+                bars,
+                symbol=runtime.config.symbol,
+                timeframe=runtime.config.timeframe,
+                sync_chart=False,
+            )
+            if runtime.config.keep_analysis:
+                self._check_background_keep_analysis(runtime, bars)
 
     def _check_background_keep_analysis(self, runtime: Any, bars: list) -> None:
         if runtime.analysis_in_progress or runtime.pending_analysis or not bars:
@@ -1214,8 +1341,9 @@ class MainWindow(QMainWindow):
         except (TypeError, RuntimeError):
             pass
         if worker.isRunning():
-            worker.wait(0)
-        worker.deleteLater()
+            _retain_running_thread(worker)
+        else:
+            worker.deleteLater()
 
     def _cancel_analysis_worker(self, *, join_ms: int = 0) -> None:
         """Cancel the AI worker and invalidate any pending finished callbacks."""
@@ -1265,6 +1393,11 @@ class MainWindow(QMainWindow):
                         "it will eventually finish but results will be ignored",
                         _WORKER_JOIN_TIMEOUT_MS,
                     )
+                    _retain_running_thread(sfw)
+                else:
+                    sfw.deleteLater()
+            else:
+                sfw.deleteLater()
 
     def _reap_zombie_loops(self) -> None:
         """Join any zombie RefreshLoops that have finished since last check.
@@ -4573,7 +4706,15 @@ class MainWindow(QMainWindow):
             panel = getattr(self, "_stream_panel", None)
             if panel is not None and hasattr(panel, "shutdown"):
                 panel.shutdown(wait_ms=_WORKER_JOIN_TIMEOUT_MS)
+                for worker in list(getattr(panel, "_zombie_workers", [])):
+                    if worker.isRunning():
+                        _retain_running_thread(worker)
+                panel._zombie_workers = []
             self._cancel_analysis_worker(join_ms=_WORKER_JOIN_TIMEOUT_MS)
+            for worker in list(getattr(self, "_zombie_workers", [])):
+                if worker.isRunning():
+                    _retain_running_thread(worker)
+            self._zombie_workers = []
             self._cancel_snapshot_fetch_worker()
             manager = getattr(self._ctx, "instrument_manager", None)
             if manager is not None:
@@ -4671,13 +4812,18 @@ class MainWindow(QMainWindow):
             self._update_ai_mode_label()
             self._refresh_api_key_ui_state()
 
-    def _open_instrument_settings_dialog(self) -> None:
+    def _open_instrument_settings_dialog(self, initial_key: str | None = None) -> None:
         from pa_agent.gui.instrument_settings_dialog import InstrumentSettingsDialog
 
         settings = getattr(self._ctx, "settings", None)
         if settings is None:
             return
-        dlg = InstrumentSettingsDialog(settings=settings, parent=self)
+        previous_active_key = self._active_instrument_key
+        dlg = InstrumentSettingsDialog(
+            settings=settings,
+            parent=self,
+            initial_key=initial_key,
+        )
         if not dlg.exec():
             return
         manager = getattr(self._ctx, "instrument_manager", None)
@@ -4687,7 +4833,11 @@ class MainWindow(QMainWindow):
                 return
             manager.disconnect_all_sources()
             manager.reload_from_settings()
-            self._active_instrument_key = manager.first_enabled_key()
+            runtime = manager.get(previous_active_key)
+            if runtime is not None and runtime.config.enabled:
+                self._active_instrument_key = previous_active_key
+            else:
+                self._active_instrument_key = manager.first_enabled_key()
         self._populate_watchlist()
         self._start_enabled_instrument_runtimes()
         if manager is not None and self._active_instrument_key:
@@ -4742,6 +4892,14 @@ class MainWindow(QMainWindow):
             self._ai_mode_label.setText("")
             return
         p = settings.provider
+        manager = getattr(self._ctx, "instrument_manager", None)
+        runtime = (
+            manager.get(self._active_instrument_key)
+            if manager is not None and self._active_instrument_key
+            else None
+        )
+        if runtime is not None:
+            p = manager.effective_settings(runtime.config).provider
         base = (p.base_url or "").lower()
         if "deepseek.com" in base:
             thinking = "开" if p.thinking else "关"

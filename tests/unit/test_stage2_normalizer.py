@@ -190,6 +190,19 @@ def test_normalize_stage2_enum_annotations_passes_schema() -> None:
     assert isinstance(result, Ok)
 
 
+def test_normalize_position_action_keep_alias() -> None:
+    payload = {
+        "decision": {
+            "order_type": "不下单",
+            "position_action": "保留",
+        }
+    }
+
+    out = normalize_stage2(payload)
+
+    assert out["decision"]["position_action"] == "持有"
+
+
 # ── _normalize_next_bar_prediction direct tests ──────────────────────────────
 
 
