@@ -134,14 +134,11 @@ def test_stage2_order_direction_conflicts_stage1() -> None:
         },
     }
     errs = validate_stage2_coherence(s2, s1, kline_frame=_frame())
-    # Conflicts are auto-resolved by injecting node 2.3 instead of hard-failing.
-    assert errs == []
-    injected = [
-        x for x in s2["decision_trace"]
-        if isinstance(x, dict) and x.get("node_id") == "2.3" and x.get("_auto_injected")
-    ]
-    assert injected
-    assert injected[0].get("branch") == "bearish"
+    assert any("countertrend" in error or "逆势" in error for error in errs)
+    assert not any(
+        isinstance(x, dict) and x.get("node_id") == "2.3" and x.get("_auto_injected")
+        for x in s2["decision_trace"]
+    )
 
 
 def test_duplicate_single_bar_range_is_allowed() -> None:

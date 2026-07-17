@@ -1487,47 +1487,52 @@ def has_background_limit_path(out: dict[str, Any]) -> bool:
 
 
 def is_planned_limit_order(out: dict[str, Any]) -> bool:
-    """True when order is a pending limit plan without requiring a closed signal bar."""
+    """Legacy compatibility hook; unconfirmed background limit plans are forbidden."""
+    return False
+
+
+def price_action_entry_confirmed(out: dict[str, Any]) -> bool:
+    """Return whether a closed price-action signal is sufficient to authorize an order."""
+    from pa_agent.util.price_tick import parse_k_seq
+
     decision = out.get("decision")
-    if not isinstance(decision, dict) or decision.get("order_type") != "限价单":
-        return False
-    if has_background_limit_path(out):
-        return True
     bar_analysis = out.get("bar_analysis")
+    if not isinstance(decision, dict):
+        return False
+    if bar_analysis is None:
+        return True
     if not isinstance(bar_analysis, dict):
         return False
-    entry_bar = bar_analysis.get("entry_bar")
-    signal_bar = bar_analysis.get("signal_bar")
-    if not isinstance(entry_bar, dict) or not isinstance(signal_bar, dict):
+    if decision.get("order_type") not in ("限价单", "突破单", "市价单"):
         return False
+
+    signal_bar = bar_analysis.get("signal_bar")
+    entry_bar = bar_analysis.get("entry_bar")
+    if not isinstance(signal_bar, dict) or not isinstance(entry_bar, dict):
+        return False
+    if parse_k_seq(signal_bar.get("bar")) is None:
+        return False
+
+    quality = str(signal_bar.get("quality", "") or "").strip().lower()
+    if quality in ("invalid", ""):
+        return False
+
+    entry_seq = parse_k_seq(entry_bar.get("bar"))
     strength = str(entry_bar.get("strength", "") or "").strip().lower()
     freshness = str(entry_bar.get("freshness", "") or "").strip().lower()
-    pending = (
-        strength == "not_triggered"
-        or entry_bar.get("bar") is None
-        or freshness == "pending"
-    )
-    if not pending:
+    if strength == "not_triggered" or freshness in ("pending", "stale", "invalid"):
         return False
-    quality = str(signal_bar.get("quality", "") or "").strip().lower()
-    pattern = str(signal_bar.get("pattern", "") or "").strip().lower()
-    if signal_bar.get("bar") is None and quality in ("invalid", "weak"):
-        return True
-    if quality == "weak" and pattern in (
-        "",
-        "none",
-        "tr_boundary",
-        "breakout_pullback",
-        "h1",
-        "h2",
-        "l1",
-        "l2",
-        "wedge",
-        "mtr",
-        "trendline",
-    ):
-        return True
-    return False
+    follow_through = entry_bar.get("follow_through")
+    confirmed_follow_through = follow_through is True or str(follow_through).strip().lower() in (
+        "true",
+        "yes",
+        "是",
+        "confirmed",
+    )
+
+    if quality == "weak":
+        return entry_seq is not None and confirmed_follow_through
+    return quality in ("strong", "medium")
 
 
 
@@ -1822,6 +1827,10 @@ def route_order_method(
 
     decision_trace: list[dict[str, Any]],
 
+    *,
+
+    entry_confirmed: bool = False,
+
 ) -> list[dict[str, Any]]:
 
     """Route order method based on cycle_position; return §11 trace nodes."""
@@ -1840,6 +1849,23 @@ def route_order_method(
 
     if order_type == "不下单":
 
+        return []
+
+    if not entry_confirmed:
+        decision["order_type"] = "不下单"
+        for field in (
+            "order_direction",
+            "entry_price",
+            "stop_loss_price",
+            "take_profit_price",
+            "take_profit_price_2",
+            "entry_basis_bar",
+            "entry_basis_extreme",
+            "entry_rule",
+        ):
+            decision[field] = None
+        decision["estimated_win_rate"] = None
+        decision["estimated_win_rate_reasoning"] = None
         return []
 
 
@@ -1994,25 +2020,27 @@ def route_order_method(
 
 
 
-    # Breakout order: check for valid entry_basis; fall back to limit when unavailable.
-
-    breakout_fallback_to_limit = False
-
+    # Breakout orders require a complete, auditable signal-bar anchor.
     if candidate == "突破单":
-
         has_basis = bool(
-
             decision.get("entry_basis_bar") and decision.get("entry_basis_extreme")
-
         )
-
         if not has_basis:
-
-            # No breakout anchor → try limit at structural level (if §10.3 already passed).
-
-            breakout_fallback_to_limit = True
-
-            candidate = "限价单"
+            decision["order_type"] = "不下单"
+            for field in (
+                "order_direction",
+                "entry_price",
+                "stop_loss_price",
+                "take_profit_price",
+                "take_profit_price_2",
+                "entry_basis_bar",
+                "entry_basis_extreme",
+                "entry_rule",
+            ):
+                decision[field] = None
+            decision["estimated_win_rate"] = None
+            decision["estimated_win_rate_reasoning"] = None
+            return []
 
 
 
@@ -2110,12 +2138,6 @@ def route_order_method(
                     f"cycle_position={cycle}（spike_stage={spike_stage_label}，尖峰已结束）"
                     f"→{candidate}（保留模型突破单选择；尖峰结束后等待信号棒突破确认是正确做法，"
                     "不应强制市价单立即追入）。" + reason
-                )
-            elif breakout_fallback_to_limit and candidate == "限价单":
-                reason = (
-                    f"cycle_position={cycle} 默认突破单，但无有效 entry_basis_bar/extreme；"
-                    f"§10.3 已通过 → 改用限价单在结构位挂单（回撤/反弹到位入场）。"
-                    + reason
                 )
             else:
                 reason = f"cycle_position={cycle}→{candidate}。" + reason
@@ -2708,27 +2730,14 @@ def _sync_order_type_from_11_override(
 
 
 
-    existing = str(decision.get("order_type") or "").strip()
-
     has_basis = bool(
 
         decision.get("entry_basis_bar") and decision.get("entry_basis_extreme")
 
     )
 
-    # Mirror judge_section11 breakout_fallback_to_limit: §11.2 defaults to 突破单,
-
-    # but without basis fields the schema rejects null entry_basis_*. Preserve an
-
-    # explicit 限价单/市价单 plan (e.g. §9.0P planned limit) instead of forcing 突破单.
-
     if method == "突破单" and not has_basis:
-
-        if existing in ("限价单", "市价单"):
-
-            return
-
-        method = "限价单"
+        return
 
 
 
@@ -2987,7 +2996,12 @@ class DecisionNodeEngine:
 
         if current_order_type != "不下单":
 
-            sec11_fills = route_order_method(stage1_json, decision, decision_trace)
+            sec11_fills = route_order_method(
+                stage1_json,
+                decision,
+                decision_trace,
+                entry_confirmed=price_action_entry_confirmed(out),
+            )
 
 
 

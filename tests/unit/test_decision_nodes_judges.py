@@ -594,7 +594,7 @@ class TestApplyStage1:
             assert n23.get("branch") == "neutral"
 
 
-def test_is_planned_limit_order_detects_pending_limit_without_signal_bar() -> None:
+def test_is_planned_limit_order_rejects_pending_limit_without_signal_bar() -> None:
     from pa_agent.ai.decision_nodes import is_planned_limit_order
 
     obj = {
@@ -608,10 +608,10 @@ def test_is_planned_limit_order_detects_pending_limit_without_signal_bar() -> No
             },
         },
     }
-    assert is_planned_limit_order(obj) is True
+    assert is_planned_limit_order(obj) is False
 
 
-def test_is_planned_limit_order_detects_weak_boundary_limit() -> None:
+def test_is_planned_limit_order_rejects_weak_unconfirmed_boundary_limit() -> None:
     from pa_agent.ai.decision_nodes import is_planned_limit_order
 
     obj = {
@@ -625,10 +625,10 @@ def test_is_planned_limit_order_detects_weak_boundary_limit() -> None:
             },
         },
     }
-    assert is_planned_limit_order(obj) is True
+    assert is_planned_limit_order(obj) is False
 
 
-def test_normalize_stage2_upgrades_9_0_for_planned_limit() -> None:
+def test_normalize_stage2_keeps_9_0_wait_for_unconfirmed_limit() -> None:
     from pa_agent.ai.stage2_normalizer import normalize_stage2
 
     obj = {
@@ -704,7 +704,8 @@ def test_normalize_stage2_upgrades_9_0_for_planned_limit() -> None:
     )
     out = normalize_stage2(obj, kline_frame=frame, stage1_json=obj["diagnosis_summary"])
     node_90 = next(n for n in out["decision_trace"] if n["node_id"] == "9.0")
-    assert node_90["answer"] == "是"
+    assert node_90["answer"] == "否"
+    assert out["decision"]["order_type"] == "不下单"
 
 
 def test_11_2_override_preserves_limit_order_without_basis() -> None:
@@ -732,8 +733,8 @@ def test_11_2_override_preserves_limit_order_without_basis() -> None:
     assert out["decision"]["order_type"] == "限价单"
 
 
-def test_apply_stage2_11_2_override_keeps_limit_order() -> None:
-    """Regression: node_overrides on §11.2 must not force 突破单 without basis fields."""
+def test_apply_stage2_11_2_override_rejects_unconfirmed_limit_order() -> None:
+    """§11 overrides cannot bypass the closed-signal confirmation invariant."""
     frame = _make_frame(25)
     out = {
         "decision": {
@@ -769,7 +770,7 @@ def test_apply_stage2_11_2_override_keeps_limit_order() -> None:
             },
         ],
         "bar_analysis": {
-            "signal_bar": {"bar": "K1", "quality": "medium", "pattern": "tr_boundary"},
+            "signal_bar": {"bar": "K2", "quality": "weak", "pattern": "tr_boundary"},
             "entry_bar": {
                 "strength": "not_triggered",
                 "freshness": "pending",
@@ -790,7 +791,7 @@ def test_apply_stage2_11_2_override_keeps_limit_order() -> None:
         "gate_result": "proceed",
     }
     DecisionNodeEngine.apply_stage2(out, frame, stage1)
-    assert out["decision"]["order_type"] == "限价单"
+    assert out["decision"]["order_type"] == "不下单"
     assert out["decision"]["entry_basis_bar"] is None
 
 

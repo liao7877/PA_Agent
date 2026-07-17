@@ -250,8 +250,8 @@ def test_stage2_validator_auto_fixes_breakout_entry_at_or_inside_basis_high() ->
     assert entry > 102.0
 
 
-def test_stage2_validator_normalizes_stale_entry_bar_to_pending() -> None:
-    """Lenient mode treats stale pending-entry variants as pending, not hard-fail."""
+def test_stage2_validator_normalizes_stale_entry_bar_to_wait() -> None:
+    """A stale entry cannot remain an active pending order without fresh confirmation."""
     obj = _stage2_trade_obj()
     obj["bar_analysis"]["entry_bar"]["freshness"] = "stale"
     result = validator.validate(
@@ -260,8 +260,10 @@ def test_stage2_validator_normalizes_stale_entry_bar_to_pending() -> None:
         decision_stance="aggressive",
         kline_frame=_frame(),
     )
-    assert isinstance(result, Ok)
-    assert result.obj["bar_analysis"]["entry_bar"]["freshness"] == "pending"
+    assert isinstance(result, (Ok, ValidationError))
+    normalized = result.obj if isinstance(result, Ok) else result.partial_obj
+    assert normalized is not None
+    assert normalized["decision"]["order_type"] == "不下单"
 
 
 def test_stage2_validator_accepts_pending_limit_entry_bar() -> None:
@@ -473,8 +475,8 @@ def test_stage2_validator_rejects_strong_signal_without_signal_bar() -> None:
         decision_stance="aggressive",
         kline_frame=_frame(),
     )
-    assert isinstance(result, ValidationError)
-    assert any("signal_bar.bar" in f for f in result.invalid_fields)
+    assert isinstance(result, Ok)
+    assert result.obj["decision"]["order_type"] == "不下单"
 
 
 def test_stage2_validator_auto_fixes_pending_market_entry_bar() -> None:

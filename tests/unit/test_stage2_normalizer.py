@@ -606,7 +606,7 @@ def test_coerce_decision_when_103_no_but_prices_remain() -> None:
 
 
 def test_trade_terminal_14_repaired_to_order_node() -> None:
-    """§14 is a prohibition scan, not the terminal node for successful trades."""
+    """§14 is a prohibition scan, not the terminal node for confirmed trades."""
     payload = {
         "decision": {
             "order_direction": "做空",
@@ -640,16 +640,16 @@ def test_trade_terminal_14_repaired_to_order_node() -> None:
             "last_closed_bar": "K1",
             "bar_type": "doji",
             "signal_bar": {
-                "bar": None,
-                "quality": "invalid",
-                "pattern": "none",
-                "reason": "计划型限价",
+                "bar": "K2",
+                "quality": "medium",
+                "pattern": "tr_boundary",
+                "reason": "K2空头信号棒已收盘",
             },
             "entry_bar": {
-                "bar": None,
-                "strength": "not_triggered",
-                "follow_through": "pending",
-                "freshness": "pending",
+                "bar": "K1",
+                "strength": "strong",
+                "follow_through": True,
+                "freshness": "fresh",
             },
         },
         "decision_trace": [
@@ -657,7 +657,7 @@ def test_trade_terminal_14_repaired_to_order_node() -> None:
                 "node_id": "9.0",
                 "question": "信号棒是否合格？",
                 "answer": "是",
-                "reason": "计划型限价",
+                "reason": "K2已收盘空头信号棒，K1确认",
                 "bar_range": "K1",
             },
             {
@@ -1267,7 +1267,7 @@ def test_repair_misplaced_decision_fields_from_diagnosis_summary() -> None:
     assert "estimated_win_rate_reasoning" not in out["diagnosis_summary"]
 
 
-def test_coerce_breakout_without_basis_to_limit() -> None:
+def test_coerce_breakout_without_basis_to_wait() -> None:
     from pa_agent.ai.stage2_normalizer import _coerce_breakout_without_basis
 
     out = {
@@ -1276,8 +1276,10 @@ def test_coerce_breakout_without_basis_to_limit() -> None:
             "entry_basis_bar": None,
             "entry_basis_extreme": None,
             "entry_rule": "K1 high + 1 tick",
-        }
+        },
+        "terminal": {"node_id": "11.2", "outcome": "trade", "label": "breakout"},
     }
     assert _coerce_breakout_without_basis(out) is True
-    assert out["decision"]["order_type"] == "限价单"
+    assert out["decision"]["order_type"] == "不下单"
     assert out["decision"]["entry_rule"] is None
+    assert out["terminal"]["outcome"] == "wait"

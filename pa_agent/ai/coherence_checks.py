@@ -67,6 +67,34 @@ _OVERRIDE_TRACE_NODES = frozenset({"1.2", "2.3"})
 _BAR_FIELD_RE = re.compile(r"K\s*(\d+)", re.IGNORECASE)
 
 
+def _has_confirmed_reversal(stage1: dict[str, Any], stage2: dict[str, Any]) -> bool:
+    patterns = {
+        str(pattern).strip().lower()
+        for pattern in stage1.get("detected_patterns", [])
+        if pattern is not None
+    }
+    failed_breakout = bool(
+        patterns.intersection({"breakout_failure", "failed_breakout", "failed_breakout_reversal"})
+    )
+    bar_summary = stage1.get("bar_by_bar_summary")
+    confirmation_bar = any(
+        isinstance(item, dict)
+        and str(item.get("role", "") or "").strip().lower() == "confirmation"
+        for item in (bar_summary if isinstance(bar_summary, list) else [])
+    )
+    trace = stage2.get("decision_trace")
+    explicit_override = _stage2_trace_documents_override(
+        trace,
+        field="direction",
+        new_value=(
+            "bearish"
+            if stage2.get("decision", {}).get("order_direction") == "做空"
+            else "bullish"
+        ),
+    )
+    return failed_breakout and confirmation_bar and explicit_override
+
+
 def _trace_node_ids(trace: list[dict[str, Any]] | None) -> set[str]:
     out: set[str] = set()
     for item in trace or []:
@@ -679,48 +707,11 @@ def validate_stage2_coherence(
                     (s1_dir == "bullish" and order_dir == "做空") or
                     (s1_dir == "bearish" and order_dir == "做多")
                 )
-                if conflicts:
-                    # Auto-inject node 2.3 instead of hard-failing.
-                    trace = stage2.get("decision_trace")
-                    if isinstance(trace, list):
-                        # Only inject if not already present from the direction check above
-                        already = any(
-                            isinstance(x, dict) and str(x.get("node_id", "")) == "2.3"
-                            for x in trace
-                        )
-                        if not already:
-                            auto_23 = {
-                                "node_id": "2.3",
-                                "section": "方向重判",
-                                "question": "阶段二是否重新判定市场方向？",
-                                "answer": "是",
-                                "branch": needed_dir,
-                                "reason": (
-                                    f"阶段一程序判定 direction={s1_dir}，"
-                                    f"阶段二下单方向为 {order_dir}，"
-                                    f"方向重判为 {needed_dir}；"
-                                    "本节点由校验器自动补全。"
-                                ),
-                                "bar_range": "全局",
-                                "skipped": False,
-                                "_auto_injected": True,
-                            }
-                            trace.insert(0, auto_23)
-                            logger.info(
-                                "validate_stage2_coherence: auto-injected node 2.3 "
-                                "for order_direction conflict (%r vs stage1 %r)",
-                                order_dir, s1_dir,
-                            )
-                    else:
-                        if s1_dir == "bullish" and order_dir == "做空":
-                            errors.append(
-                                "order_direction 做空 conflicts with stage1 direction=bullish "
-                                "(unless explicitly reversing; state in reasoning/trace)"
-                            )
-                        if s1_dir == "bearish" and order_dir == "做多":
-                            errors.append(
-                                "order_direction 做多 conflicts with stage1 direction=bearish"
-                            )
+                if conflicts and not _has_confirmed_reversal(stage1, stage2):
+                    errors.append(
+                        "countertrend/逆势 order requires breakout_failure evidence, "
+                        "a closed confirmation bar, and an explicit node 2.3 reversal override"
+                    )
 
     decision_trace = stage2.get("decision_trace")
     if isinstance(decision_trace, list):

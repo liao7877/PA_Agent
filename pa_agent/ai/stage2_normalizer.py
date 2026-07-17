@@ -795,7 +795,7 @@ def _coerce_decision_no_order(out: dict[str, Any]) -> bool:
 
 
 def _coerce_breakout_without_basis(out: dict[str, Any]) -> bool:
-    """Breakout orders require entry_basis_*; fall back to limit when missing."""
+    """Breakout orders require entry_basis_*; wait when the anchor is incomplete."""
     decision = out.get("decision")
     if not isinstance(decision, dict):
         return False
@@ -803,13 +803,13 @@ def _coerce_breakout_without_basis(out: dict[str, Any]) -> bool:
         return False
     if decision.get("entry_basis_bar") and decision.get("entry_basis_extreme"):
         return False
-    decision["order_type"] = "限价单"
-    decision["entry_basis_bar"] = None
-    decision["entry_basis_extreme"] = None
-    decision["entry_rule"] = None
-    logger.debug(
-        "breakout order missing entry_basis_*; coerced to 限价单"
-    )
+    _clear_decision_to_no_order(decision)
+    terminal = out.get("terminal")
+    if isinstance(terminal, dict):
+        terminal["node_id"] = "9.0"
+        terminal["outcome"] = "wait"
+        terminal["label"] = "突破依据不完整，等待已收盘信号棒与确认"
+    logger.debug("breakout order missing entry_basis_*; coerced to 不下单")
     return True
 
 
@@ -919,6 +919,26 @@ def _normalize_signal_entry_bar_chain(bar_analysis: dict[str, Any], decision: di
         entry_seq + 1,
         entry_seq,
     )
+    return True
+
+
+def _coerce_unconfirmed_entry(out: dict[str, Any]) -> bool:
+    decision = out.get("decision")
+    bar_analysis = out.get("bar_analysis")
+    if not isinstance(decision, dict) or not isinstance(bar_analysis, dict):
+        return False
+    if decision.get("order_type") not in _TRADE_ORDER_TYPES:
+        return False
+    from pa_agent.ai.decision_nodes import price_action_entry_confirmed
+
+    if price_action_entry_confirmed(out):
+        return False
+    _clear_decision_to_no_order(decision)
+    terminal = out.get("terminal")
+    if isinstance(terminal, dict):
+        terminal["node_id"] = "9.0"
+        terminal["outcome"] = "wait"
+        terminal["label"] = "等待已收盘信号棒或确认棒"
     return True
 
 
@@ -1613,11 +1633,6 @@ def normalize_stage2(
 
         if adjust_decision_stop_for_tp1_rr_cap(decision, kline_frame=kline_frame):
             logger.debug("stop_loss widened to bring TP1 RR within program cap")
-    if _fix_background_limit_trace(out):
-        logger.debug("Ensured §9.0P for background planned limit order")
-    if _fix_9_0_for_planned_limit(out):
-        logger.debug("Upgraded §9.0 to 是 for planned limit order")
-
     # ── DecisionNodeEngine: fill §9.1/§9.2/§9.3/§9.5/§11 ─────────────────────
     if kline_frame is not None:
         try:
@@ -1625,8 +1640,10 @@ def normalize_stage2(
             DecisionNodeEngine.apply_stage2(out, kline_frame, stage1_json)
         except Exception as exc:  # noqa: BLE001
             logger.warning("DecisionNodeEngine.apply_stage2 failed: %s", exc)
-    if _coerce_breakout_without_basis(out):
-        logger.debug("Coerced breakout-without-basis to 限价单 after DecisionNodeEngine")
+    if kline_frame is not None and _coerce_breakout_without_basis(out):
+        logger.debug("Coerced breakout-without-basis to 不下单 after DecisionNodeEngine")
+    if kline_frame is not None and _coerce_unconfirmed_entry(out):
+        logger.debug("Coerced unconfirmed entry plan to 不下单 after DecisionNodeEngine")
 
     normalize_stage2_traces(
         out,

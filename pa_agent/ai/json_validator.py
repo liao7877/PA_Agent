@@ -1054,47 +1054,12 @@ class JsonValidator:
             or freshness == "pending"
             or entry_bar.get("bar") is None
         )
-        order_type = decision.get("order_type")
-        planned_without_signal = (
-            pending_entry
-            and order_type in ("限价单", "突破单")
-            and quality == "invalid"
-            and pattern in ("", "none", "not_triggered", "pending")
-            and signal_bar.get("bar") is None
-        )
-        _planned_limit_boundary_patterns = (
-            "tr_boundary",
-            "breakout_pullback",
-            "h1",
-            "h2",
-            "l1",
-            "l2",
-            "wedge",
-            "mtr",
-        )
-        planned_limit_weak = (
-            pending_entry
-            and order_type == "限价单"
-            and quality == "weak"
-            and (
-                signal_bar.get("bar") is None
-                or pattern in ("", "none", *_planned_limit_boundary_patterns)
-            )
-        )
-        # §9.0P planned limit: invalid + boundary pattern + no closed signal bar.
-        planned_limit_invalid_boundary = (
-            pending_entry
-            and order_type == "限价单"
-            and quality == "invalid"
-            and pattern in _planned_limit_boundary_patterns
-            and signal_bar.get("bar") is None
-        )
-        planned_entry = (
-            planned_without_signal or planned_limit_weak or planned_limit_invalid_boundary
-        )
-        if sig_seq is None and not planned_entry:
-            errors.append("bar_analysis.signal_bar.bar must be a K{n} reference")
-        if entry_seq is None and not pending_entry:
+        planned_entry = False
+        if sig_seq is None:
+            errors.append("bar_analysis.signal_bar.bar must reference an already-closed K{n} bar")
+        if entry_seq is None and pending_entry:
+            errors.append("pending/untriggered entry is not an order; wait for a closed confirmation bar")
+        elif entry_seq is None:
             errors.append("bar_analysis.entry_bar.bar must be a K{n} reference")
         if pending_entry and decision.get("order_type") == "市价单":
             errors.append("market order requires a concrete entry_bar.bar")
@@ -1108,6 +1073,18 @@ class JsonValidator:
                 if seq is not None and _bar_by_seq(kline_frame, seq) is None:
                     errors.append(f"bar_analysis.{label}.bar K{seq} not found in current K-line frame")
 
+        if not lenient and quality == "invalid":
+            errors.append("invalid signal_bar cannot authorize an order")
+        if not lenient and quality == "weak":
+            follow_through = entry_bar.get("follow_through")
+            confirmed = follow_through is True or str(follow_through).strip().lower() in (
+                "true",
+                "yes",
+                "是",
+                "confirmed",
+            )
+            if entry_seq is None or not confirmed:
+                errors.append("weak signal_bar requires a later closed confirmation bar with follow_through=true")
         if (
             not lenient
             and quality in ("weak", "invalid")
