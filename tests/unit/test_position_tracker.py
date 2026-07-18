@@ -114,6 +114,98 @@ def test_tick_fills_planned_on_touch(store, notifier):
     assert any(m.event.value == "entry_filled" for m in notifier.messages)
 
 
+def test_long_limit_created_below_entry_waits_for_reset_before_fill(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=_long_decision(),
+        current_price=99.0,
+        first_tracked_bar_ts=1,
+    )
+    tracker.on_live_price("X", "15m", high=101.0, low=98.0, current_price=101.0, bar_ts=1)
+    assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
+    tracker.on_live_price("X", "15m", high=101.0, low=99.0, current_price=99.0, bar_ts=1)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+
+
+def test_long_limit_does_not_fill_from_pre_arming_bar_range(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=_long_decision(),
+        current_price=99.0,
+        first_tracked_bar_ts=1,
+    )
+
+    tracker.on_live_price(
+        "X", "15m", high=101.0, low=98.0, current_price=101.0, bar_ts=1,
+    )
+    tracker.on_live_price(
+        "X", "15m", high=101.0, low=98.0, current_price=100.5, bar_ts=1,
+    )
+
+
+def test_short_limit_fills_only_after_upward_touch(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    decision = {
+        "decision": {
+            "order_type": "限价单",
+            "order_direction": "做空",
+            "entry_price": 100.0,
+            "take_profit_price": 90.0,
+            "stop_loss_price": 105.0,
+        }
+    }
+    tracker.apply_decision(
+        symbol="X", timeframe="15m", decision=decision, current_price=99.0,
+        first_tracked_bar_ts=1,
+    )
+    tracker.on_live_price("X", "15m", high=100.0, low=99.0, current_price=100.0, bar_ts=1)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+
+
+def test_long_breakout_created_above_entry_waits_for_reset_before_fill(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    decision = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 100.0,
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+        }
+    }
+    tracker.apply_decision(
+        symbol="X", timeframe="15m", decision=decision, current_price=101.0,
+        first_tracked_bar_ts=1,
+    )
+    tracker.on_live_price("X", "15m", high=101.0, low=99.0, current_price=99.0, bar_ts=1)
+    assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
+    tracker.on_live_price("X", "15m", high=101.0, low=99.0, current_price=101.0, bar_ts=1)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+
+
+def test_short_breakout_fills_on_downward_cross(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    decision = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做空",
+            "entry_price": 100.0,
+            "take_profit_price": 90.0,
+            "stop_loss_price": 105.0,
+        }
+    }
+    tracker.apply_decision(
+        symbol="X", timeframe="15m", decision=decision, current_price=101.0,
+        first_tracked_bar_ts=1,
+    )
+    tracker.on_live_price("X", "15m", high=101.0, low=99.0, current_price=99.0, bar_ts=1)
+    assert tracker.get_active("X", "15m").status is PositionStatus.FILLED
+
+
 def test_tick_exit_take_profit_long(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
@@ -173,7 +265,7 @@ def test_planned_fill_ignores_prefill_stop_range_on_same_bar(store, notifier):
         "X", "15m", high=100.0, low=94.0, current_price=100.0, bar_ts=bar_ts,
     )
     tracker.on_tick(
-        "X", "15m", high=101.0, low=94.0, current_price=100.5, bar_ts=bar_ts,
+        "X", "15m", high=101.0, low=94.0, current_price=99.5, bar_ts=bar_ts,
     )
 
     pos = tracker.get_active("X", "15m")
@@ -390,10 +482,76 @@ def test_planned_replaced_by_new_order_notifies_old_order_handling(store, notifi
     assert "106" in cancelled[-1].text
 
 
+def test_planned_program_invalidation_cancels_existing_plan(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    pos = tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision={
+            "decision": {
+                "order_type": "不下单",
+                "position_action": "撤销",
+                "position_advice": "周期/方向变化，程序确认原计划失效。",
+            }
+        },
+    )
+    assert pos is None
+    assert tracker.get_active("X", "15m") is None
+
+
+def test_replacement_uses_current_record_id(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(
+        symbol="X", timeframe="15m", decision=_long_decision(), record_id="old-record"
+    )
+    replacement = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 106.0,
+            "take_profit_price": 116.0,
+            "stop_loss_price": 101.0,
+        }
+    }
+    pos = tracker.apply_decision(
+        symbol="X", timeframe="15m", decision=replacement, record_id="new-record"
+    )
+    assert pos is not None
+    assert pos.opened_at_record_id == "new-record"
+
+
+def test_market_reversal_uses_live_fill_metadata(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    tracker.on_tick("X", "15m", high=100.0, low=100.0)
+    short = {
+        "decision": {
+            "order_type": "市价单",
+            "order_direction": "做空",
+            "entry_price": 99.0,
+            "take_profit_price": 90.0,
+            "stop_loss_price": 105.0,
+        }
+    }
+    pos = tracker.apply_decision(
+        symbol="X",
+        timeframe="15m",
+        decision=short,
+        record_id="reversal-record",
+        current_price=98.5,
+        fill_bar_ts=123,
+    )
+    assert pos is not None and pos.status is PositionStatus.FILLED
+    assert pos.fill_price == 98.5
+    assert pos.filled_on_bar_ts == 123
+    assert pos.opened_at_record_id == "reversal-record"
+
+
 def test_reversal_closes_and_opens_opposite(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
-    tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill long
+    tracker.on_tick("X", "15m", high=100.0, low=100.0)
     short = {"decision": {"order_type": "限价单", "order_direction": "做空",
                           "entry_price": 105.0, "take_profit_price": 95.0,
                           "stop_loss_price": 110.0}}

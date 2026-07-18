@@ -141,6 +141,48 @@ def test_stage2_order_direction_conflicts_stage1() -> None:
     )
 
 
+def test_countertrend_override_still_requires_failed_breakout_and_confirmation() -> None:
+    s1 = _stage1_proceed()
+    s2 = {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做空",
+            "entry_price": 1990.0,
+            "take_profit_price": 1980.0,
+            "take_profit_price_2": 1970.0,
+            "stop_loss_price": 2000.0,
+            "reasoning": "方向重判",
+            "diagnosis_confidence": 70,
+            "diagnosis_confidence_reasoning": "x",
+            "trade_confidence": 60,
+            "trade_confidence_reasoning": "x",
+            "estimated_win_rate": 55,
+            "estimated_win_rate_reasoning": "x",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "x",
+            "invalidation_condition": "x",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "normal_channel",
+            "direction": "bearish",
+            "key_signals": [],
+        },
+        "decision_trace": [
+            {"node_id": "2.3", "answer": "是", "branch": "bearish", "reason": "方向重判", "bar_range": "K3-K1"},
+            {"node_id": "9.0", "answer": "是", "reason": "空头信号", "bar_range": "K2"},
+            {"node_id": "10.3", "answer": "是", "reason": "通过", "bar_range": "K2-K1"},
+        ],
+        "terminal": {"node_id": "11.2", "outcome": "trade", "label": "short"},
+        "bar_analysis": {
+            "signal_bar": {"bar": "K2", "quality": "strong", "reason": "x"},
+            "entry_bar": {"bar": "K1", "strength": "strong", "follow_through": True},
+        },
+    }
+    errs = validate_stage2_coherence(s2, s1, kline_frame=_frame())
+    assert any("countertrend" in error or "逆势" in error for error in errs)
+
+
 def test_duplicate_single_bar_range_is_allowed() -> None:
     """Multiple §9/§10 nodes may legitimately cite the same signal bar (K1)."""
     trace = [

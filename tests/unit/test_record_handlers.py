@@ -40,5 +40,5 @@ def test_check_position_on_tick_uses_explicit_runtime_identity():
     )
 
     tracker.get_active.assert_called_once_with("XAUUSD", "15m")
-    tracker.on_tick.assert_called_once()
-    assert tracker.on_tick.call_args.args[:2] == ("XAUUSD", "15m")
+    tracker.on_live_price.assert_called_once()
+    assert tracker.on_live_price.call_args.args[:2] == ("XAUUSD", "15m")

@@ -1500,7 +1500,7 @@ def price_action_entry_confirmed(out: dict[str, Any]) -> bool:
     if not isinstance(decision, dict):
         return False
     if bar_analysis is None:
-        return True
+        return False
     if not isinstance(bar_analysis, dict):
         return False
     if decision.get("order_type") not in ("限价单", "突破单", "市价单"):
@@ -1529,6 +1529,13 @@ def price_action_entry_confirmed(out: dict[str, Any]) -> bool:
         "是",
         "confirmed",
     )
+
+    if decision.get("order_type") in ("限价单", "市价单") and entry_seq is None:
+        return False
+    if decision.get("order_type") == "突破单" and not (
+        decision.get("entry_basis_bar") and decision.get("entry_basis_extreme")
+    ):
+        return False
 
     if quality == "weak":
         return entry_seq is not None and confirmed_follow_through
@@ -1795,7 +1802,7 @@ def judge_follow_through(sig: int, features: dict[int, Any]) -> NodeFill:
 
 _CYCLE_ORDER_METHOD: dict[str, str] = {
 
-    "spike": "市价单",
+    "spike": "不下单",
 
     "micro_channel": "突破单",
 
@@ -1956,21 +1963,24 @@ def route_order_method(
             )
         )
 
-    # Preserve model's explicit limit/market choice when §10.3 already passed.
+    # Preserve an explicit confirmed order only when the cycle permits that method.
     if (
         model_order_type == "限价单"
+        and cycle != "spike"
         and _trace_answer(decision_trace, "10.3") == "是"
         and _has_trade_prices()
     ):
         candidate = "限价单"
     elif (
         model_order_type == "市价单"
+        and cycle != "spike"
         and _trace_answer(decision_trace, "10.3") == "是"
         and _has_trade_prices()
     ):
         candidate = "市价单"
     elif (
         model_order_type == "突破单"
+        and (cycle != "spike" or str(stage1.get("spike_stage") or "").strip().lower() in ("ending", "pullback", "channel"))
         and _trace_answer(decision_trace, "10.3") == "是"
         and _has_trade_prices()
         and decision.get("entry_basis_bar")
@@ -1981,9 +1991,20 @@ def route_order_method(
         candidate = "突破单"
 
     if candidate == "不下单":
-
-        # Not a trading context for this cycle
-
+        decision["order_type"] = "不下单"
+        for field in (
+            "order_direction",
+            "entry_price",
+            "stop_loss_price",
+            "take_profit_price",
+            "take_profit_price_2",
+            "entry_basis_bar",
+            "entry_basis_extreme",
+            "entry_rule",
+        ):
+            decision[field] = None
+        decision["estimated_win_rate"] = None
+        decision["estimated_win_rate_reasoning"] = None
         return []
 
 
@@ -2946,25 +2967,17 @@ class DecisionNodeEngine:
 
 
 
-        # Check §9.0 answer: if AI said no valid signal bar, skip §9.1-9.5
-        # rather than injecting misleading program-computed values.
-        # "否"  = no valid signal bar exists right now
-        # "等待" = AI semantically means "no valid signal bar" (should be "否" but
-        #          AI sometimes conflates "does it exist?" with "should I wait?").
-        # Both map to skip §9.1-9.5 — unless this is a planned limit order.
+        # Check §9.0 answer: without a valid closed signal bar, §9.1-9.5 are skipped.
         _dt = out["decision_trace"]
         _node_90 = next(
             (x for x in _dt if isinstance(x, dict) and str(x.get("node_id", "")) == "9.0"),
             None,
         )
-        _planned_limit = is_planned_limit_order(out)
         _section9_has_signal = True
         if _node_90 is not None:
             _ans_90 = str(_node_90.get("answer", "") or "").strip()
-            if _ans_90 in ("否", "等待") and not _planned_limit:
+            if _ans_90 in ("否", "等待"):
                 _section9_has_signal = False
-            elif _ans_90 in ("否", "等待") and has_background_limit_path(out):
-                _section9_has_signal = True
 
 
 
@@ -3027,25 +3040,6 @@ class DecisionNodeEngine:
                 _node["skipped"] = True
                 _node["answer"] = "不适用"
                 _node["reason"] = _skip_reason
-        elif _planned_limit:
-            _bar_analysis = out.get("bar_analysis")
-            _signal_bar = (
-                _bar_analysis.get("signal_bar")
-                if isinstance(_bar_analysis, dict)
-                else None
-            )
-            _no_signal_bar = (
-                not isinstance(_signal_bar, dict) or not _signal_bar.get("bar")
-            )
-            if _no_signal_bar or has_background_limit_path(out):
-                _skip_reason = (
-                    "计划型限价单（§9.0P 或 §9.0 背景路径），尚无已收盘信号棒，"
-                    "§9.1-9.3不适用。"
-                )
-                for _node in (node_91, node_92, node_93):
-                    _node["skipped"] = True
-                    _node["answer"] = "不适用"
-                    _node["reason"] = _skip_reason
 
 
 

@@ -211,16 +211,11 @@ def assess_limit_order_triggered(
         seq = int(getattr(bar, "seq", 0) or 0)
         low = float(getattr(bar, "low", 0))
         high = float(getattr(bar, "high", low))
-        if sign > 0 and low <= entry + tol:
+        if low - tol <= entry <= high + tol:
+            direction_text = "做多" if sign > 0 else "做空"
             return (
                 True,
-                f"K{seq} low={low} 已触及/跌破限价入场 {entry}（做多限价视为已触发）",
-                seq,
-            )
-        if sign < 0 and high >= entry - tol:
-            return (
-                True,
-                f"K{seq} high={high} 已触及/突破限价入场 {entry}（做空限价视为已触发）",
+                f"K{seq} range={low}-{high} 已覆盖入场价 {entry}（{direction_text}{order_type}视为已触发）",
                 seq,
             )
     return False, "", None
@@ -624,6 +619,10 @@ def apply_continuity_guard(
         "estimated_win_rate",
     ):
         decision[key] = None
+
+    decision["position_action"] = "撤销" if ctx.get("invalidated") else decision.get("position_action")
+    if ctx.get("invalidated"):
+        decision["position_advice"] = str(ctx.get("invalidation_reason") or "程序确认原计划失效")
 
     existing = str(decision.get("reasoning") or "")
     prefix = f"【程序连续性守卫】{reason}；改为不下单。 "

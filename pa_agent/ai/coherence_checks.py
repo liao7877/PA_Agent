@@ -696,22 +696,15 @@ def validate_stage2_coherence(
         order_dir = decision.get("order_direction")
         s1_dir = str(stage1.get("direction", "") or "").strip().lower()
         if order_type in ("限价单", "突破单", "市价单") and order_dir in ("做多", "做空"):
-            _has_2_3_override = _stage2_trace_documents_override(
-                stage2.get("decision_trace"),
-                field="direction",
-                new_value="bearish" if order_dir == "做空" else "bullish",
+            conflicts = (
+                (s1_dir == "bullish" and order_dir == "做空") or
+                (s1_dir == "bearish" and order_dir == "做多")
             )
-            if not _has_2_3_override:
-                needed_dir = "bearish" if order_dir == "做空" else "bullish"
-                conflicts = (
-                    (s1_dir == "bullish" and order_dir == "做空") or
-                    (s1_dir == "bearish" and order_dir == "做多")
+            if conflicts and not _has_confirmed_reversal(stage1, stage2):
+                errors.append(
+                    "countertrend/逆势 order requires breakout_failure evidence, "
+                    "a closed confirmation bar, and an explicit node 2.3 reversal override"
                 )
-                if conflicts and not _has_confirmed_reversal(stage1, stage2):
-                    errors.append(
-                        "countertrend/逆势 order requires breakout_failure evidence, "
-                        "a closed confirmation bar, and an explicit node 2.3 reversal override"
-                    )
 
     decision_trace = stage2.get("decision_trace")
     if isinstance(decision_trace, list):

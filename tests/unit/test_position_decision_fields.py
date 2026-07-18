@@ -51,7 +51,7 @@ def test_actionable_trade_decision_requires_prices_and_direction():
     assert not is_actionable_trade_decision({"decision": {"order_type": "不下单"}})
 
 
-def test_format_only_validation_allows_position_apply():
+def test_signal_chain_validation_blocks_position_apply():
     exc = {
         "type": "validation_error",
         "stage": "stage2",
@@ -68,7 +68,7 @@ def test_format_only_validation_allows_position_apply():
             "stop_loss_price": 4297.02,
         }
     }
-    assert should_apply_position_despite_validation(exc, stage2_decision=decision)
+    assert not should_apply_position_despite_validation(exc, stage2_decision=decision)
 
 
 def test_metrics_validation_blocks_position_apply():

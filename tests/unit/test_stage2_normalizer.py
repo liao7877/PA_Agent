@@ -443,6 +443,29 @@ def test_normalize_stage2_with_prediction():
     assert pred["features_used"] == ["stage1_diagnosis"]
 
 
+def test_missing_bar_analysis_coerces_trade_to_no_order() -> None:
+    payload = {
+        "decision": {
+            "order_direction": "做多",
+            "order_type": "限价单",
+            "entry_price": 100.0,
+            "take_profit_price": 110.0,
+            "stop_loss_price": 95.0,
+        },
+        "terminal": {"node_id": "11.2", "outcome": "trade", "label": "回撤做多"},
+    }
+
+    out = normalize_stage2(payload)
+
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["decision"]["entry_price"] is None
+    assert out["terminal"] == {
+        "node_id": "9.0",
+        "outcome": "wait",
+        "label": "等待已收盘信号棒或确认棒",
+    }
+
+
 def test_coerce_no_order_when_metrics_fail_after_breakout_entry_snap() -> None:
     """Regression: wrong breakout entry snapped → RR/equation fail → 不下单."""
     frame = KlineFrame(
@@ -500,6 +523,20 @@ def test_coerce_no_order_when_metrics_fail_after_breakout_entry_snap() -> None:
             "cycle_position": "broad_channel",
             "direction": "bearish",
             "key_signals": [],
+        },
+        "bar_analysis": {
+            "signal_bar": {
+                "bar": "K2",
+                "quality": "medium",
+                "pattern": "bear_breakout",
+                "reason": "K2 空头信号棒已收盘",
+            },
+            "entry_bar": {
+                "bar": "K1",
+                "strength": "strong",
+                "follow_through": True,
+                "freshness": "fresh",
+            },
         },
         "decision_trace": [
             {
@@ -871,6 +908,20 @@ def test_prediction_guard_forbids_long_when_next_cycle_bearish() -> None:
             "direction": "neutral",
             "key_signals": [],
         },
+        "bar_analysis": {
+            "signal_bar": {
+                "bar": "K2",
+                "quality": "medium",
+                "pattern": "bull_reversal",
+                "reason": "K2 多头信号棒已收盘",
+            },
+            "entry_bar": {
+                "bar": "K1",
+                "strength": "strong",
+                "follow_through": True,
+                "freshness": "fresh",
+            },
+        },
         "decision_trace": [],
         "terminal": {"node_id": "11.3", "outcome": "trade", "label": "t"},
         "next_cycle_prediction": {
@@ -922,6 +973,20 @@ def test_prediction_guard_forbids_short_when_next_cycle_bullish() -> None:
             "cycle_position": "trending_tr",
             "direction": "neutral",
             "key_signals": [],
+        },
+        "bar_analysis": {
+            "signal_bar": {
+                "bar": "K2",
+                "quality": "medium",
+                "pattern": "bear_reversal",
+                "reason": "K2 空头信号棒已收盘",
+            },
+            "entry_bar": {
+                "bar": "K1",
+                "strength": "strong",
+                "follow_through": True,
+                "freshness": "fresh",
+            },
         },
         "decision_trace": [],
         "terminal": {"node_id": "11.3", "outcome": "trade", "label": "t"},
@@ -1203,6 +1268,7 @@ def test_repair_misplaced_decision_fields_from_diagnosis_summary() -> None:
             "take_profit_price_2": 7309.34,
             "reasoning": "计划限价做空。",
             "estimated_win_rate": 60,
+            "estimated_win_rate_reasoning": "双顶结构偏空，胜率约60%。",
             "trade_confidence": 55,
             "trade_confidence_reasoning": "结构一致。",
             "diagnosis_confidence": 72,
@@ -1260,7 +1326,7 @@ def test_repair_misplaced_decision_fields_from_diagnosis_summary() -> None:
         "diagnosis_confidence": 72,
     }
     out = normalize_stage2(payload, stage1_json=stage1, skip_next_bar=True)
-    assert out["decision"]["estimated_win_rate_reasoning"] == "双顶结构偏空，胜率约60%。"
+    assert out["decision"]["estimated_win_rate_reasoning"] is None
     assert out["diagnosis_summary"]["key_signals"] == ["AIS确认"]
     assert "current_cycle" not in out["next_cycle_prediction"]
     assert out["next_cycle_prediction"]["cycle"] == "broad_channel"

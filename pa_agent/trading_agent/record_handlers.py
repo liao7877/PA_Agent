@@ -202,7 +202,7 @@ def check_position_on_tick(
     if current_price is None and isinstance(tick_bar, dict):
         current_price = tick_bar.get("close")
     try:
-        tracker.on_tick(
+        tracker.on_live_price(
             symbol,
             timeframe,
             high=high,

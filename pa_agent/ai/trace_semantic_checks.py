@@ -221,21 +221,12 @@ def validate_stage2_order_trace_semantics(stage2: dict[str, Any]) -> list[str]:
         (x for x in trace if isinstance(x, dict) and str(x.get("node_id")) == "9.0"),
         None,
     )
-    item_90p = next(
-        (x for x in trace if isinstance(x, dict) and str(x.get("node_id")) == "9.0P"),
-        None,
-    )
     if (
-        decision.get("order_type") == "限价单"
-        and isinstance(item_90, dict)
+        isinstance(item_90, dict)
         and str(item_90.get("answer", "") or "").strip() in ("否", "等待")
-        and not (
-            isinstance(item_90p, dict)
-            and str(item_90p.get("answer", "") or "").strip() == "是"
-        )
     ):
         errors.append(
-            "limit order with §9.0=否/等待 requires §9.0P=是 (background limit path)"
+            "placing an order requires §9.0=是 with a confirmed closed signal bar"
         )
 
     for required in ("10.1", "10.2", "10.3"):

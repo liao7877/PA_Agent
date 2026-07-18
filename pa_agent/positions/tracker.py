@@ -114,6 +114,7 @@ class PositionTracker:
             existing,
             inner,
             order_type,
+            record_id=record_id,
             current_price=current_price,
             fill_bar_ts=fill_bar_ts,
             first_tracked_bar_ts=first_tracked_bar_ts,
@@ -152,6 +153,12 @@ class PositionTracker:
             first_tracked_bar_ts=first_tracked_bar_ts,
             first_tracked_price=live_price,
             first_tracked_seen=first_tracked_bar_ts is None,
+            trigger_armed=self._trigger_is_armed(
+                str(inner.get("order_type") or ""),
+                is_long_direction(inner.get("order_direction")),
+                entry,
+                live_price,
+            ),
         )
         if position.order_type == "市价单":
             position.status = PositionStatus.FILLED
@@ -172,6 +179,7 @@ class PositionTracker:
         inner: dict,
         order_type: str,
         *,
+        record_id: str | None = None,
         current_price: float | None = None,
         fill_bar_ts: int | None = None,
         first_tracked_bar_ts: int | None = None,
@@ -198,7 +206,10 @@ class PositionTracker:
                 symbol=existing.symbol,
                 timeframe=existing.timeframe,
                 inner=inner,
-                record_id=existing.opened_at_record_id,
+                record_id=record_id,
+                current_price=current_price,
+                fill_bar_ts=fill_bar_ts,
+                first_tracked_bar_ts=first_tracked_bar_ts,
             )
 
         # 2) 已持仓 + position_action=平仓（结构化字段，不解析 reasoning 关键词）
@@ -226,7 +237,7 @@ class PositionTracker:
                 symbol=existing.symbol,
                 timeframe=existing.timeframe,
                 inner=inner,
-                record_id=existing.opened_at_record_id,
+                record_id=record_id,
                 current_price=current_price,
                 fill_bar_ts=fill_bar_ts,
                 first_tracked_bar_ts=first_tracked_bar_ts,
@@ -265,7 +276,7 @@ class PositionTracker:
         return existing
 
     # ── Tick-based detection ───────────────────────────────────────────────
-    def on_tick(
+    def on_live_price(
         self,
         symbol: str,
         timeframe: str,
@@ -275,10 +286,7 @@ class PositionTracker:
         current_price: float | None = None,
         bar_ts: int | None = None,
     ) -> Optional[PositionState]:
-        """Update the active position against a **closed** bar's high/low.
-
-        Returns the active position after processing (or None if closed/none).
-        """
+        """Process live price movement for order fills and TP/SL execution."""
         position = self._store.get_active(symbol, timeframe)
         if position is None:
             return None
@@ -302,7 +310,19 @@ class PositionTracker:
                         check_hi = max(position.first_tracked_price or live_price, live_price)
                         check_lo = min(position.first_tracked_price or live_price, live_price)
                 self._store.upsert_active(position)
-            if self._price_touched(position.entry_price, check_hi, check_lo):
+            live_price = _to_float(current_price)
+            if not position.trigger_armed:
+                position.trigger_armed = self._trigger_is_armed(
+                    position.order_type,
+                    position.is_long,
+                    position.entry_price,
+                    live_price,
+                )
+                if position.trigger_armed:
+                    position.armed_price = live_price
+                self._store.upsert_active(position)
+                return position
+            if self._entry_triggered(position, check_hi, check_lo, live_price):
                 position.status = PositionStatus.FILLED
                 position.filled_at_ms = _now_ms()
                 position.fill_price = position.entry_price
@@ -346,6 +366,26 @@ class PositionTracker:
                 return None
         return position
 
+    def on_tick(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        high: float,
+        low: float,
+        current_price: float | None = None,
+        bar_ts: int | None = None,
+    ) -> Optional[PositionState]:
+        """Compatibility alias for live execution updates."""
+        return self.on_live_price(
+            symbol,
+            timeframe,
+            high=high,
+            low=low,
+            current_price=current_price,
+            bar_ts=bar_ts,
+        )
+
     # ── Exit helpers ───────────────────────────────────────────────────────
     @staticmethod
     def _resolve_exit_price(
@@ -356,6 +396,51 @@ class PositionTracker:
         if position.fill_price is not None:
             return position.fill_price
         return position.entry_price
+
+    @staticmethod
+    def _trigger_is_armed(
+        order_type: str,
+        long: bool | None,
+        entry: float,
+        current_price: float | None,
+    ) -> bool:
+        if current_price is None or long is None:
+            return True
+        if order_type == "限价单":
+            return current_price >= entry if long else current_price <= entry
+        if order_type == "突破单":
+            return current_price <= entry if long else current_price >= entry
+        return True
+
+    @staticmethod
+    def _entry_triggered(
+        position: PositionState,
+        high: float,
+        low: float,
+        current_price: float | None,
+    ) -> bool:
+        entry = position.entry_price
+        long = position.is_long
+        if current_price is not None and long is not None:
+            armed_price = position.armed_price
+            if armed_price is not None:
+                if position.order_type == "限价单":
+                    return (
+                        armed_price >= entry and current_price < armed_price
+                        if long
+                        else armed_price <= entry and current_price > armed_price
+                    )
+                if position.order_type == "突破单":
+                    return (
+                        armed_price <= entry and current_price > armed_price
+                        if long
+                        else armed_price >= entry and current_price < armed_price
+                    )
+            if position.order_type == "限价单":
+                return current_price <= entry if long else current_price >= entry
+            if position.order_type == "突破单":
+                return current_price >= entry if long else current_price <= entry
+        return low <= entry <= high
 
     @staticmethod
     def _price_touched(price: float, high: float, low: float) -> bool:

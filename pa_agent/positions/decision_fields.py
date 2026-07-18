@@ -12,6 +12,11 @@ _SUBSTANTIVE_INVALID_PREFIXES = (
     "trace_semantic:",
     "trace:",
     "s2:",
+    "signal_chain:",
+    "breakout_price:",
+    "bar_analysis",
+    "decision.entry_basis",
+    "decision.order_direction",
 )
 
 # AI 在「已有持仓/计划单」场景下必须填写的显式意图（枚举，不靠正文关键词猜测）。

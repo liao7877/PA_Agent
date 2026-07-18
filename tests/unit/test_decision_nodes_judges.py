@@ -26,6 +26,7 @@ from pa_agent.ai.decision_nodes import (
     judge_signal_bar_direction,
     judge_signal_bar_length,
     merge_program_nodes,
+    route_order_method,
     write_override_trace,
 )
 from pa_agent.data.base import IndicatorBundle, KlineBar, KlineFrame
@@ -592,6 +593,45 @@ class TestApplyStage1:
         else:
             assert n23["answer"] == "中性"
             assert n23.get("branch") == "neutral"
+
+
+def test_price_action_entry_rejects_missing_bar_analysis() -> None:
+    from pa_agent.ai.decision_nodes import price_action_entry_confirmed
+
+    assert not price_action_entry_confirmed({"decision": {"order_type": "突破单"}})
+
+
+def test_price_action_entry_requires_concrete_entry_bar_for_limit() -> None:
+    from pa_agent.ai.decision_nodes import price_action_entry_confirmed
+
+    out = {
+        "decision": {"order_type": "限价单"},
+        "bar_analysis": {
+            "signal_bar": {"bar": "K2", "quality": "medium"},
+            "entry_bar": {"bar": None, "strength": "strong", "freshness": "fresh"},
+        },
+    }
+    assert not price_action_entry_confirmed(out)
+
+
+def test_spike_does_not_default_to_market_order() -> None:
+    decision = {
+        "order_type": "市价单",
+        "order_direction": "做多",
+        "entry_price": 100.0,
+        "stop_loss_price": 99.0,
+        "take_profit_price": 101.0,
+        "take_profit_price_2": 102.0,
+    }
+    trace = [{"node_id": "10.3", "answer": "是", "reason": "ok"}]
+    nodes = route_order_method(
+        {"cycle_position": "spike", "spike_stage": "active"},
+        decision,
+        trace,
+        entry_confirmed=True,
+    )
+    assert decision["order_type"] == "不下单"
+    assert nodes == []
 
 
 def test_is_planned_limit_order_rejects_pending_limit_without_signal_bar() -> None:

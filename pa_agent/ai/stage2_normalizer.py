@@ -924,8 +924,7 @@ def _normalize_signal_entry_bar_chain(bar_analysis: dict[str, Any], decision: di
 
 def _coerce_unconfirmed_entry(out: dict[str, Any]) -> bool:
     decision = out.get("decision")
-    bar_analysis = out.get("bar_analysis")
-    if not isinstance(decision, dict) or not isinstance(bar_analysis, dict):
+    if not isinstance(decision, dict):
         return False
     if decision.get("order_type") not in _TRADE_ORDER_TYPES:
         return False
@@ -1628,11 +1627,6 @@ def normalize_stage2(
         _normalize_market_order_entry_bar(bar_analysis, decision)
         if _normalize_signal_entry_bar_chain(bar_analysis, decision):
             pass
-    if isinstance(decision, dict):
-        from pa_agent.util.trade_metrics import adjust_decision_stop_for_tp1_rr_cap
-
-        if adjust_decision_stop_for_tp1_rr_cap(decision, kline_frame=kline_frame):
-            logger.debug("stop_loss widened to bring TP1 RR within program cap")
     # ── DecisionNodeEngine: fill §9.1/§9.2/§9.3/§9.5/§11 ─────────────────────
     if kline_frame is not None:
         try:
@@ -1640,9 +1634,9 @@ def normalize_stage2(
             DecisionNodeEngine.apply_stage2(out, kline_frame, stage1_json)
         except Exception as exc:  # noqa: BLE001
             logger.warning("DecisionNodeEngine.apply_stage2 failed: %s", exc)
-    if kline_frame is not None and _coerce_breakout_without_basis(out):
+    if _coerce_breakout_without_basis(out):
         logger.debug("Coerced breakout-without-basis to 不下单 after DecisionNodeEngine")
-    if kline_frame is not None and _coerce_unconfirmed_entry(out):
+    if _coerce_unconfirmed_entry(out):
         logger.debug("Coerced unconfirmed entry plan to 不下单 after DecisionNodeEngine")
 
     normalize_stage2_traces(

@@ -53,6 +53,8 @@ class PositionState(BaseModel):
     first_tracked_bar_ts: Optional[int] = None
     first_tracked_price: Optional[float] = None
     first_tracked_seen: bool = False
+    trigger_armed: bool = True
+    armed_price: Optional[float] = None
     exit_price: Optional[float] = None
     exit_reason: Optional[str] = None       # take_profit | stop_loss | ai_close | manual
     opened_at_record_id: Optional[str] = None  # pending json basename
