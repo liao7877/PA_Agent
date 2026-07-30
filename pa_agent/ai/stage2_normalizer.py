@@ -721,7 +721,14 @@ def _section14_violated(trace: Any) -> bool:
 
 def _clear_decision_to_no_order(decision: dict[str, Any]) -> None:
     decision["order_type"] = "不下单"
+    management_adjust = str(decision.get("position_action") or "").strip() == "调整"
     for field in _NO_ORDER_PRICE_FIELDS:
+        if management_adjust and field in (
+            "order_direction",
+            "take_profit_price",
+            "stop_loss_price",
+        ):
+            continue
         decision[field] = None
     decision["estimated_win_rate"] = None
     decision["estimated_win_rate_reasoning"] = None
@@ -752,6 +759,121 @@ def _set_trace_node_answer(
             base = str(item.get("reason", "") or "").strip()
             item["reason"] = f"{base}{reason_suffix}".strip()
         return
+
+
+def _clear_downstream_trade_trace(
+    out: dict[str, Any],
+    *,
+    reason: str,
+    blocker_node: str,
+) -> None:
+    trace = out.get("decision_trace")
+    if not isinstance(trace, list):
+        return
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id", "") or "").strip()
+        if node_id.startswith("11"):
+            item["answer"] = "不适用"
+            item["skipped"] = True
+            item["reason"] = reason
+        elif node_id == blocker_node:
+            item["answer"] = "否"
+            existing = str(item.get("reason", "") or "").strip()
+            if reason not in existing:
+                item["reason"] = f"{existing}（{reason}）".strip()
+
+
+def _force_technical_no_order(
+    out: dict[str, Any],
+    *,
+    reason: str,
+    node_id: str = "technical_error",
+) -> None:
+    decision = out.get("decision")
+    if not isinstance(decision, dict):
+        decision = {}
+        out["decision"] = decision
+    _clear_decision_to_no_order(decision)
+    decision["reasoning"] = f"【程序安全拒绝】{reason}"[:DECISION_REASONING_MAX_LEN]
+    out["setup_evidence"] = {
+        "verified": False,
+        "verification_status": "technical_error",
+        "setup_type": "technical_error",
+        "reason": reason,
+    }
+    terminal = out.get("terminal")
+    if not isinstance(terminal, dict):
+        terminal = {}
+        out["terminal"] = terminal
+    terminal.update(
+        {
+            "node_id": node_id,
+            "outcome": "reject",
+            "label": "程序安全校验异常，不下单",
+        }
+    )
+    _clear_downstream_trade_trace(
+        out,
+        reason=f"程序安全校验失败：{reason}",
+        blocker_node=node_id,
+    )
+
+
+def _reconcile_final_outcome(
+    out: dict[str, Any],
+    *,
+    enforce_trade_trace: bool = True,
+) -> None:
+    """Make decision, trace and terminal describe one fail-closed outcome."""
+    decision = out.get("decision")
+    if not isinstance(decision, dict):
+        return
+    terminal = out.get("terminal")
+    if not isinstance(terminal, dict):
+        terminal = {}
+        out["terminal"] = terminal
+    trace = out.get("decision_trace")
+    order_type = decision.get("order_type")
+
+    if order_type not in _TRADE_ORDER_TYPES:
+        _clear_decision_to_no_order(decision)
+        outcome = str(terminal.get("outcome", "") or "").strip()
+        if outcome == "trade" or outcome not in ("wait", "reject"):
+            terminal["outcome"] = "wait"
+        node_id = str(terminal.get("node_id", "") or "").strip()
+        if node_id.startswith("11") or not node_id:
+            terminal["node_id"] = "9.0"
+            terminal.setdefault("label", "价格行为入场未获程序授权")
+        _clear_downstream_trade_trace(
+            out,
+            reason="最终结果为不下单，§11 执行节点不适用。",
+            blocker_node=str(terminal.get("node_id") or "9.0"),
+        )
+        return
+
+    if not enforce_trade_trace:
+        return
+    affirmative = []
+    if isinstance(trace, list):
+        affirmative = [
+            item
+            for item in trace
+            if isinstance(item, dict)
+            and str(item.get("node_id", "") or "").strip().startswith("11")
+            and str(item.get("answer", "") or "").strip() == "是"
+            and not bool(item.get("skipped", False))
+        ]
+    if terminal.get("outcome") != "trade" or len(affirmative) != 1:
+        _force_technical_no_order(
+            out,
+            reason=(
+                "最终订单路由不一致：必须 terminal.outcome=trade 且恰好一个 §11 节点为是"
+            ),
+        )
+        return
+    terminal["node_id"] = str(affirmative[0].get("node_id") or terminal.get("node_id"))
 
 
 def _coerce_decision_no_order(out: dict[str, Any]) -> bool:
@@ -857,32 +979,20 @@ def _normalize_market_order_entry_bar(
     bar_analysis: dict[str, Any],
     decision: dict[str, Any],
 ) -> bool:
-    """Market orders need a concrete entry_bar; borrow signal_bar when model left it pending."""
+    """Normalize an already-present market entry bar without inventing confirmation."""
     if decision.get("order_type") != "市价单":
         return False
     entry_bar = bar_analysis.get("entry_bar")
-    signal_bar = bar_analysis.get("signal_bar")
-    if not isinstance(entry_bar, dict) or not isinstance(signal_bar, dict):
+    if not isinstance(entry_bar, dict) or not entry_bar.get("bar"):
         return False
-    if entry_bar.get("bar") is not None:
-        return False
-    sig_bar = signal_bar.get("bar")
-    if not sig_bar:
-        return False
-    # Market order fills on the latest closed bar; signal_bar stays older (K2+).
-    entry_bar["bar"] = str(bar_analysis.get("last_closed_bar") or "K1").strip() or "K1"
-    raw_strength = str(entry_bar.get("strength") or signal_bar.get("quality") or "weak").strip().lower()
-    strength_map = {"strong": "strong", "medium": "weak", "weak": "weak", "low": "weak", "high": "strong"}
-    entry_bar["strength"] = strength_map.get(raw_strength, "weak")
-    entry_bar["freshness"] = "fresh"
-    entry_bar["follow_through"] = True
-    entry_bar["still_valid"] = entry_bar.get("still_valid", True)
-    logger.debug("market order: entry_bar.bar set from signal_bar %s", sig_bar)
-    return True
-
+    changed = False
+    if str(entry_bar.get("freshness") or "").strip().lower() == "pending":
+        entry_bar["freshness"] = "fresh"
+        changed = True
+    return changed
 
 def _normalize_signal_entry_bar_chain(bar_analysis: dict[str, Any], decision: dict[str, Any]) -> bool:
-    """Signal K must be strictly older than entry K (larger seq); pending entry exempt."""
+    """Normalize pending execution state without inventing signal/confirmation bars."""
     if decision.get("order_type") not in _TRADE_ORDER_TYPES:
         return False
     signal_bar = bar_analysis.get("signal_bar")
@@ -892,34 +1002,27 @@ def _normalize_signal_entry_bar_chain(bar_analysis: dict[str, Any], decision: di
 
     strength = str(entry_bar.get("strength", "") or "").strip().lower()
     freshness = str(entry_bar.get("freshness", "") or "").strip().lower()
-    pending = (
-        strength == "not_triggered"
-        or not entry_bar.get("bar")
-        or freshness in ("pending", "stale", "invalid")
-    )
-    if pending:
+    if freshness in ("stale", "invalid"):
+        return False
+
+    pending = strength == "not_triggered" or not entry_bar.get("bar") or freshness == "pending"
+    if not pending:
+        return False
+
+    changed = False
+    if entry_bar.get("bar") is not None:
         entry_bar["bar"] = None
+        changed = True
+    if strength != "not_triggered":
         entry_bar["strength"] = "not_triggered"
-        entry_bar.setdefault("freshness", "pending")
-        if entry_bar.get("follow_through") in (None, "", False):
-            entry_bar["follow_through"] = "pending"
-        return False
-
-    signal_seq = parse_k_seq(signal_bar.get("bar"))
-    entry_seq = parse_k_seq(entry_bar.get("bar"))
-    if signal_seq is None or entry_seq is None:
-        return False
-    if signal_seq > entry_seq:
-        return False
-
-    signal_bar["bar"] = f"K{entry_seq + 1}"
-    logger.debug(
-        "signal_bar K%s -> K%s (must be older than entry K%s)",
-        signal_seq,
-        entry_seq + 1,
-        entry_seq,
-    )
-    return True
+        changed = True
+    if freshness != "pending":
+        entry_bar["freshness"] = "pending"
+        changed = True
+    if entry_bar.get("follow_through") in (None, "", False):
+        entry_bar["follow_through"] = "pending"
+        changed = True
+    return changed
 
 
 def _coerce_unconfirmed_entry(out: dict[str, Any]) -> bool:
@@ -928,9 +1031,9 @@ def _coerce_unconfirmed_entry(out: dict[str, Any]) -> bool:
         return False
     if decision.get("order_type") not in _TRADE_ORDER_TYPES:
         return False
-    from pa_agent.ai.decision_nodes import price_action_entry_confirmed
+    from pa_agent.ai.decision_nodes import price_action_setup_confirmed
 
-    if price_action_entry_confirmed(out):
+    if price_action_setup_confirmed(out):
         return False
     _clear_decision_to_no_order(decision)
     terminal = out.get("terminal")
@@ -938,6 +1041,61 @@ def _coerce_unconfirmed_entry(out: dict[str, Any]) -> bool:
         terminal["node_id"] = "9.0"
         terminal["outcome"] = "wait"
         terminal["label"] = "等待已收盘信号棒或确认棒"
+    _remove_legacy_background_limit_trace(out)
+    return True
+
+
+def _remove_legacy_background_limit_trace(out: dict[str, Any]) -> bool:
+    trace = out.get("decision_trace")
+    if not isinstance(trace, list):
+        return False
+    filtered = [
+        item
+        for item in trace
+        if not (isinstance(item, dict) and str(item.get("node_id", "")).strip() == "9.0P")
+    ]
+    if len(filtered) == len(trace):
+        return False
+    out["decision_trace"] = filtered
+    return True
+
+
+def _sync_routed_no_order_terminal(
+    out: dict[str, Any],
+    *,
+    had_trade_plan: bool,
+    setup_was_confirmed: bool,
+ ) -> bool:
+    """Keep terminal/trace coherent when §11 routing clears a proposed order."""
+    terminal = out.get("terminal")
+    if isinstance(terminal, dict) and terminal.get("node_id") == "technical_error":
+        return False
+    decision = out.get("decision")
+    if (
+        not had_trade_plan
+        or not isinstance(decision, dict)
+        or decision.get("order_type") != "不下单"
+    ):
+        return False
+
+    _clear_decision_to_no_order(decision)
+    terminal = out.get("terminal")
+    if not isinstance(terminal, dict):
+        terminal = {}
+        out["terminal"] = terminal
+    terminal["node_id"] = "9.0"
+    terminal["outcome"] = "wait"
+    if setup_was_confirmed:
+        terminal["label"] = "当前周期或执行方式不支持该方案，等待新的价格行为 setup"
+    else:
+        terminal["label"] = "等待已收盘信号棒或确认棒"
+        _set_trace_node_answer(
+            out.get("decision_trace"),
+            "9.0",
+            "否",
+            reason_suffix="（程序校正：结构位不能替代已收盘价格行为确认。）",
+        )
+    _remove_legacy_background_limit_trace(out)
     return True
 
 
@@ -1185,12 +1343,6 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
         feats = []
     feats = [f for f in feats if isinstance(f, str)]
     # Filter out values not in the schema enum (e.g. "detected_patterns")
-    invalid_feats = [f for f in feats if f not in _VALID_FEATURES_USED]
-    if invalid_feats:
-        logger.debug(
-            "next_bar_prediction.features_used dropped invalid values: %s",
-            invalid_feats,
-        )
     feats = [f for f in feats if f in _VALID_FEATURES_USED]
     if "stage1_diagnosis" not in feats:
         feats.insert(0, "stage1_diagnosis")
@@ -1273,34 +1425,20 @@ def _normalize_next_bar_prediction(prediction: dict[str, Any]) -> None:
 
         prediction["probabilities"] = normalized
 
-        # 5. direction = argmax (R3.3) — respect model choice on ties
+        # 5. direction = deterministic argmax (R3.3). Ties use schema order so
+        # normalization is a pure function of probabilities and is idempotent.
         order = ("bullish", "bearish", "neutral")
         max_value = max(normalized[k] for k in order)
-        tied_winners = [k for k in order if normalized[k] == max_value]
+        expected = next(k for k in order if normalized[k] == max_value)
         model_direction = str(prediction.get("direction") or "").strip().lower()
-
-        if len(tied_winners) > 1:
-            # Tie: preserve model's choice if it's one of the winners
-            if model_direction in tied_winners:
-                pass  # keep model's semantic choice
-            else:
-                # Model direction not in tied set — override with first winner
-                logger.warning(
-                    "next_bar_prediction direction=%r not in tied winners %s "
-                    "(probs=%s); overriding to %r",
-                    model_direction, tied_winners, normalized, tied_winners[0],
-                )
-                prediction["direction"] = tied_winners[0]
-        else:
-            # Clear winner
-            expected = tied_winners[0]
-            if model_direction != expected:
-                logger.debug(
-                    "next_bar_prediction direction %r -> %r (argmax of %s)",
-                    model_direction, expected, normalized,
-                )
-                prediction["direction"] = expected
-            # else: model direction matches argmax, no change needed
+        if model_direction != expected:
+            logger.debug(
+                "next_bar_prediction direction %r -> %r (argmax of %s)",
+                model_direction,
+                expected,
+                normalized,
+            )
+            prediction["direction"] = expected
     # else: unparseable probabilities with unpredictable=False — leave for validator
 
     # 6. Strip extra keys not allowed by the schema (additionalProperties: false).
@@ -1493,91 +1631,6 @@ def _max_bar_seq_from_frame(kline_frame: Any) -> int | None:
     return max(seqs) if seqs else None
 
 
-def _fix_background_limit_trace(out: dict[str, Any]) -> bool:
-    """Ensure §9.0P=是 when a planned limit order follows §9.0=否."""
-    try:
-        from pa_agent.ai.decision_nodes import is_planned_limit_order
-    except ImportError:
-        return False
-    if not is_planned_limit_order(out):
-        return False
-    trace = out.get("decision_trace")
-    if not isinstance(trace, list):
-        return False
-
-    node_90: dict[str, Any] | None = None
-    node_90p: dict[str, Any] | None = None
-    for item in trace:
-        if not isinstance(item, dict):
-            continue
-        nid = str(item.get("node_id", "")).strip()
-        if nid == "9.0":
-            node_90 = item
-        elif nid == "9.0P":
-            node_90p = item
-
-    changed = False
-    if node_90 is not None:
-        ans = str(node_90.get("answer", "") or "").strip()
-        if ans in ("否", "等待"):
-            if node_90p is None:
-                trace.insert(
-                    trace.index(node_90) + 1,
-                    {
-                        "node_id": "9.0P",
-                        "section": "入场信号",
-                        "question": "背景驱动限价单评估（§9.0=否 时必须评估）",
-                        "answer": "是",
-                        "reason": (
-                            "程序校正：计划型限价单，周期/结构位支持挂限价，"
-                            "继续 §10 定三价。"
-                        ),
-                        "skipped": False,
-                        "bar_range": "K10-K1",
-                    },
-                )
-                changed = True
-            elif str(node_90p.get("answer", "") or "").strip() in ("否", "等待"):
-                node_90p["answer"] = "是"
-                base = str(node_90p.get("reason", "") or "").strip()
-                suffix = "（程序校正：背景限价路径，非信号棒路径。）"
-                node_90p["reason"] = f"{base}{suffix}".strip() if base else suffix.strip()
-                changed = True
-    return changed
-
-
-def _fix_9_0_for_planned_limit(out: dict[str, Any]) -> bool:
-    """When model outputs a valid planned limit but §9.0=否, upgrade to 是."""
-    try:
-        from pa_agent.ai.decision_nodes import is_planned_limit_order
-    except ImportError:
-        return False
-    if not is_planned_limit_order(out):
-        return False
-    trace = out.get("decision_trace")
-    if not isinstance(trace, list):
-        return False
-    changed = False
-    for item in trace:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("node_id", "")).strip() != "9.0":
-            continue
-        ans = str(item.get("answer", "") or "").strip()
-        if ans not in ("否", "等待"):
-            return False
-        item["answer"] = "是"
-        base = str(item.get("reason", "") or "").strip()
-        suffix = (
-            "（程序校正：计划型限价单，接受 weak/invalid 或无信号棒，"
-            "等待回撤/反弹到位入场，非等下一根确认棒后放弃。）"
-        )
-        item["reason"] = f"{base}{suffix}".strip() if base else suffix.strip()
-        changed = True
-        break
-    return changed
-
-
 def normalize_stage2(
     obj: dict[str, Any],
     *,
@@ -1627,13 +1680,32 @@ def normalize_stage2(
         _normalize_market_order_entry_bar(bar_analysis, decision)
         if _normalize_signal_entry_bar_chain(bar_analysis, decision):
             pass
+    from pa_agent.ai.decision_nodes import price_action_setup_confirmed
+
+    had_trade_plan = bool(
+        isinstance(decision, dict) and decision.get("order_type") in _TRADE_ORDER_TYPES
+    )
+    setup_confirmed_before_routing = (
+        price_action_setup_confirmed(out) if had_trade_plan else False
+    )
+
     # ── DecisionNodeEngine: fill §9.1/§9.2/§9.3/§9.5/§11 ─────────────────────
     if kline_frame is not None:
         try:
             from pa_agent.ai.decision_nodes import DecisionNodeEngine
             DecisionNodeEngine.apply_stage2(out, kline_frame, stage1_json)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("DecisionNodeEngine.apply_stage2 failed: %s", exc)
+            logger.exception("DecisionNodeEngine.apply_stage2 failed")
+            _force_technical_no_order(
+                out,
+                reason=f"DecisionNodeEngine.apply_stage2 异常：{exc}",
+            )
+    if _sync_routed_no_order_terminal(
+        out,
+        had_trade_plan=had_trade_plan,
+        setup_was_confirmed=setup_confirmed_before_routing,
+    ):
+        logger.debug("Synced terminal after §11 routing cleared the order")
     if _coerce_breakout_without_basis(out):
         logger.debug("Coerced breakout-without-basis to 不下单 after DecisionNodeEngine")
     if _coerce_unconfirmed_entry(out):
@@ -1647,10 +1719,9 @@ def normalize_stage2(
 
     decision = out.get("decision")
     if isinstance(decision, dict) and decision.get("order_type") == "不下单":
-        # A no-order decision must satisfy the schema "then" branch:
-        # all price fields + direction must be null.
-        for field in _NO_ORDER_PRICE_FIELDS:
-            decision[field] = None
+        # Normalize through the central helper so position_action=调整 may retain
+        # direction/TP/SL for management while new-entry no-order stays all-null.
+        _clear_decision_to_no_order(decision)
         decision["estimated_win_rate"] = None
         # trade_confidence / trade_confidence_reasoning are required (non-nullable)
         # by schema; AI incorrectly sets them to null when order_type=不下单.
@@ -1677,7 +1748,7 @@ def normalize_stage2(
                 entry_bar["strength"] = "not_triggered"
                 entry_bar.setdefault("bar", None)
                 fresh = str(entry_bar.get("freshness") or "").strip().lower()
-                if fresh in ("stale", "invalid", "expired", ""):
+                if fresh in ("expired", ""):
                     entry_bar["freshness"] = "pending"
                 else:
                     entry_bar.setdefault("freshness", "pending")
@@ -1766,62 +1837,9 @@ def normalize_stage2(
     if isinstance(pred_c, dict):
         _normalize_next_cycle_prediction(pred_c, stage1_json=stage1_json)
 
-    # ── Hard guard: align decision direction with next cycle direction ──
-    # User rule:
-    # - "下一周期偏空就不要给出做多的决策"
-    # - Symmetric: 下一周期偏多时也不要给出做空的决策
-    try:
-        pred_c = out.get("next_cycle_prediction")
-        decision = out.get("decision")
-        if isinstance(pred_c, dict) and isinstance(decision, dict):
-            next_dir = str(pred_c.get("direction") or "").strip().lower()
-            order_dir = str(decision.get("order_direction") or "").strip()
-            order_type = str(decision.get("order_type") or "").strip()
-            is_long = ("多" in order_dir) or (order_dir.lower() in ("long", "buy", "bullish"))
-            is_short = ("空" in order_dir) or (order_dir.lower() in ("short", "sell", "bearish"))
-            block_long = next_dir == "bearish" and is_long
-            block_short = next_dir == "bullish" and is_short
-            if (block_long or block_short) and order_type not in ("", "不下单"):
-                decision = dict(decision)
-                decision["order_type"] = "不下单"
-                for key in (
-                    "order_direction",
-                    "entry_price",
-                    "stop_loss_price",
-                    "take_profit_price",
-                    "take_profit_price_2",
-                    "entry_rule",
-                    "entry_basis_bar",
-                    "entry_basis_extreme",
-                    "estimated_win_rate",
-                ):
-                    decision[key] = None
-
-                existing = str(decision.get("reasoning") or "")
-                if block_long:
-                    prefix = (
-                        "【程序守卫】next_cycle_prediction.direction=bearish：禁止做多；改为不下单。 "
-                    )
-                else:
-                    prefix = (
-                        "【程序守卫】next_cycle_prediction.direction=bullish：禁止做空；改为不下单。 "
-                    )
-                decision["reasoning"] = (prefix + existing)[:DECISION_REASONING_MAX_LEN]
-
-                terminal = dict(out.get("terminal") or {})
-                terminal["outcome"] = "wait"
-                terminal["node_id"] = "prediction_guard"
-                terminal["label"] = (
-                    "周期预测守卫：下一周期偏空，禁止做多"
-                    if block_long
-                    else "周期预测守卫：下一周期偏多，禁止做空"
-                )
-
-                out = dict(out)
-                out["decision"] = decision
-                out["terminal"] = terminal
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("prediction direction guard failed: %s", exc)
+    # next_cycle_prediction is an auxiliary forecast only. It must never create,
+    # mutate, or cancel the current-cycle decision; current closed price action and
+    # deterministic decision nodes remain authoritative.
 
     _coerce_decision_when_trade_metrics_fail(
         out,
@@ -1831,10 +1849,9 @@ def normalize_stage2(
 
     decision = out.get("decision")
     if isinstance(decision, dict) and decision.get("order_type") == "不下单":
-        # A no-order decision must satisfy the schema "then" branch:
-        # all price fields + direction must be null.
-        for field in _NO_ORDER_PRICE_FIELDS:
-            decision[field] = None
+        # Normalize through the central helper so position_action=调整 may retain
+        # direction/TP/SL for management while new-entry no-order stays all-null.
+        _clear_decision_to_no_order(decision)
         decision["estimated_win_rate"] = None
         # trade_confidence / trade_confidence_reasoning are required (non-nullable)
         # by schema; AI incorrectly sets them to null when order_type=不下单.
@@ -1859,7 +1876,13 @@ def normalize_stage2(
             )
             out = apply_continuity_guard(out, ctx)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("apply_continuity_guard failed: %s", exc)
+            logger.exception("apply_continuity_guard failed")
+            _force_technical_no_order(
+                out,
+                reason=f"continuity guard 异常：{exc}",
+            )
+
+    _reconcile_final_outcome(out, enforce_trade_trace=kline_frame is not None)
 
     decision = out.get("decision")
     if isinstance(decision, dict):

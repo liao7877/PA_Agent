@@ -10,7 +10,7 @@ def test_is_symbol_available_empty_name():
     assert src.is_symbol_available("   ") is False
 
 
-def test_is_symbol_available_when_not_connected_assumes_ok():
+def test_is_symbol_available_when_not_connected_fails_closed():
     src = MT5Source()
     assert src._connected is False
-    assert src.is_symbol_available("XAUUSDm") is True
+    assert src.is_symbol_available("XAUUSDm") is False

@@ -87,6 +87,29 @@ def test_validate_gate_proceed_ok() -> None:
     assert not validate_gate_result_consistency(VALID_STAGE1)
 
 
+def test_gate_wait_rejects_momentum_node_as_stage1_terminal() -> None:
+    stage1 = {
+        "cycle_position": "normal_channel",
+        "direction": "bullish",
+        "diagnosis_confidence": 60,
+        "key_signals": [],
+        "gate_trace": [
+            {
+                "node_id": "2.5",
+                "question": "当前惯性是否足够？",
+                "answer": "否",
+                "reason": "短期惯性减弱",
+                "bar_range": "K8-K1",
+            }
+        ],
+        "gate_result": "wait",
+    }
+
+    errors = validate_gate_result_consistency(stage1)
+
+    assert any("§1.2" in error and "§1.3" in error for error in errors)
+
+
 def test_validate_stage2_trade_ok() -> None:
     assert not validate_stage2_trace_consistency(VALID_STAGE2)
 

@@ -28,7 +28,7 @@
 
 - **AIL 中首个做空反转** → 仅诊断；§14 逆势禁止（无例外）
 - **AIS 中首个做多反转** → 同上
-- 顺 Always In：信号不完美也可评估回撤入场（H1/H2、§9.0P 计划型限价）
+- 顺 Always In：仍须已收盘价格行为确认。strong/medium 可 pending 突破；weak 必须等待更晚确认。限价只用于已确认的 H2/L2、second entry 或 breakout pullback/retest，Always In 本身不能授权背景限价。
 - `bar_analysis.always_in` 与 `order_direction` 冲突时，reasoning 须写双确认
 
 ⚠️ **宽通道**：**禁止逆势**；仅顺 Always In / direction 一侧。
@@ -46,7 +46,7 @@
 
 **第一次触 EMA**：
 - 高胜率**顺势刮头皮**结构之一，预期至少测试原趋势极点
-- 须信号棒 + 小止损 + §10.3
+- 须已收盘信号棒 + 结构失效止损 + §10.3；不得用噪音内小止损凑 RR
 
 **两次失败规则**：
 - 第一次 20GB/均线缺口棒结构失败 → 可等第二次

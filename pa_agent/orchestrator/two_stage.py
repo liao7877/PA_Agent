@@ -817,7 +817,11 @@ class TwoStageOrchestrator:
 
         # ── Step 14: Build Stage 2 messages ───────────────────────────────────
         _enable_next_bar = bool(
-            getattr(getattr(self._settings, "general", None), "enable_next_bar_prediction", False)
+            getattr(
+                getattr(self._settings, "general", None),
+                "enable_next_bar_prediction",
+                True,
+            )
         )
         _flip_cooldown = int(
             getattr(
@@ -1010,6 +1014,21 @@ class TwoStageOrchestrator:
                 decision_stance=record.meta.decision_stance,
                 stage1_json=stage1_json,
             )
+            # A raw cross-field order invariant failure is not a usable decision.
+            # Preserve harmless type/enum failures for audit, but never expose a
+            # malformed order/no-order payload to position handling.
+            unsafe_order_fields = {
+                "entry_price",
+                "take_profit_price",
+                "take_profit_price_2",
+                "stop_loss_price",
+                "order_direction",
+            }
+            if any(
+                str(field).removeprefix("decision.") in unsafe_order_fields
+                for field in err.invalid_fields
+            ):
+                preserved_s2 = None
             if not _enable_next_bar and isinstance(preserved_s2, dict):
                 preserved_s2 = copy.deepcopy(preserved_s2)
                 preserved_s2.pop("next_bar_prediction", None)

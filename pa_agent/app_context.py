@@ -88,30 +88,34 @@ class AppContext:
             getattr(settings.general, "last_data_source", "mt5")
         )
         mt5_path = getattr(settings.general, "mt5_terminal_path", "") or ""
+        if ds_kind == "mt5" or any(
+            getattr(item, "data_source", "") == "mt5"
+            for item in getattr(settings.instruments, "items", [])
+        ):
+            from pa_agent.data.mt5_connection_manager import (
+                configure_mt5_connection_manager,
+            )
+
+            configure_mt5_connection_manager(
+                initialize_attempts=settings.general.mt5_initialize_attempts,
+                backoff_initial_s=settings.general.mt5_initialize_backoff_initial_ms / 1000.0,
+                backoff_max_s=settings.general.mt5_initialize_backoff_max_ms / 1000.0,
+                request_timeout_s=settings.general.mt5_request_timeout_ms / 1000.0,
+            )
         data_source = create_data_source(ds_kind, mt5_terminal_path=mt5_path)
 
-        # Subscribe to the last-used symbol/timeframe from settings
-        try:
-            data_source.connect()
-            if ds_kind == "tradingview":
-                from pa_agent.data.tradingview import TradingViewSource
+        # Connection and subscription happen in background refresh workers after
+        # the Qt event loop starts.  A visible MT5 terminal can still be completing
+        # broker authorization, so bootstrap must not make readiness a one-shot
+        # synchronous requirement.
+        if ds_kind == "tradingview":
+            from pa_agent.data.tradingview import TradingViewSource
 
-                if isinstance(data_source, TradingViewSource):
-                    # Use saved exchange setting, default to auto (empty).
-                    saved_exchange = getattr(settings.general, 'last_tradingview_exchange', '') or ''
-                    data_source.set_exchange(saved_exchange)
-            data_source.subscribe(
-                settings.general.last_symbol,
-                settings.general.last_timeframe,
-            )
-            app_logger.info(
-                "Data source %s subscribed to %s %s",
-                ds_kind,
-                settings.general.last_symbol,
-                settings.general.last_timeframe,
-            )
-        except Exception as exc:  # noqa: BLE001
-            app_logger.warning("Initial data source subscription failed: %s", exc)
+            if isinstance(data_source, TradingViewSource):
+                saved_exchange = getattr(
+                    settings.general, "last_tradingview_exchange", ""
+                ) or ""
+                data_source.set_exchange(saved_exchange)
 
         # ── AI client ─────────────────────────────────────────────────────────
         from pa_agent.ai.client_factory import create_ai_client

@@ -14,7 +14,15 @@ _TRADE_RECORDS_DIR = Path("trade_records")
 # Default: no opposite-direction plan at the same structure within N closed bars.
 DEFAULT_STRUCTURE_FLIP_COOLDOWN_BARS = 3
 # Resting limit plans auto-expire after this many closed bars without a fill.
-DEFAULT_MAX_PENDING_LIMIT_BARS = 3
+DEFAULT_SETUP_EXPIRY_BARS = {
+    "breakout_signal": 2,
+    "breakout_retest": 4,
+    "breakout_pullback": 4,
+    "h2": 2,
+    "l2": 2,
+    "tr_boundary": 3,
+}
+DEFAULT_MAX_PENDING_LIMIT_BARS = 3  # compatibility fallback for legacy records
 _STRUCTURE_TOLERANCE_TICKS = 3
 
 _REL_SAME = "same_direction"
@@ -186,6 +194,7 @@ def assess_limit_order_triggered(
     frame: Any,
     *,
     max_bars: int | None = None,
+    placed_at_ms: int | None = None,
 ) -> tuple[bool, str, int | None]:
     """True when a resting limit entry was touched on a recent closed bar."""
     if not is_order_plan(decision):
@@ -204,18 +213,41 @@ def assess_limit_order_triggered(
         return False, "", None
 
     scan = bars if max_bars is None else bars[: max(1, int(max_bars))]
-    tick = float(infer_price_tick_from_frame(frame) or 0.01)
-    tol = max(tick * 0.5, 1e-9)
+    from pa_agent.positions.order_trigger import evaluate_order_trigger
 
     for bar in scan:
         seq = int(getattr(bar, "seq", 0) or 0)
+        if placed_at_ms is not None:
+            try:
+                from pa_agent.data.datetime_ts import ts_open_to_ms
+
+                bar_open_ms = int(ts_open_to_ms(getattr(bar, "ts_open", None)))
+            except (TypeError, ValueError):
+                continue
+            if bar_open_ms < int(placed_at_ms):
+                continue
         low = float(getattr(bar, "low", 0))
         high = float(getattr(bar, "high", low))
-        if low - tol <= entry <= high + tol:
+        open_ = float(getattr(bar, "open", low))
+        close = float(getattr(bar, "close", open_))
+        armed = True
+        result = evaluate_order_trigger(
+            order_type=order_type,
+            is_long=(sign > 0),
+            entry=entry,
+            bar_open=open_,
+            bar_high=high,
+            bar_low=low,
+            bar_close=close,
+            armed=True,
+            previous_price=entry if low <= entry <= high else None,
+        )
+        if result.triggered:
             direction_text = "做多" if sign > 0 else "做空"
             return (
                 True,
-                f"K{seq} range={low}-{high} 已覆盖入场价 {entry}（{direction_text}{order_type}视为已触发）",
+                f"K{seq} 已触发{direction_text}{order_type}，计划价 {entry}，成交参考 {result.fill_price}"
+                f"（{'跳空穿价' if result.gap_through else '正常触及'}）",
                 seq,
             )
     return False, "", None
@@ -235,16 +267,22 @@ def load_last_trade_csv_row(symbol: str, timeframe: str) -> dict[str, str] | Non
         return None
 
 
-def decision_from_previous_record(previous_record: Any) -> dict[str, Any] | None:
+def stage2_from_previous_record(previous_record: Any) -> dict[str, Any] | None:
+    """Return the complete previous Stage-2 payload so setup provenance can be audited."""
     if previous_record is None:
         return None
-    s2 = getattr(previous_record, "stage2_decision", None)
-    if s2 is None and isinstance(previous_record, dict):
-        s2 = previous_record.get("stage2_decision")
-    if not isinstance(s2, dict):
+    stage2 = getattr(previous_record, "stage2_decision", None)
+    if stage2 is None and isinstance(previous_record, dict):
+        stage2 = previous_record.get("stage2_decision")
+    return stage2 if isinstance(stage2, dict) else None
+
+
+def decision_from_previous_record(previous_record: Any) -> dict[str, Any] | None:
+    stage2 = stage2_from_previous_record(previous_record)
+    if not isinstance(stage2, dict):
         return None
-    dec = s2.get("decision")
-    return dec if isinstance(dec, dict) else None
+    decision = stage2.get("decision")
+    return decision if isinstance(decision, dict) else None
 
 
 def previous_record_time_iso(previous_record: Any) -> str | None:
@@ -278,35 +316,34 @@ def assess_unfilled_limit_auto_cancel(
     bars_since: int,
     invalidated: bool,
     limit_triggered: bool,
+    setup_provenance: dict | None = None,
     max_pending_bars: int = DEFAULT_MAX_PENDING_LIMIT_BARS,
 ) -> tuple[bool, str]:
-    """Auto-cancel a resting limit plan when regime changed or it aged out.
-
-    Rule (user): if previous limit plan is still unfilled (not triggered) and either
-    - pending for > max_pending_bars closed bars, OR
-    - trend direction changed, OR
-    - cycle_position changed,
-    then mark it invalidated so the next turn can propose a new plan.
-    """
+    """Auto-cancel only on objective direction/structure failure or setup-aware expiry."""
     if invalidated or limit_triggered:
         return invalidated, ""
     if not is_order_plan(prev_decision):
         return invalidated, ""
-    if str((prev_decision or {}).get("order_type") or "").strip() != "限价单":
+    order_type = str((prev_decision or {}).get("order_type") or "").strip()
+    if order_type not in ("限价单", "突破单"):
         return invalidated, ""
-
-    prev_cycle = str((prev_stage1 or {}).get("cycle_position") or "").strip()
-    curr_cycle = str((curr_stage1 or {}).get("cycle_position") or "").strip()
-    if prev_cycle and curr_cycle and prev_cycle != curr_cycle:
-        return True, f"周期从 {prev_cycle} 变为 {curr_cycle}，未成交限价单自动取消"
 
     prev_dir = str((prev_stage1 or {}).get("direction") or "").strip()
     curr_dir = str((curr_stage1 or {}).get("direction") or "").strip()
     if prev_dir and curr_dir and prev_dir != curr_dir:
-        return True, f"趋势方向从 {prev_dir} 变为 {curr_dir}，未成交限价单自动取消"
+        return True, f"趋势方向从 {prev_dir} 变为 {curr_dir}，未成交挂单自动取消"
 
-    if int(bars_since or 0) > int(max_pending_bars):
-        return True, f"未成交限价单已等待 {bars_since} 根 K 线（>{max_pending_bars}）自动取消"
+    setup_type = str((prev_decision or {}).get("setup_type") or "").strip().lower()
+    provenance = setup_provenance
+    if not isinstance(provenance, dict):
+        provenance = (prev_decision or {}).get("setup_provenance")
+    if isinstance(provenance, dict):
+        setup_type = str(provenance.get("setup_type") or setup_type).strip().lower()
+    if not setup_type:
+        setup_type = "breakout_signal" if order_type == "突破单" else "legacy"
+    expiry = DEFAULT_SETUP_EXPIRY_BARS.get(setup_type, int(max_pending_bars))
+    if int(bars_since or 0) > expiry:
+        return True, f"未成交{order_type}（{setup_type}）已等待 {bars_since} 根 K 线（>{expiry}）自动取消"
 
     return invalidated, ""
 
@@ -317,6 +354,8 @@ def assess_combined_plan_invalidation(
     *,
     prev_stage1: dict | None = None,
     curr_stage1: dict | None = None,
+    setup_provenance: dict | None = None,
+    placed_at_ms: int | None = None,
     bars_since: int = 1,
     max_pending_bars: int = DEFAULT_MAX_PENDING_LIMIT_BARS,
 ) -> tuple[bool, str, bool, str, int | None]:
@@ -326,6 +365,7 @@ def assess_combined_plan_invalidation(
         prev_decision,
         frame,
         max_bars=bars_since,
+        placed_at_ms=placed_at_ms,
     )
     invalidated, auto_reason = assess_unfilled_limit_auto_cancel(
         prev_decision=prev_decision,
@@ -334,6 +374,7 @@ def assess_combined_plan_invalidation(
         bars_since=bars_since,
         invalidated=invalidated,
         limit_triggered=limit_triggered,
+        setup_provenance=setup_provenance,
         max_pending_bars=max_pending_bars,
     )
     if auto_reason:
@@ -381,6 +422,7 @@ def build_continuity_context(
     timeframe = getattr(frame, "timeframe", "") or ""
     tick = infer_price_tick_from_frame(frame)
 
+    prev_stage2 = stage2_from_previous_record(previous_record)
     prev_decision = decision_from_previous_record(previous_record)
     prev_time = previous_record_time_iso(previous_record)
     prev_source = "analysis_record"
@@ -403,19 +445,55 @@ def build_continuity_context(
     current_ms = getattr(frame, "snapshot_ts_local_ms", None)
     bars_since = bars_elapsed_between(prev_time, current_ms, timeframe)
 
-    (
-        invalidated,
-        invalidation_reason,
-        limit_triggered,
-        trigger_reason,
-        trigger_bar,
-    ) = assess_combined_plan_invalidation(
-        prev_decision,
-        frame,
-        prev_stage1=prev_stage1,
-        curr_stage1=stage1_json,
-        bars_since=bars_since,
-    )
+    provenance_invalid_reason = ""
+    previous_order_type = str((prev_decision or {}).get("order_type") or "").strip()
+    if previous_order_type in ("限价单", "突破单"):
+        if prev_source == "trade_csv":
+            provenance_invalid_reason = (
+                "CSV 历史挂单缺少 signal_bar/entry_bar/setup 来源，不能继续作为有效等待计划"
+            )
+        else:
+            try:
+                from pa_agent.ai.decision_nodes import price_action_setup_confirmed
+
+                provenance_confirmed = bool(
+                    isinstance(prev_stage2, dict)
+                    and price_action_setup_confirmed(prev_stage2)
+                )
+            except (ImportError, TypeError, ValueError):
+                provenance_confirmed = False
+            if not provenance_confirmed:
+                provenance_invalid_reason = (
+                    "历史挂单缺少已收盘价格行为信号或合法回测/突破 setup，自动取消"
+                )
+
+    if provenance_invalid_reason:
+        invalidated = True
+        invalidation_reason = provenance_invalid_reason
+        limit_triggered = False
+        trigger_reason = ""
+        trigger_bar = None
+    else:
+        (
+            invalidated,
+            invalidation_reason,
+            limit_triggered,
+            trigger_reason,
+            trigger_bar,
+        ) = assess_combined_plan_invalidation(
+            prev_decision,
+            frame,
+            prev_stage1=prev_stage1,
+            curr_stage1=stage1_json,
+            setup_provenance=(
+                prev_stage2.get("setup_evidence")
+                if isinstance(prev_stage2, dict)
+                and isinstance(prev_stage2.get("setup_evidence"), dict)
+                else None
+            ),
+            placed_at_ms=_parse_local_iso_ms(prev_time),
+            bars_since=bars_since,
+        )
     prev_entry = _parse_price((prev_decision or {}).get("entry_price"))
     direction = str(stage1_json.get("direction") or "neutral")
     always_in = extract_always_in_branch(stage1_json)
@@ -425,6 +503,7 @@ def build_continuity_context(
         "previous_decision": prev_decision or {},
         "previous_time": prev_time,
         "previous_source": prev_source,
+        "previous_setup_provenance_valid": not bool(provenance_invalid_reason),
         "bars_since": bars_since,
         "cooldown_bars": max(1, int(cooldown_bars)),
         "invalidated": invalidated,
@@ -454,18 +533,20 @@ def render_continuity_prompt_block(ctx: dict[str, Any]) -> str:
         ]
         if always_in == "AIL":
             neutral_lines.append(
-                "- 当前 §2.4=**AIL** → **仅允许做多侧** setup（回踩支撑/下边界/顺势回撤做多）。"
-                "禁止 §9.0P 阻力做空。"
+                "- 当前 §2.4=**AIL** → **仅允许做多侧**价格行为 setup。先等多头信号棒收盘；"
+                "strong/medium 可设 pending 突破单，限价仅用于已确认的突破回测/H2/二次入场；"
+                "禁止在阻力位逆势预挂空单。"
             )
         elif always_in == "AIS":
             neutral_lines.append(
-                "- 当前 §2.4=**AIS** → **仅允许做空侧** setup（反弹阻力/上边界/顺势回撤做空）。"
-                "禁止 §9.0P 支撑做多。"
+                "- 当前 §2.4=**AIS** → **仅允许做空侧**价格行为 setup。先等空头信号棒收盘；"
+                "strong/medium 可设 pending 突破单，限价仅用于已确认的突破回测/L2/二次入场；"
+                "禁止在支撑位逆势预挂多单。"
             )
         else:
             neutral_lines.append(
-                "- 当前 §2.4 **非** Always In → §9.0P 计划型限价默认 **wait**；"
-                "仅当出现与 §2.4 方向一致的强信号棒（§9.0=是）才可下单。"
+                "- 当前 §2.4 **非** Always In → 默认 **wait**；必须先形成明确方向和已收盘信号，"
+                "禁止仅凭上下边界、支撑或阻力预挂限价单。"
             )
         neutral_lines.extend([
             "",
@@ -495,11 +576,11 @@ def render_continuity_prompt_block(ctx: dict[str, Any]) -> str:
     if inv and inv_reason:
         status += f"：{inv_reason}"
     if limit_triggered:
-        trigger_status = "**限价已触发**"
+        trigger_status = "**挂单已触发**"
         if trigger_reason:
             trigger_status += f"：{trigger_reason}"
     else:
-        trigger_status = "**限价未触发**"
+        trigger_status = "**挂单未触发**"
 
     direction = ctx.get("direction", "neutral")
     always_in = ctx.get("always_in_branch")
@@ -512,17 +593,17 @@ def render_continuity_prompt_block(ctx: dict[str, Any]) -> str:
         f"- 程序判定：{status}；{trigger_status}",
         "",
         "### 裁定（按优先级）",
-        "0. **已失效**（止损触及，或程序自动取消：未成交限价单等待"
+        "0. **已失效**（止损触及，或程序自动取消：未成交挂单等待"
         f">{DEFAULT_MAX_PENDING_LIMIT_BARS} 根 K 线 / 阶段一 `cycle_position` 变化 / "
-        "`direction` 变化）→ **不得**写「仍等待上一轮限价/setup」；须按本轮结构重新评估，"
+        "`direction` 变化）→ **不得**写「仍等待上一轮挂单 setup」；须按本轮结构重新评估，"
         "可给新方案或明确观望。",
-        f"1. **未失效 + 限价未触发** → 默认 `order_type=不下单`、`terminal.outcome=wait`，"
-        "在 watch_points 说明仍等待上一轮限价/setup 触价；"
+        f"1. **未失效 + 挂单未触发** → 默认 `order_type=不下单`、`terminal.outcome=wait`，"
+        "在 watch_points 说明仍等待上一轮挂单 setup 触价；"
         "**禁止**立即在相近结构位反手，除非 K1 收盘已触发失效。",
-        "2. **未失效 + 限价已触发** → **禁止**写「仍等待限价触发/尚未触价」；"
-        "须承认限价已在程序标注的 K 线触价，改为评估触发后跟随（follow_through）、"
+        "2. **未失效 + 挂单已触发** → **禁止**写「仍等待挂单触发/尚未触价」；"
+        "须承认挂单已在程序标注的 K 线触价，改为评估触发后跟随（follow_through）、"
         "止损是否仍有效、是否需观望平仓条件；可 `order_type=不下单`，"
-        "但 reasoning/watch_points 必须写「限价已于 Kx 触发」及后续条件，"
+        "但 reasoning/watch_points 必须写「挂单已于 Kx 触发」及后续条件，"
         "不得把已触价当成未成交挂单。",
         f"3. **同结构位反手冷却**：{cooldown} 根 K 线内，"
         "若新 entry 与上一轮 entry 相差≤3跳，**禁止反向**新单（失效后除外）。",
@@ -642,9 +723,32 @@ def apply_continuity_guard(
     terminal["node_id"] = "continuity"
     terminal["label"] = "方案连续性守卫"
 
+    trace = []
+    for item in stage2.get("decision_trace") or []:
+        if not isinstance(item, dict):
+            continue
+        node = dict(item)
+        node_id = str(node.get("node_id", "") or "").strip()
+        if node_id.startswith("11"):
+            node["answer"] = "不适用"
+            node["skipped"] = True
+            node["reason"] = f"连续性守卫阻断执行：{reason}"
+        trace.append(node)
+    trace.append(
+        {
+            "node_id": "continuity",
+            "question": "当前方案是否通过跨周期连续性校验？",
+            "answer": "否",
+            "reason": reason,
+            "bar_range": "",
+            "source": "program",
+        }
+    )
+
     stage2 = dict(stage2)
     stage2["decision"] = decision
     stage2["terminal"] = terminal
+    stage2["decision_trace"] = trace
     return stage2
 
 

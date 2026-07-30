@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import math
+
 
 def is_long_direction(direction: object) -> bool | None:
     """Return True for long, False for short, None if unknown."""
@@ -264,6 +266,163 @@ def validate_take_profit_2_geometry(
     return []
 
 
+def _reference_atr(kline_frame: Any) -> float | None:
+    """Return a current volatility reference for sanity checks, never for stop generation."""
+    indicators = getattr(kline_frame, "indicators", None) if kline_frame is not None else None
+    values = getattr(indicators, "atr14", ()) if indicators is not None else ()
+    for value in values or ():
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number) and number > 0:
+            return number
+
+    ranges: list[float] = []
+    for bar in (getattr(kline_frame, "bars", ()) or ())[:14]:
+        try:
+            width = float(bar.high) - float(bar.low)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if math.isfinite(width) and width > 0:
+            ranges.append(width)
+    if not ranges:
+        return None
+    ranges.sort()
+    return ranges[len(ranges) // 2]
+
+
+def validate_structural_stop_anchor(
+    decision: dict[str, Any],
+    kline_frame: Any,
+    *,
+    min_atr_fraction: float = 0.10,
+) -> list[str]:
+    """Require the stop beyond a frame-verified structural anchor plus noise."""
+    if decision.get("order_type") not in ("限价单", "突破单", "市价单"):
+        return []
+    anchor = decision.get("stop_anchor")
+    if not isinstance(anchor, dict) or anchor.get("verified") is not True:
+        return ["decision.stop_anchor: verified structural stop_anchor is required"]
+
+    source_bar = anchor.get("bar")
+    extreme = str(anchor.get("extreme") or "").strip().lower()
+    try:
+        claimed = float(anchor.get("anchor_price"))
+    except (TypeError, ValueError):
+        return ["decision.stop_anchor.anchor_price: numeric anchor price is required"]
+
+    if not source_bar:
+        return [
+            "decision.stop_anchor: a frame-verifiable anchor bar is required; "
+            "model-supplied anchor_price alone is not structural evidence"
+        ]
+    if source_bar:
+        from pa_agent.util.price_tick import bar_by_seq, parse_k_seq
+
+        seq = parse_k_seq(source_bar)
+        bar = bar_by_seq(kline_frame, seq) if seq is not None else None
+        if bar is None or extreme not in ("high", "low"):
+            return ["decision.stop_anchor: cited anchor bar/extreme is not verifiable"]
+        objective = float(getattr(bar, extreme))
+        if abs(objective - claimed) > 1e-9:
+            return [
+                f"decision.stop_anchor.anchor price {claimed:.6g} does not match "
+                f"objective {source_bar}.{extreme}={objective:.6g}"
+            ]
+
+    atr = _reference_atr(kline_frame)
+    if atr is None:
+        return ["decision.stop_anchor: ATR unavailable; cannot verify structural noise buffer"]
+    from pa_agent.util.price_tick import infer_price_tick_from_frame
+
+    tick = float(infer_price_tick_from_frame(kline_frame) or 0.0)
+    noise = max(tick * 2.0, atr * max(0.0, min_atr_fraction))
+    try:
+        stop = float(decision.get("stop_loss_price"))
+    except (TypeError, ValueError):
+        return ["decision.stop_loss_price: numeric stop is required"]
+
+    long = is_long_direction(decision.get("order_direction"))
+    if long is True and stop > objective - noise + 1e-12:
+        return [
+            f"decision.stop_loss_price: stop {stop:.6g} is inside structural anchor "
+            f"{objective:.6g} minus noise floor {noise:.6g}"
+        ]
+    if long is False and stop < objective + noise - 1e-12:
+        return [
+            f"decision.stop_loss_price: stop {stop:.6g} is inside structural anchor "
+            f"{objective:.6g} plus noise floor {noise:.6g}"
+        ]
+    if long is None:
+        return ["decision.order_direction: required for structural anchor validation"]
+    return []
+
+
+def validate_structural_stop_sanity(
+    decision: dict[str, Any],
+    kline_frame: Any,
+    *,
+    min_atr_fraction: float = 0.10,
+) -> list[str]:
+    """Reject only stops that are implausibly tighter than current market noise.
+
+    ATR is a conservative sanity check here. It never chooses, widens, or tightens
+    the stop; the model must still place the stop at the price-action invalidation.
+    """
+    if decision.get("order_type") not in ("限价单", "突破单", "市价单"):
+        return []
+    rr = compute_risk_reward(
+        decision.get("entry_price"),
+        decision.get("take_profit_price"),
+        decision.get("stop_loss_price"),
+        decision.get("order_direction"),
+    )
+    if rr is None:
+        return []
+    atr = _reference_atr(kline_frame)
+    if atr is None:
+        return []
+
+    risk = float(rr["risk"])
+    minimum_noise_distance = atr * max(0.0, float(min_atr_fraction))
+    tick_candidates: list[float] = []
+    try:
+        from pa_agent.util.price_tick import infer_price_tick_from_frame
+
+        frame_tick = float(infer_price_tick_from_frame(kline_frame) or 0.0)
+        if frame_tick > 0:
+            tick_candidates.append(frame_tick)
+    except (TypeError, ValueError):
+        pass
+
+    # A snapshot whose OHLC values all happen to be integers can make the frame-only
+    # precision guess return 1.0 even when the instrument trades in 0.1/0.01 ticks.
+    # Price fields provide a conservative finer-precision fallback; ATR remains the
+    # primary floor, so an over-precise model quote cannot weaken the noise check.
+    price_decimals = 0
+    for field in ("entry_price", "stop_loss_price", "take_profit_price", "take_profit_price_2"):
+        try:
+            text = f"{float(decision.get(field)):.12f}".rstrip("0")
+        except (TypeError, ValueError):
+            continue
+        if "." in text:
+            price_decimals = max(price_decimals, len(text.split(".", 1)[1]))
+    if price_decimals > 0:
+        tick_candidates.append(10 ** (-min(price_decimals, 6)))
+
+    tick = min(tick_candidates) if tick_candidates else 0.0
+    minimum_noise_distance = max(minimum_noise_distance, tick * 2.0)
+
+    if risk + 1e-12 < minimum_noise_distance:
+        return [
+            f"decision.stop_loss_price: risk distance {risk:.6g} is implausibly narrow "
+            f"versus current noise (ATR≈{atr:.6g}, sanity floor≈{minimum_noise_distance:.6g}); "
+            "recompute the stop from the full pullback/swing/retest invalidation or do not trade"
+        ]
+    return []
+
+
 def validate_order_trade_metrics(
     decision: dict[str, Any],
     *,
@@ -315,6 +474,8 @@ def validate_order_trade_metrics(
         )
 
     if kline_frame is not None:
+        errors.extend(validate_structural_stop_anchor(decision, kline_frame))
+        errors.extend(validate_structural_stop_sanity(decision, kline_frame))
         errors.extend(
             validate_limit_order_k1_freshness(
                 decision, kline_frame, bar_analysis=bar_analysis

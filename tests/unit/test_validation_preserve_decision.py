@@ -9,7 +9,7 @@ from tests.fixtures.validators import schema_test_validator
 from tests.integration.conftest import VALID_STAGE2
 
 
-def test_missing_terminal_label_auto_fixed_then_valid() -> None:
+def test_missing_terminal_label_is_fixed_but_malformed_no_order_prices_rejected() -> None:
     payload = copy.deepcopy(VALID_STAGE2)
     payload["terminal"] = {"node_id": "10.3", "outcome": "reject"}
     payload["decision"]["order_type"] = "不下单"
@@ -23,8 +23,11 @@ def test_missing_terminal_label_auto_fixed_then_valid() -> None:
         },
     ]
     result = schema_test_validator().validate("stage2", json.dumps(payload, ensure_ascii=False))
-    assert isinstance(result, Ok), result
-    assert result.obj["terminal"]["label"]
+    assert isinstance(result, ValidationError), result
+    assert result.category == "c"
+    assert "entry_price" in result.invalid_fields
+    assert result.partial_obj is not None
+    assert result.partial_obj["terminal"]["label"]
 
 
 def test_partial_obj_attached_when_schema_still_fails() -> None:

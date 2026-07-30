@@ -58,6 +58,7 @@ def test_lenient_validator_accepts_pending_answer_synonym() -> None:
     obj["decision"]["order_direction"] = None
     obj["decision"]["entry_price"] = None
     obj["decision"]["take_profit_price"] = None
+    obj["decision"]["take_profit_price_2"] = None
     obj["decision"]["stop_loss_price"] = None
     obj["decision_trace"].append(
         {
@@ -79,7 +80,7 @@ def test_lenient_validator_accepts_pending_answer_synonym() -> None:
     assert answers == ["等待"]
 
 
-def test_lenient_validator_fixes_market_order_missing_entry_bar() -> None:
+def test_lenient_validator_does_not_invent_market_order_entry_bar() -> None:
     obj = _stage2_trade_obj(
         order_type="市价单",
         entry_price=102.1,
@@ -102,7 +103,9 @@ def test_lenient_validator_fixes_market_order_missing_entry_bar() -> None:
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok), result
-    assert result.obj["bar_analysis"]["entry_bar"]["bar"] == "K1"
+    assert result.obj["decision"]["order_type"] == "不下单"
+    assert result.obj["bar_analysis"]["entry_bar"]["bar"] is None
+    assert result.obj["terminal"]["node_id"] == "9.0"
 
 
 def test_lenient_validator_maps_expired_freshness_on_pending_entry() -> None:
@@ -117,6 +120,8 @@ def test_lenient_validator_maps_expired_freshness_on_pending_entry() -> None:
         entry_basis_extreme=None,
     )
     obj["bar_analysis"]["always_in"] = "short"
+    obj["bar_analysis"]["entry_setup_type"] = "breakout_retest"
+    obj["bar_analysis"]["signal_bar"]["pattern"] = "breakout_retest"
     obj["bar_analysis"]["entry_bar"] = {
         "bar": None,
         "strength": "not_triggered",
@@ -131,12 +136,16 @@ def test_lenient_validator_maps_expired_freshness_on_pending_entry() -> None:
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok), result
-    assert result.obj["bar_analysis"]["entry_bar"]["freshness"] == "pending"
+    assert result.obj["decision"]["order_type"] == "不下单"
+    assert result.obj["bar_analysis"]["entry_bar"]["freshness"] == "stale"
 
 
 def test_lenient_validator_maps_openclaw_enum_slips() -> None:
     """OpenClaw agent often mixes stage1 English enums into stage2 fields."""
-    from pa_agent.ai.stage2_normalizer import _normalize_stage2_enum_aliases
+    from pa_agent.ai.stage2_normalizer import (
+        _normalize_stage2_bar_analysis_enums,
+        _normalize_stage2_enum_aliases,
+    )
 
     obj = _stage2_trade_obj(
         order_type="突破单",
@@ -164,6 +173,7 @@ def test_lenient_validator_maps_openclaw_enum_slips() -> None:
         "label": "§11.4突破单-空头延续",
     }
     assert _normalize_stage2_enum_aliases(obj) is True
+    assert _normalize_stage2_bar_analysis_enums(obj) is True
     assert obj["decision"]["order_direction"] == "做空"
     assert obj["bar_analysis"]["always_in"] == "neutral"
     assert obj["terminal"]["outcome"] == "trade"
@@ -179,7 +189,10 @@ def test_lenient_validator_maps_openclaw_enum_slips() -> None:
 
 
 def test_lenient_validator_maps_action_and_limit_order_pending() -> None:
-    from pa_agent.ai.stage2_normalizer import _normalize_stage2_enum_aliases
+    from pa_agent.ai.stage2_normalizer import (
+        _normalize_stage2_bar_analysis_enums,
+        _normalize_stage2_enum_aliases,
+    )
 
     obj = _stage2_trade_obj(
         order_type="限价单",
@@ -205,6 +218,7 @@ def test_lenient_validator_maps_action_and_limit_order_pending() -> None:
         "label": "限价做空",
     }
     assert _normalize_stage2_enum_aliases(obj) is True
+    assert _normalize_stage2_bar_analysis_enums(obj) is True
     assert obj["decision"]["order_direction"] == "做空"
     assert obj["terminal"]["outcome"] == "trade"
     assert obj["bar_analysis"]["entry_bar"]["freshness"] == "pending"

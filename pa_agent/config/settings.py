@@ -96,6 +96,11 @@ class GeneralSettings(BaseModel):
     keep_analysis_bypass_with_position: bool = True
     #: MT5 安装目录或 terminal64.exe 完整路径；空=自动连接已运行/默认实例
     mt5_terminal_path: str = ""
+    mt5_initialize_attempts: int = Field(default=3, ge=1, le=10)
+    mt5_initialize_backoff_initial_ms: int = Field(default=500, ge=0, le=60_000)
+    mt5_initialize_backoff_max_ms: int = Field(default=5_000, ge=0, le=120_000)
+    mt5_request_timeout_ms: int = Field(default=10_000, ge=100, le=120_000)
+    mt5_readiness_timeout_ms: int = Field(default=10_000, ge=100, le=120_000)
     #: 重试后取消持续跟踪分析：校验失败触发重试后自动关闭 keep_analysis
     cancel_keep_analysis_on_retry: bool = False
     #: 交易决策置信度门槛：仅当 trade_confidence >= 此值时，才视为有下单机会（弹窗警报并提供决策详情）

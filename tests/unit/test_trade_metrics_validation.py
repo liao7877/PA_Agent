@@ -9,6 +9,7 @@ from pa_agent.util.trade_metrics import (
     compute_risk_reward,
     passes_trader_equation,
     validate_order_trade_metrics,
+    validate_structural_stop_sanity,
 )
 
 from tests.fixtures.validators import schema_test_validator
@@ -84,14 +85,14 @@ def _stage2_trade_obj(**decision_overrides) -> dict:
                 "node_id": "10.3",
                 "question": "交易者方程是否通过？",
                 "answer": "是",
-                "reason": "test",
+                "reason": "交易者方程通过",
                 "bar_range": "K2-K1",
             },
             {
                 "node_id": "11.1",
                 "question": "趋势？",
                 "answer": "是",
-                "reason": "test",
+                "reason": "趋势环境执行方式确认",
                 "bar_range": "K2-K1",
             },
         ],
@@ -246,8 +247,8 @@ def test_stage2_validator_auto_fixes_breakout_entry_at_or_inside_basis_high() ->
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok)
-    entry = result.obj["decision"]["entry_price"]
-    assert entry > 102.0
+    assert result.obj["decision"]["order_type"] == "不下单"
+    assert result.obj["decision"]["entry_price"] is None
 
 
 def test_stage2_validator_normalizes_stale_entry_bar_to_wait() -> None:
@@ -266,7 +267,7 @@ def test_stage2_validator_normalizes_stale_entry_bar_to_wait() -> None:
     assert normalized["decision"]["order_type"] == "不下单"
 
 
-def test_stage2_validator_accepts_pending_limit_entry_bar() -> None:
+def test_stage2_validator_rejects_pending_limit_without_retest_confirmation() -> None:
     obj = _stage2_trade_obj(
         order_type="限价单",
         order_direction="做空",
@@ -296,9 +297,10 @@ def test_stage2_validator_accepts_pending_limit_entry_bar() -> None:
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["decision"]["order_type"] == "不下单"
 
 
-def test_stage2_validator_accepts_planned_limit_without_signal_bar() -> None:
+def test_stage2_validator_rejects_planned_limit_without_signal_bar() -> None:
     obj = _stage2_trade_obj(
         order_type="限价单",
         order_direction="做空",
@@ -352,9 +354,10 @@ def test_stage2_validator_accepts_planned_limit_without_signal_bar() -> None:
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["decision"]["order_type"] == "不下单"
 
 
-def test_stage2_validator_accepts_planned_limit_invalid_tr_boundary_null() -> None:
+def test_stage2_validator_rejects_invalid_boundary_limit_without_signal() -> None:
     """§9.0P zone-boundary limit: invalid + tr_boundary + bar=null must not retry."""
     obj = _stage2_trade_obj(
         order_type="限价单",
@@ -409,9 +412,10 @@ def test_stage2_validator_accepts_planned_limit_invalid_tr_boundary_null() -> No
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["decision"]["order_type"] == "不下单"
 
 
-def test_stage2_validator_accepts_planned_limit_with_weak_signal_bar() -> None:
+def test_stage2_validator_rejects_weak_pending_limit_without_confirmation_bar() -> None:
     obj = _stage2_trade_obj(
         order_type="限价单",
         order_direction="做空",
@@ -456,6 +460,70 @@ def test_stage2_validator_accepts_planned_limit_with_weak_signal_bar() -> None:
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["decision"]["order_type"] == "不下单"
+
+
+def test_stage2_validator_rejects_pending_breakout_when_basis_does_not_match_signal() -> None:
+    obj = _stage2_trade_obj()
+    obj["bar_analysis"]["signal_bar"]["bar"] = "K1"
+    obj["bar_analysis"]["signal_bar"]["quality"] = "medium"
+    obj["bar_analysis"]["entry_bar"] = {
+        "bar": None,
+        "strength": "not_triggered",
+        "follow_through": "pending",
+        "still_valid": True,
+        "freshness": "pending",
+    }
+    result = validator.validate(
+        "stage2",
+        json.dumps(obj),
+        decision_stance="balanced",
+        kline_frame=_frame(),
+    )
+    assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["decision"]["order_type"] == "不下单"
+    assert result.obj["bar_analysis"]["entry_bar"]["bar"] is None
+    assert result.obj["bar_analysis"]["entry_bar"]["freshness"] == "pending"
+
+
+def test_stage2_validator_rejects_label_only_breakout_pullback_limit() -> None:
+    obj = _stage2_trade_obj(
+        order_type="限价单",
+        order_direction="做空",
+        entry_price=104.5,
+        take_profit_price=101.0,
+        take_profit_price_2=98.0,
+        stop_loss_price=106.0,
+        estimated_win_rate=55,
+        entry_basis_bar=None,
+        entry_basis_extreme=None,
+        entry_rule="突破后首次回测确认位限价做空",
+    )
+    obj["diagnosis_summary"]["direction"] = "bearish"
+    obj["bar_analysis"]["always_in"] = "short"
+    obj["bar_analysis"]["bar_type"] = "trend_bear"
+    obj["bar_analysis"]["entry_setup_type"] = "breakout_pullback"
+    obj["bar_analysis"]["signal_bar"] = {
+        "bar": "K1",
+        "quality": "medium",
+        "pattern": "breakout_pullback",
+        "reason": "已收盘回测失败信号，等待价格回抽成交",
+    }
+    obj["bar_analysis"]["entry_bar"] = {
+        "bar": None,
+        "strength": "not_triggered",
+        "follow_through": "pending",
+        "still_valid": True,
+        "freshness": "pending",
+    }
+    result = validator.validate(
+        "stage2",
+        json.dumps(obj),
+        decision_stance="balanced",
+        kline_frame=_frame(),
+    )
+    assert isinstance(result, Ok), f"Expected Ok, got {result}"
+    assert result.obj["decision"]["order_type"] == "不下单"
 
 
 def test_stage2_validator_rejects_strong_signal_without_signal_bar() -> None:
@@ -479,7 +547,7 @@ def test_stage2_validator_rejects_strong_signal_without_signal_bar() -> None:
     assert result.obj["decision"]["order_type"] == "不下单"
 
 
-def test_stage2_validator_auto_fixes_pending_market_entry_bar() -> None:
+def test_stage2_validator_does_not_invent_pending_market_entry_bar() -> None:
     obj = _stage2_trade_obj(
         order_type="市价单",
         entry_price=102.1,
@@ -502,7 +570,8 @@ def test_stage2_validator_auto_fixes_pending_market_entry_bar() -> None:
         kline_frame=_frame(),
     )
     assert isinstance(result, Ok)
-    assert result.obj["bar_analysis"]["entry_bar"]["bar"] == "K1"
+    assert result.obj["decision"]["order_type"] == "不下单"
+    assert result.obj["bar_analysis"]["entry_bar"]["bar"] is None
 
 
 def test_stage2_validator_accepts_grounded_trade() -> None:
@@ -538,3 +607,17 @@ def test_planned_limit_allows_k1_wick_touch_entry() -> None:
         decision, _frame(), bar_analysis=bar_analysis
     )
     assert not errors, errors
+
+
+def test_structural_stop_sanity_rejects_only_extreme_noise_stop() -> None:
+    too_tight = {
+        "order_type": "突破单",
+        "order_direction": "做多",
+        "entry_price": 102.1,
+        "stop_loss_price": 102.0,
+        "take_profit_price": 104.0,
+    }
+    assert validate_structural_stop_sanity(too_tight, _frame())
+
+    structural = dict(too_tight, stop_loss_price=101.5)
+    assert not validate_structural_stop_sanity(structural, _frame())

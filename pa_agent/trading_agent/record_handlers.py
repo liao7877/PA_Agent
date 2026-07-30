@@ -88,6 +88,8 @@ def update_position_from_record(window: Any, record: Any) -> None:
             current_price = None
             fill_bar_ts = None
             first_tracked_bar_ts = None
+            placement_ref_high = None
+            placement_ref_low = None
             kline_data = getattr(record, "kline_data", None) or []
             if kline_data:
                 head = kline_data[0]
@@ -113,7 +115,7 @@ def update_position_from_record(window: Any, record: Any) -> None:
                         pass
                 hlt = _bar_high_low_ts(latest)
                 if hlt is not None:
-                    _, _, first_tracked_bar_ts = hlt
+                    placement_ref_high, placement_ref_low, first_tracked_bar_ts = hlt
             if exc_info:
                 from pa_agent.ai.stage2_normalizer import normalize_stage2
 
@@ -132,6 +134,14 @@ def update_position_from_record(window: Any, record: Any) -> None:
                 current_price=current_price,
                 fill_bar_ts=fill_bar_ts,
                 first_tracked_bar_ts=first_tracked_bar_ts,
+                placement_ref_high=placement_ref_high,
+                placement_ref_low=placement_ref_low,
+                setup_provenance=(
+                    decision.get("setup_evidence")
+                    if isinstance(decision, dict)
+                    and isinstance(decision.get("setup_evidence"), dict)
+                    else None
+                ),
             )
         sync_chart_active_position(window, symbol, timeframe)
     except Exception as exc:  # noqa: BLE001
@@ -199,8 +209,10 @@ def check_position_on_tick(
         return
     high, low, bar_ts = hlt
     current_price = getattr(tick_bar, "close", None)
+    bar_open = getattr(tick_bar, "open", None)
     if current_price is None and isinstance(tick_bar, dict):
         current_price = tick_bar.get("close")
+        bar_open = tick_bar.get("open")
     try:
         tracker.on_live_price(
             symbol,
@@ -208,6 +220,7 @@ def check_position_on_tick(
             high=high,
             low=low,
             current_price=current_price,
+            bar_open=bar_open,
             bar_ts=bar_ts,
         )
     except Exception as exc:  # noqa: BLE001

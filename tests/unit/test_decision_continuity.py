@@ -55,6 +55,40 @@ def _frame(
     )
 
 
+def _confirmed_pending_stage2(decision: dict) -> dict:
+    """Build a prior resting order with auditable closed price-action provenance."""
+    payload_decision = dict(decision)
+    if payload_decision.get("order_type") == "突破单":
+        payload_decision.setdefault("entry_basis_bar", "K1")
+        payload_decision.setdefault("entry_basis_extreme", "high")
+        payload_decision.setdefault("entry_rule", "K1 高点上方 1 跳等待顺势突破")
+        setup_type = "none"
+        pattern = "bull_reversal"
+    else:
+        setup_type = "breakout_pullback"
+        pattern = "breakout_pullback"
+    return {
+        "decision": payload_decision,
+        "bar_analysis": {
+            "signal_bar": {
+                "bar": "K2",
+                "quality": "medium",
+                "pattern": pattern,
+                "reason": "已收盘顺势信号",
+            },
+            "entry_bar": {
+                "bar": None,
+                "strength": "not_triggered",
+                "follow_through": "pending",
+                "freshness": "pending",
+                "still_valid": True,
+            },
+            "entry_setup_type": setup_type,
+            "second_entry": {"is_second_entry": False, "type": "none"},
+        },
+    }
+
+
 def test_assess_plan_invalidation_short_stop_hit():
     dec = {"order_direction": "做空", "order_type": "限价单", "stop_loss_price": 4194.0}
     inv, reason = assess_plan_invalidation(dec, _frame(close=4194.5, high=4195.0))
@@ -74,6 +108,26 @@ def test_assess_limit_order_triggered_long_touch():
     assert triggered is True
     assert seq == 1
     assert "7459.05" in reason
+
+
+def test_assess_limit_order_triggered_ignores_preplacement_touch():
+    dec = {
+        "order_direction": "做多",
+        "order_type": "限价单",
+        "entry_price": 4191.0,
+    }
+    frame = _frame(close=4193.0, high=4194.0, low=4190.0)
+    bar_open_ms = int(float(frame.bars[0].ts_open) * 1000)
+
+    triggered, _, seq = assess_limit_order_triggered(
+        dec,
+        frame,
+        max_bars=1,
+        placed_at_ms=bar_open_ms + 1,
+    )
+
+    assert triggered is False
+    assert seq is None
 
 
 def test_assess_limit_order_triggered_long_not_touched():
@@ -111,8 +165,8 @@ def test_render_continuity_prompt_mentions_limit_triggered():
         "timeframe": "15m",
     }
     text = render_continuity_prompt_block(ctx)
-    assert "限价已触发" in text
-    assert "禁止" in text and "仍等待限价触发" in text
+    assert "挂单已触发" in text
+    assert "禁止" in text and "仍等待挂单触发" in text
 
 
 def test_entries_same_structure_within_ticks():
@@ -265,15 +319,13 @@ def test_build_continuity_context_auto_cancels_after_3_bars_unfilled_limit():
         previous_record={
             "meta": {"timestamp_local_iso": prev_time},
             "stage1_diagnosis": {"direction": "bullish", "cycle_position": "trending_tr"},
-            "stage2_decision": {
-                "decision": {
-                    "order_direction": "做多",
-                    "order_type": "限价单",
-                    "entry_price": 5000.0,  # not touched by _frame() low
-                    "stop_loss_price": 4000.0,
-                    "take_profit_price": 5050.0,
-                }
-            },
+            "stage2_decision": _confirmed_pending_stage2({
+                "order_direction": "做多",
+                "order_type": "限价单",
+                "entry_price": 5000.0,  # not touched by _frame() low
+                "stop_loss_price": 4000.0,
+                "take_profit_price": 5050.0,
+            }),
         },
     )
     assert ctx["bars_since"] > 3
@@ -282,7 +334,7 @@ def test_build_continuity_context_auto_cancels_after_3_bars_unfilled_limit():
     assert "自动取消" in (ctx["invalidation_reason"] or "")
 
 
-def test_build_continuity_context_auto_cancels_on_cycle_change_unfilled_limit():
+def test_build_continuity_context_keeps_intact_limit_across_cycle_label_change():
     frame = _frame(snapshot_ts_local_ms=_ms("2026-06-30 14:05:00"))
     ctx = build_continuity_context(
         frame=frame,
@@ -290,20 +342,18 @@ def test_build_continuity_context_auto_cancels_on_cycle_change_unfilled_limit():
         previous_record={
             "meta": {"timestamp_local_iso": "2026-06-30 14:00:00"},
             "stage1_diagnosis": {"direction": "bullish", "cycle_position": "trending_tr"},
-            "stage2_decision": {
-                "decision": {
-                    "order_direction": "做多",
-                    "order_type": "限价单",
-                    "entry_price": 5000.0,
-                    "stop_loss_price": 4000.0,
-                    "take_profit_price": 5050.0,
-                }
-            },
+            "stage2_decision": _confirmed_pending_stage2({
+                "order_direction": "做多",
+                "order_type": "限价单",
+                "entry_price": 5000.0,
+                "stop_loss_price": 4000.0,
+                "take_profit_price": 5050.0,
+            }),
         },
     )
     assert ctx["limit_triggered"] is False
-    assert ctx["invalidated"] is True
-    assert "周期" in (ctx["invalidation_reason"] or "")
+    assert ctx["invalidated"] is False
+    assert ctx["invalidation_reason"] == ""
 
 
 def test_build_continuity_context_auto_cancels_on_direction_change_unfilled_limit():
@@ -319,15 +369,13 @@ def test_build_continuity_context_auto_cancels_on_direction_change_unfilled_limi
         previous_record={
             "meta": {"timestamp_local_iso": "2026-06-30T15:15:00.651"},
             "stage1_diagnosis": {"direction": "neutral", "cycle_position": "trending_tr"},
-            "stage2_decision": {
-                "decision": {
-                    "order_direction": "做多",
-                    "order_type": "限价单",
-                    "entry_price": 7459.05,
-                    "stop_loss_price": 7454.13,
-                    "take_profit_price": 7466.42,
-                }
-            },
+            "stage2_decision": _confirmed_pending_stage2({
+                "order_direction": "做多",
+                "order_type": "限价单",
+                "entry_price": 7459.05,
+                "stop_loss_price": 7454.13,
+                "take_profit_price": 7466.42,
+            }),
         },
     )
     assert ctx["limit_triggered"] is False
@@ -336,13 +384,91 @@ def test_build_continuity_context_auto_cancels_on_direction_change_unfilled_limi
 
 
 def test_build_continuity_context_does_not_auto_cancel_when_limit_already_triggered():
-    # entry=4192 is touched by _frame() low=4190
+    # entry=4192 is touched by a bar that opened after the plan was created.
     frame = _frame(snapshot_ts_local_ms=_ms("2026-06-30 14:25:00"))
+    bar = frame.bars[0]
+    frame = KlineFrame(
+        symbol=frame.symbol,
+        timeframe=frame.timeframe,
+        bars=(
+            KlineBar(
+                seq=bar.seq,
+                ts_open=_ms("2026-06-30 14:20:00"),
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                closed=bar.closed,
+            ),
+        ),
+        indicators=frame.indicators,
+        snapshot_ts_local_ms=frame.snapshot_ts_local_ms,
+    )
     ctx = build_continuity_context(
         frame=frame,
         stage1_json={"direction": "bullish", "cycle_position": "trending_tr"},
         previous_record={
             "meta": {"timestamp_local_iso": "2026-06-30 14:00:00"},
+            "stage1_diagnosis": {"direction": "bullish", "cycle_position": "trending_tr"},
+            "stage2_decision": _confirmed_pending_stage2({
+                "order_direction": "做多",
+                "order_type": "限价单",
+                "entry_price": 4192.0,
+                "stop_loss_price": 4185.0,
+                "take_profit_price": 4200.0,
+            }),
+        },
+    )
+    assert ctx["limit_triggered"] is True
+    # Triggered means we should not auto-cancel under the "unfilled" rule.
+    assert ctx["invalidated"] is False
+
+
+def test_render_prompt_removes_legacy_background_limit_path() -> None:
+    ctx = {
+        "direction": "neutral",
+        "always_in_branch": "AIL",
+        "has_previous_plan": False,
+        "cooldown_bars": 3,
+    }
+    text = render_continuity_prompt_block(ctx)
+    assert "§9.0P" not in text
+    assert "pending 突破单" in text
+    assert "突破回测/H2/二次入场" in text
+
+
+def test_build_continuity_context_auto_cancels_unfilled_breakout() -> None:
+    frame = _frame(snapshot_ts_local_ms=_ms("2026-06-30 14:25:00"))
+    ctx = build_continuity_context(
+        frame=frame,
+        stage1_json={"direction": "bullish", "cycle_position": "normal_channel"},
+        previous_record={
+            "meta": {"timestamp_local_iso": "2026-06-30 14:00:00"},
+            "stage1_diagnosis": {
+                "direction": "bullish",
+                "cycle_position": "normal_channel",
+            },
+            "stage2_decision": _confirmed_pending_stage2({
+                "order_direction": "做多",
+                "order_type": "突破单",
+                "entry_price": 5000.0,
+                "stop_loss_price": 4000.0,
+                "take_profit_price": 5050.0,
+            }),
+        },
+    )
+    assert ctx["limit_triggered"] is False
+    assert ctx["invalidated"] is True
+    assert "未成交突破单" in (ctx["invalidation_reason"] or "")
+
+
+def test_build_continuity_context_rejects_legacy_limit_without_price_action_provenance() -> None:
+    ctx = build_continuity_context(
+        frame=_frame(),
+        stage1_json={"direction": "bullish", "cycle_position": "trending_tr"},
+        previous_record={
+            "meta": {"timestamp_local_iso": "2026-06-30 14:20:00"},
             "stage1_diagnosis": {"direction": "bullish", "cycle_position": "trending_tr"},
             "stage2_decision": {
                 "decision": {
@@ -351,10 +477,16 @@ def test_build_continuity_context_does_not_auto_cancel_when_limit_already_trigge
                     "entry_price": 4192.0,
                     "stop_loss_price": 4185.0,
                     "take_profit_price": 4200.0,
-                }
+                },
+                "bar_analysis": {
+                    "signal_bar": {"bar": None, "quality": "invalid", "pattern": "tr_boundary"},
+                    "entry_bar": {"bar": None, "strength": "not_triggered", "freshness": "pending"},
+                },
             },
         },
     )
-    assert ctx["limit_triggered"] is True
-    # Triggered means we should not auto-cancel under the "unfilled" rule.
-    assert ctx["invalidated"] is False
+    assert ctx["has_previous_plan"] is True
+    assert ctx["invalidated"] is True
+    assert ctx["limit_triggered"] is False
+    assert ctx["previous_setup_provenance_valid"] is False
+    assert "历史挂单缺少" in (ctx["invalidation_reason"] or "")

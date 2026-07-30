@@ -33,6 +33,13 @@
 | `general.decision_stance` | 阶段二倾向：`conservative` / `balanced` / `aggressive` / `extreme_aggressive` |
 | `general.auto_resume_chart_after_analysis` | 分析结束后是否自动恢复「图表实时更新」（默认 `true`） |
 | `general.mt5_terminal_path` | MT5 安装目录或 `terminal64.exe` 完整路径；空=自动连接 |
+| `general.mt5_initialize_attempts` | MT5 初始化/授权就绪的最大尝试次数，默认 `3` |
+| `general.mt5_initialize_backoff_initial_ms` | 首次重试等待，默认 `500ms`，之后指数退避 |
+| `general.mt5_initialize_backoff_max_ms` | 初始化退避上限，默认 `5000ms` |
+| `general.mt5_request_timeout_ms` | 单次串行 MT5 IPC 请求超时，默认 `10000ms` |
+| `general.mt5_readiness_timeout_ms` | 预留的 MT5 就绪总时限设置，默认 `10000ms` |
+
+MT5 数据接口由进程内单一 owner worker 串行调用；GUI 启动不进行同步连接。终端尚在登录、授权失败或会话断开时，后台刷新会有界重试并在恢复后重新选择仍被 source 持有的品种。该连接层只提供行情读取，不会自行调用下单、改单、平仓或撤单 API。
 
 ## 安全提醒
 

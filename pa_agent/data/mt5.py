@@ -12,8 +12,10 @@ Usage:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pa_agent.data.base import (
     DataSource,
@@ -73,59 +75,40 @@ class MT5Source(DataSource):
     MT5 terminal must be open and logged in before calling connect().
     """
 
-    def __init__(self, terminal_path: str = "") -> None:
+    def __init__(self, terminal_path: str = "", *, manager: Any = None) -> None:
         self._symbol: str = ""
         self._timeframe: str = ""
         self._connected: bool = False
         self._terminal_path = terminal_path
+        self._manager = manager
+        self._lease_id = f"mt5-source-{uuid.uuid4().hex}"
+
+    def _connection_manager(self) -> Any:
+        if self._manager is None:
+            from pa_agent.data.mt5_connection_manager import get_mt5_connection_manager
+
+            self._manager = get_mt5_connection_manager()
+        return self._manager
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def connect(self) -> None:
-        """Connect to the running MT5 terminal."""
-        try:
-            import MetaTrader5 as mt5  # type: ignore[import]
-        except ImportError as exc:
-            raise DataSourceTransientError(
-                "MetaTrader5 package not installed — run: pip install MetaTrader5"
-            ) from exc
-
-        exe = resolve_mt5_terminal_executable(self._terminal_path)
-        init_kwargs: dict[str, str] = {}
-        if exe:
-            init_kwargs["path"] = exe
-            logger.info("MT5 initialize with terminal path: %s", exe)
-
-        if not mt5.initialize(**init_kwargs):
-            error = mt5.last_error()
-            hint = (
-                f"MT5 initialize() failed: {error}. "
-                "Make sure MetaTrader 5 terminal is open and logged in."
-            )
-            if exe:
-                hint += f" Configured path: {exe}"
-            raise DataSourceTransientError(hint)
-
-        info = mt5.terminal_info()
-        if info is not None:
-            logger.info(
-                "MT5 connected: terminal=%s, build=%s, connected=%s, path=%s",
-                info.name, info.build, info.connected, info.path,
-            )
-        else:
-            logger.info("MT5 connected (terminal info unavailable)")
-
+        """Acquire a lease on the process-wide MT5 connection."""
+        if self._connected:
+            return
+        self._connection_manager().acquire(self._lease_id, self._terminal_path)
         self._connected = True
+        logger.info("MT5Source connected through process-wide owner")
 
     def disconnect(self) -> None:
-        """Shut down the MT5 connection."""
-        if self._connected:
-            try:
-                import MetaTrader5 as mt5  # type: ignore[import]
-                mt5.shutdown()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("MT5 shutdown error: %s", exc)
-        self._connected = False
+        """Release this source without disrupting other MT5 users."""
+        try:
+            if self._manager is not None and self._symbol:
+                self._manager.remove_symbol(self._lease_id, self._symbol)
+            if self._connected:
+                self._connection_manager().release(self._lease_id)
+        finally:
+            self._connected = False
         logger.info("MT5Source disconnected")
 
     # ── Discovery ─────────────────────────────────────────────────────────────
@@ -136,10 +119,9 @@ class MT5Source(DataSource):
         if not name:
             return False
         if not self._connected:
-            return True
+            return False
         try:
-            import MetaTrader5 as mt5  # type: ignore[import]
-            return mt5.symbol_info(name) is not None
+            return self._connection_manager().symbol_exists(name)
         except Exception as exc:  # noqa: BLE001
             logger.debug("MT5 symbol_info(%s) failed: %s", name, exc)
             return False
@@ -147,13 +129,9 @@ class MT5Source(DataSource):
     def list_symbols(self) -> list[str]:
         """Return all symbols available in the MT5 terminal."""
         if not self._connected:
-            return ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
-                    "AUDUSD", "USDCAD", "NZDUSD", "XAGUSD"]
+            return []
         try:
-            import MetaTrader5 as mt5  # type: ignore[import]
-            symbols = mt5.symbols_get()
-            if symbols:
-                return [s.name for s in symbols]
+            return self._connection_manager().list_symbols()
         except Exception as exc:  # noqa: BLE001
             logger.warning("MT5 list_symbols failed: %s", exc)
         return []
@@ -169,18 +147,23 @@ class MT5Source(DataSource):
                 f"Unsupported timeframe: {timeframe!r}. "
                 f"Use one of {list(_TF_MAP)}"
             )
-        self._symbol = symbol
-        self._timeframe = timeframe
-        # Tell MT5 to subscribe to this symbol's real-time data
+        name = str(symbol or "").strip()
+        if not name:
+            raise DataSourceTransientError("MT5 symbol is empty")
+        old_symbol = self._symbol
         if self._connected:
-            try:
-                import MetaTrader5 as mt5  # type: ignore[import]
-                mt5.symbol_select(symbol, True)
-            except Exception:  # noqa: BLE001
-                pass
-        logger.info("MT5Source subscribed: %s %s", symbol, timeframe)
+            # Validate/select before changing local state so a failed resubscribe keeps
+            # the previous working subscription intact.
+            self._connection_manager().ensure_symbol_selected(self._lease_id, name)
+            if old_symbol and old_symbol != name:
+                self._connection_manager().remove_symbol(self._lease_id, old_symbol)
+        self._symbol = name
+        self._timeframe = timeframe
+        logger.info("MT5Source subscribed: %s %s", name, timeframe)
 
     def unsubscribe(self) -> None:
+        if self._manager is not None and self._symbol:
+            self._manager.remove_symbol(self._lease_id, self._symbol)
         self._symbol = ""
         self._timeframe = ""
         logger.info("MT5Source unsubscribed")
@@ -197,9 +180,7 @@ class MT5Source(DataSource):
         if not name:
             return None
         try:
-            import MetaTrader5 as mt5  # type: ignore[import]
-
-            tick = mt5.symbol_info_tick(name)
+            tick = self._connection_manager().symbol_tick(name)
             if tick is None:
                 return None
             time_msc = getattr(tick, "time_msc", None)
@@ -226,34 +207,14 @@ class MT5Source(DataSource):
         if not self._symbol or not self._timeframe:
             raise DataSourceTransientError("Not subscribed — call subscribe() first")
 
-        try:
-            import MetaTrader5 as mt5  # type: ignore[import]
-        except ImportError as exc:
-            raise DataSourceTransientError("MetaTrader5 not installed") from exc
-
         tf_name = _TF_MAP[self._timeframe]
-        try:
-            tf_const = getattr(mt5, tf_name)
-        except AttributeError as exc:
-            raise DataSourceTransientError(
-                f"MT5 timeframe constant {tf_name!r} not found"
-            ) from exc
-
-        # Ensure the symbol is selected/subscribed in MT5 for real-time data
-        try:
-            mt5.symbol_select(self._symbol, True)
-        except Exception:  # noqa: BLE001
-            pass  # Non-fatal; proceed with fetch
-
-        # Fetch n+1 bars starting from position 0 (current forming bar)
-        rates = mt5.copy_rates_from_pos(self._symbol, tf_const, 0, n + 1)
-
-        if rates is None or len(rates) == 0:
-            error = mt5.last_error()
-            raise DataSourceTransientError(
-                f"MT5 copy_rates_from_pos failed for {self._symbol} {self._timeframe}: "
-                f"{error}"
-            )
+        tf_const = self._connection_manager().timeframe_constant(tf_name)
+        rates = self._connection_manager().copy_rates_from_pos(
+            self._symbol,
+            tf_const,
+            0,
+            n + 1,
+        )
 
         # copy_rates_from_pos returns oldest-first (ascending time order).
         # rates[0] is the OLDEST bar, rates[-1] is the NEWEST (forming) bar.

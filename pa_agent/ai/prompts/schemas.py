@@ -292,6 +292,24 @@ STAGE1_SCHEMA: dict = {
 
 # ── Stage 2 schema ────────────────────────────────────────────────────────────
 
+_STOP_ANCHOR: dict = {
+    "type": "object",
+    "required": ["source", "anchor_price", "verified"],
+    "properties": {
+        "source": {
+            "type": "string",
+            "enum": ["signal_bar", "confirmation_bar", "swing", "retest_level", "range_boundary"],
+        },
+        "bar": {"type": ["string", "null"]},
+        "extreme": {"type": ["string", "null"], "enum": ["high", "low", None]},
+        "anchor_price": {"type": "number"},
+        "buffer_ticks": {"type": ["integer", "null"], "minimum": 0},
+        "noise_floor": {"type": ["number", "null"], "minimum": 0},
+        "verified": {"type": "boolean"},
+    },
+    "additionalProperties": True,
+}
+
 _DECISION_BASE: dict = {
     "type": "object",
     "required": [
@@ -320,6 +338,7 @@ _DECISION_BASE: dict = {
         "take_profit_price": {"type": ["number", "null"]},
         "take_profit_price_2": {"type": ["number", "null"]},
         "stop_loss_price": {"type": ["number", "null"]},
+        "stop_anchor": {"anyOf": [_STOP_ANCHOR, {"type": "null"}]},
         "reasoning": {"type": "string", "minLength": 1, "maxLength": 280},
         "diagnosis_confidence": {"type": "integer", "minimum": 0, "maximum": 100},
         "diagnosis_confidence_reasoning": {"type": "string"},
@@ -356,6 +375,7 @@ _DECISION_BASE: dict = {
                     "entry_rule": {"type": "null"},
                     "order_direction": {"type": "string", "enum": ["做多", "做空"]},
                     "take_profit_price": {"type": ["number", "null"]},
+                    "take_profit_price_2": {"type": "null"},
                     "stop_loss_price": {"type": ["number", "null"]},
                     "estimated_win_rate": {"type": "null"},
                 },

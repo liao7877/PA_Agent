@@ -589,6 +589,27 @@ class JsonValidator:
                 message="Top-level JSON value is not an object",
             )
 
+        # Validate raw cross-field invariants before normalization can erase the
+        # evidence. Malformed model payloads must be rejected, not silently
+        # converted into a superficially valid no-order object.
+        norm_mode = getattr(self._validation, "normalization_mode", "strict")
+        raw_stage2_invariant: dict | None = None
+        raw_breakout_missing: list[str] = []
+        if stage == "stage2":
+            raw_stage2_invariant = self._check_no_order_invariant(obj)
+            raw_decision = obj.get("decision")
+            if (
+                isinstance(raw_decision, dict)
+                and raw_decision.get("order_type") == "突破单"
+            ):
+                for field_name in (
+                    "entry_basis_bar",
+                    "entry_basis_extreme",
+                    "entry_rule",
+                ):
+                    if not raw_decision.get(field_name):
+                        raw_breakout_missing.append(field_name)
+
         obj = self.normalize_parsed(
             stage,
             obj,
@@ -676,12 +697,25 @@ class JsonValidator:
                         invalid.append(f"trace_semantic:{msg}")
 
         if stage == "stage2":
-            no_order_err = self._check_no_order_invariant(obj)
+            no_order_err = raw_stage2_invariant or self._check_no_order_invariant(obj)
             if no_order_err:
                 invalid.extend(no_order_err["fields"])
                 allowed.update(no_order_err["allowed"])
 
             breakout_err = self._check_breakout_order_basis(obj)
+            if raw_breakout_missing:
+                missing.extend(raw_breakout_missing)
+                invalid.extend(
+                    f"decision.{field_name}" for field_name in raw_breakout_missing
+                )
+                for field_name in raw_breakout_missing:
+                    allowed[f"decision.{field_name}"] = (
+                        ["K{n}"]
+                        if field_name == "entry_basis_bar"
+                        else ["high", "low"]
+                        if field_name == "entry_basis_extreme"
+                        else ["突破依据规则"]
+                    )
             if breakout_err:
                 invalid.extend(breakout_err["fields"])
                 allowed.update(breakout_err["allowed"])
@@ -741,7 +775,7 @@ class JsonValidator:
             return Ok(obj=obj)
 
         # Determine category: b if only missing fields, c otherwise
-        if invalid or (missing and errors[0].validator not in ("required",)):
+        if invalid:
             category: Literal["b", "c"] = "c"
         elif missing:
             category = "b"
@@ -781,6 +815,24 @@ class JsonValidator:
         ]
 
         if order_type == "不下单":
+            action = str(decision.get("position_action") or "").strip()
+            if action == "调整":
+                violated = [
+                    f
+                    for f in ("entry_price", "take_profit_price_2")
+                    if decision.get(f) is not None
+                ]
+                direction_missing = decision.get("order_direction") is None
+                if violated or direction_missing:
+                    fields = violated + (["order_direction"] if direction_missing else [])
+                    return {
+                        "fields": fields,
+                        "allowed": {
+                            **{f: [None] for f in violated},
+                            "order_direction": ["做多", "做空"],
+                        },
+                    }
+                return None
             violated = [f for f in price_fields if decision.get(f) is not None]
             if violated:
                 return {
@@ -1022,11 +1074,13 @@ class JsonValidator:
         *,
         lenient: bool = False,
     ) -> list[str]:
-        """Require order decisions to ground §9 in signal/entry/follow-through facts."""
+        """Validate setup confirmation separately from pending order execution."""
+        _ = lenient  # Invalid/weak-unconfirmed setups are never tradable in any mode.
         decision = obj.get("decision", {})
         if not isinstance(decision, dict):
             return []
-        if decision.get("order_type") not in ("限价单", "突破单", "市价单"):
+        order_type = decision.get("order_type")
+        if order_type not in ("限价单", "突破单", "市价单"):
             return []
 
         errors: list[str] = []
@@ -1046,76 +1100,79 @@ class JsonValidator:
         sig_seq = _parse_k_seq(signal_bar.get("bar"))
         entry_seq = _parse_k_seq(entry_bar.get("bar"))
         strength = str(entry_bar.get("strength", "") or "").strip().lower()
-        freshness = str(entry_bar.get("freshness", "fresh")).strip().lower()
-        quality = str(signal_bar.get("quality", "")).strip().lower()
-        pattern = str(signal_bar.get("pattern", "") or "").strip().lower()
+        freshness = str(entry_bar.get("freshness", "fresh") or "fresh").strip().lower()
+        quality = str(signal_bar.get("quality", "") or "").strip().lower()
         pending_entry = (
             strength == "not_triggered"
             or freshness == "pending"
             or entry_bar.get("bar") is None
         )
-        planned_entry = False
+
         if sig_seq is None:
             errors.append("bar_analysis.signal_bar.bar must reference an already-closed K{n} bar")
-        if entry_seq is None and pending_entry:
-            errors.append("pending/untriggered entry is not an order; wait for a closed confirmation bar")
-        elif entry_seq is None:
+        if quality not in ("strong", "medium", "weak"):
+            errors.append("signal_bar quality must be strong/medium/weak to authorize an order")
+        if freshness in ("stale", "invalid"):
+            errors.append("entry_bar.freshness stale/invalid cannot support a new order")
+
+        if order_type == "市价单" and (pending_entry or entry_seq is None):
+            errors.append("market order requires a concrete closed entry_bar.bar")
+        elif not pending_entry and entry_seq is None:
             errors.append("bar_analysis.entry_bar.bar must be a K{n} reference")
-        if pending_entry and decision.get("order_type") == "市价单":
-            errors.append("market order requires a concrete entry_bar.bar")
-        if sig_seq is not None and entry_seq is not None and sig_seq <= entry_seq:
-            errors.append(
-                "signal_bar must be older than entry_bar "
-                f"(expected signal K seq > entry K seq, got K{sig_seq} and K{entry_seq})"
+
+        if sig_seq is not None and entry_seq is not None:
+            invalid_order = sig_seq < entry_seq or (
+                sig_seq == entry_seq and order_type != "市价单"
             )
+            if invalid_order:
+                errors.append(
+                    "signal_bar must be older than entry_bar, except an immediate market "
+                    f"entry may use the same closed bar (got K{sig_seq} and K{entry_seq})"
+                )
+
+        follow_through = entry_bar.get("follow_through")
+        confirmed_follow_through = (
+            follow_through is True
+            or str(follow_through).strip().lower() in ("true", "yes", "是", "confirmed")
+        )
+        if quality == "weak" and not (
+            sig_seq is not None
+            and entry_seq is not None
+            and sig_seq > entry_seq
+            and confirmed_follow_through
+        ):
+            errors.append(
+                "weak signal_bar requires a later closed confirmation bar with follow_through=true"
+            )
+
+        if order_type == "限价单":
+            from pa_agent.ai.decision_nodes import price_action_setup_confirmed
+
+            if not price_action_setup_confirmed(obj):
+                errors.append(
+                    "limit order requires a confirmed breakout-pullback/retest or H2/L2/second-entry setup; "
+                    "support/resistance alone cannot authorize it"
+                )
+
         if kline_frame is not None:
             for label, seq in (("signal_bar", sig_seq), ("entry_bar", entry_seq)):
                 if seq is not None and _bar_by_seq(kline_frame, seq) is None:
                     errors.append(f"bar_analysis.{label}.bar K{seq} not found in current K-line frame")
 
-        if not lenient and quality == "invalid":
-            errors.append("invalid signal_bar cannot authorize an order")
-        if not lenient and quality == "weak":
-            follow_through = entry_bar.get("follow_through")
-            confirmed = follow_through is True or str(follow_through).strip().lower() in (
-                "true",
-                "yes",
-                "是",
-                "confirmed",
-            )
-            if entry_seq is None or not confirmed:
-                errors.append("weak signal_bar requires a later closed confirmation bar with follow_through=true")
-        if (
-            not lenient
-            and quality in ("weak", "invalid")
-            and not planned_entry
-        ):
-            reasons = _all_stage2_reasons(obj)
-            if not any(token in reasons for token in _EXPLICIT_S9_TRADABLE_TOKENS):
-                errors.append(
-                    "weak/invalid signal_bar requires explicit §9 reasoning for why the setup remains tradable"
-                )
-
-        follow = entry_bar.get("follow_through")
-        no_follow = follow is False or str(follow).strip().lower() in ("false", "no", "failed")
-        trade_conf = decision.get("trade_confidence")
+        no_follow = follow_through is False or str(follow_through).strip().lower() in (
+            "false",
+            "no",
+            "failed",
+        )
         try:
-            trade_conf_num = int(trade_conf)
+            trade_conf_num = int(decision.get("trade_confidence"))
         except (TypeError, ValueError):
             trade_conf_num = 0
-        if freshness in ("stale", "invalid") and not (lenient and pending_entry):
-            errors.append("entry_bar.freshness stale/invalid cannot support a new order")
-        if (
-            not lenient
-            and no_follow
-            and not pending_entry
-            and trade_conf_num >= 50
-        ):
+        if no_follow and not pending_entry and trade_conf_num >= 50:
             errors.append(
                 "entry_bar.follow_through=false/failed cannot support trade_confidence >= 50"
             )
         return errors
-
 
 
 def _parse_k_seq(value: object) -> int | None:

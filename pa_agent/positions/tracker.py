@@ -34,6 +34,31 @@ logger = logging.getLogger("pa_agent")
 
 _NO_ORDER_TEXT = "不下单"
 _ORDER_TYPES = ("限价单", "突破单", "市价单")
+_DEFAULT_SETUP_EXPIRY_BARS = {
+    "breakout_signal": 2,
+    "breakout_retest": 4,
+    "breakout_pullback": 4,
+    "h2": 2,
+    "l2": 2,
+    "tr_boundary": 3,
+}
+_TIMEFRAME_SECONDS = {
+    "1m": 60,
+    "2m": 120,
+    "3m": 180,
+    "5m": 300,
+    "10m": 600,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "2h": 7200,
+    "3h": 10800,
+    "4h": 14400,
+    "6h": 21600,
+    "8h": 28800,
+    "12h": 43200,
+    "1d": 86400,
+}
 
 
 def _now_ms() -> int:
@@ -84,6 +109,7 @@ class PositionTracker:
         first_tracked_bar_ts: int | None = None,
         placement_ref_high: float | None = None,
         placement_ref_low: float | None = None,
+        setup_provenance: dict | None = None,
     ) -> Optional[PositionState]:
         """Reconcile a new stage-2 decision with the current active position.
 
@@ -106,6 +132,7 @@ class PositionTracker:
                     first_tracked_bar_ts=first_tracked_bar_ts,
                     placement_ref_high=placement_ref_high,
                     placement_ref_low=placement_ref_low,
+                    setup_provenance=setup_provenance,
                 )
             return None
 
@@ -118,6 +145,7 @@ class PositionTracker:
             current_price=current_price,
             fill_bar_ts=fill_bar_ts,
             first_tracked_bar_ts=first_tracked_bar_ts,
+            setup_provenance=setup_provenance,
         )
 
     def _open_planned(
@@ -132,11 +160,22 @@ class PositionTracker:
         first_tracked_bar_ts: int | None = None,
         placement_ref_high: float | None = None,
         placement_ref_low: float | None = None,
+        setup_provenance: dict | None = None,
     ) -> Optional[PositionState]:
         entry = _to_float(inner.get("entry_price"))
         if entry is None:
             return None
         live_price = _to_float(current_price)
+        provenance = setup_provenance or {}
+        setup_type = str(provenance.get("setup_type") or "").strip().lower()
+        expiry_bars = _DEFAULT_SETUP_EXPIRY_BARS.get(setup_type)
+        timeframe_s = _TIMEFRAME_SECONDS.get(str(timeframe).strip())
+        planned_at_ms = _now_ms()
+        expiry_at_ms = (
+            planned_at_ms + expiry_bars * timeframe_s * 1000
+            if expiry_bars is not None and timeframe_s is not None
+            else None
+        )
         position = PositionState(
             status=PositionStatus.PLANNED,
             symbol=symbol,
@@ -148,16 +187,28 @@ class PositionTracker:
             stop_loss_price=_to_float(inner.get("stop_loss_price")),
             entry_basis_bar=inner.get("entry_basis_bar"),
             invalidation_condition=inner.get("invalidation_condition"),
-            planned_at_ms=_now_ms(),
+            planned_at_ms=planned_at_ms,
             opened_at_record_id=record_id,
+            setup_provenance=setup_provenance,
+            expiry_bars=expiry_bars,
+            expiry_at_ms=expiry_at_ms,
+            execution_eligible=(
+                str((setup_provenance or {}).get("verification_status") or "") == "verified"
+            ),
             first_tracked_bar_ts=first_tracked_bar_ts,
             first_tracked_price=live_price,
+            placement_ref_high=_to_float(placement_ref_high),
+            placement_ref_low=_to_float(placement_ref_low),
             first_tracked_seen=first_tracked_bar_ts is None,
-            trigger_armed=self._trigger_is_armed(
-                str(inner.get("order_type") or ""),
-                is_long_direction(inner.get("order_direction")),
-                entry,
-                live_price,
+            trigger_armed=(
+                True
+                if live_price is None
+                else self._trigger_is_armed(
+                    str(inner.get("order_type") or ""),
+                    is_long_direction(inner.get("order_direction")),
+                    entry,
+                    live_price,
+                )
             ),
         )
         if position.order_type == "市价单":
@@ -183,6 +234,7 @@ class PositionTracker:
         current_price: float | None = None,
         fill_bar_ts: int | None = None,
         first_tracked_bar_ts: int | None = None,
+        setup_provenance: dict | None = None,
     ) -> Optional[PositionState]:
         # 1) 方向反转 → 先平再开反向计划单
         new_dir = is_long_direction(inner.get("order_direction"))
@@ -210,6 +262,7 @@ class PositionTracker:
                 current_price=current_price,
                 fill_bar_ts=fill_bar_ts,
                 first_tracked_bar_ts=first_tracked_bar_ts,
+                setup_provenance=setup_provenance,
             )
 
         # 2) 已持仓 + position_action=平仓（结构化字段，不解析 reasoning 关键词）
@@ -241,6 +294,7 @@ class PositionTracker:
                 current_price=current_price,
                 fill_bar_ts=fill_bar_ts,
                 first_tracked_bar_ts=first_tracked_bar_ts,
+                setup_provenance=setup_provenance,
             )
             if replacement is not None:
                 self._notify_order_cancelled(
@@ -284,6 +338,7 @@ class PositionTracker:
         high: float,
         low: float,
         current_price: float | None = None,
+        bar_open: float | None = None,
         bar_ts: int | None = None,
     ) -> Optional[PositionState]:
         """Process live price movement for order fills and TP/SL execution."""
@@ -297,8 +352,40 @@ class PositionTracker:
             return position
 
         if position.status == PositionStatus.PLANNED:
+            if position.expiry_at_ms is not None and _now_ms() > position.expiry_at_ms:
+                self._store.clear_active(symbol, timeframe)
+                self._notify_order_cancelled(position, "计划单已超过 setup 有效期，自动取消")
+                logger.info("Expired planned position cancelled: %s %s", symbol, timeframe)
+                return None
+            if (
+                bar_ts is not None
+                and position.last_observed_bar_ts != int(bar_ts)
+                and (
+                    position.first_tracked_bar_ts is None
+                    or int(bar_ts) > int(position.first_tracked_bar_ts)
+                )
+            ):
+                position.last_observed_bar_ts = int(bar_ts)
+                position.observed_closed_bars += 1
+                if (
+                    position.expiry_bars is not None
+                    and position.observed_closed_bars > position.expiry_bars
+                ):
+                    self._store.clear_active(symbol, timeframe)
+                    self._notify_order_cancelled(position, "计划单已超过 setup K线有效窗口，自动取消")
+                    logger.info("Bar-expired planned position cancelled: %s %s", symbol, timeframe)
+                    return None
+                self._store.upsert_active(position)
+            if not position.execution_eligible:
+                logger.warning(
+                    "Legacy/unverified planned position is not execution eligible: %s %s",
+                    symbol,
+                    timeframe,
+                )
+                return position
+            is_first_observation = not position.first_tracked_seen
             check_hi, check_lo = hi, lo
-            if not position.first_tracked_seen:
+            if is_first_observation:
                 position.first_tracked_seen = True
                 if (
                     bar_ts is not None
@@ -311,7 +398,7 @@ class PositionTracker:
                         check_lo = min(position.first_tracked_price or live_price, live_price)
                 self._store.upsert_active(position)
             live_price = _to_float(current_price)
-            if not position.trigger_armed:
+            if not position.trigger_armed and live_price is not None:
                 position.trigger_armed = self._trigger_is_armed(
                     position.order_type,
                     position.is_long,
@@ -321,11 +408,33 @@ class PositionTracker:
                 if position.trigger_armed:
                     position.armed_price = live_price
                 self._store.upsert_active(position)
+                # The observation that merely moves price back to the arming side
+                # cannot also prove a later cross within the same aggregated bar.
+                # Wait for the next post-placement observation.
                 return position
-            if self._entry_triggered(position, check_hi, check_lo, live_price):
+            from pa_agent.positions.order_trigger import evaluate_order_trigger
+
+            result = evaluate_order_trigger(
+                order_type=position.order_type,
+                is_long=position.is_long,
+                entry=position.entry_price,
+                bar_open=(
+                    _to_float(bar_open)
+                    if bar_open is not None
+                    else position.first_tracked_price if is_first_observation else None
+                ),
+                bar_high=check_hi,
+                bar_low=check_lo,
+                bar_close=live_price,
+                armed=position.trigger_armed,
+                previous_price=position.armed_price or position.first_tracked_price,
+            )
+            position.trigger_armed = result.armed
+            if result.triggered:
                 position.status = PositionStatus.FILLED
                 position.filled_at_ms = _now_ms()
-                position.fill_price = position.entry_price
+                position.fill_price = result.fill_price
+                position.trigger_gap_through = result.gap_through
                 if bar_ts is not None:
                     position.filled_on_bar_ts = int(bar_ts)
                 live_price = _to_float(current_price)
@@ -374,6 +483,7 @@ class PositionTracker:
         high: float,
         low: float,
         current_price: float | None = None,
+        bar_open: float | None = None,
         bar_ts: int | None = None,
     ) -> Optional[PositionState]:
         """Compatibility alias for live execution updates."""
@@ -383,6 +493,7 @@ class PositionTracker:
             high=high,
             low=low,
             current_price=current_price,
+            bar_open=bar_open,
             bar_ts=bar_ts,
         )
 
@@ -404,43 +515,14 @@ class PositionTracker:
         entry: float,
         current_price: float | None,
     ) -> bool:
-        if current_price is None or long is None:
-            return True
-        if order_type == "限价单":
-            return current_price >= entry if long else current_price <= entry
-        if order_type == "突破单":
-            return current_price <= entry if long else current_price >= entry
-        return True
+        from pa_agent.positions.order_trigger import trigger_is_armed
 
-    @staticmethod
-    def _entry_triggered(
-        position: PositionState,
-        high: float,
-        low: float,
-        current_price: float | None,
-    ) -> bool:
-        entry = position.entry_price
-        long = position.is_long
-        if current_price is not None and long is not None:
-            armed_price = position.armed_price
-            if armed_price is not None:
-                if position.order_type == "限价单":
-                    return (
-                        armed_price >= entry and current_price < armed_price
-                        if long
-                        else armed_price <= entry and current_price > armed_price
-                    )
-                if position.order_type == "突破单":
-                    return (
-                        armed_price <= entry and current_price > armed_price
-                        if long
-                        else armed_price >= entry and current_price < armed_price
-                    )
-            if position.order_type == "限价单":
-                return current_price <= entry if long else current_price >= entry
-            if position.order_type == "突破单":
-                return current_price >= entry if long else current_price <= entry
-        return low <= entry <= high
+        return trigger_is_armed(
+            order_type=order_type,
+            is_long=long,
+            entry=entry,
+            current_price=current_price,
+        )
 
     @staticmethod
     def _price_touched(price: float, high: float, low: float) -> bool:

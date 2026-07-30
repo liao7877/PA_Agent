@@ -719,6 +719,13 @@ def normalize_stage1(
 
     _hoist_bar_by_bar_summary(out)
     normalize_stage1_traces(out, normalization_mode=normalization_mode)
+    gate_trace = out.get("gate_trace")
+    if isinstance(gate_trace, list) and any(
+        isinstance(node, dict) and str(node.get("node_id") or "") == "AUTO"
+        for node in gate_trace
+    ):
+        # Tail-injected truncated output is never proof that the gate can proceed.
+        out["gate_result"] = "unknown"
     _normalize_bar_by_bar_roles(out)
     _normalize_bar_by_bar_context_effects(out)
     _normalize_bar_by_bar_trapped_side(out)

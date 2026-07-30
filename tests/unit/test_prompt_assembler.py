@@ -269,6 +269,108 @@ def test_stage2_output_contract_present(assembler: PromptAssembler):
     assert "terminal" in user
 
 
+def test_stage2_output_contract_contains_confirmed_entry_provenance(
+    assembler: PromptAssembler,
+) -> None:
+    frame = _make_frame()
+    user = assembler.build_stage2(frame, {}, [], [])[1]["content"]
+
+    assert '"entry_bar": {' in user
+    assert '"bar": "K1 或 null' in user
+    assert "entry_bar.bar=null" in user
+    assert "`entry_bar.bar` 必须填写" in user
+    assert (
+        '"entry_setup_type": '
+        '"breakout_pullback|breakout_retest|H1|H2|L1|L2|MTR|wedge|none"'
+    ) in user
+    assert '"is_second_entry": false' in user
+    assert "只有逐棒证据成立才可为 true" in user
+    assert "false 时必须填 none" in user
+
+
+def test_stage1_output_contract_includes_breakout_retest_setup(
+    assembler: PromptAssembler,
+) -> None:
+    frame = _make_frame()
+    user = assembler.build_stage1(frame)[1]["content"]
+
+    assert (
+        '"entry_setup_type": '
+        '"H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|breakout_retest|none"'
+    ) in user
+
+
+def test_stage2_prompt_accepts_breakout_retest_as_confirmed_limit_setup(
+    assembler: PromptAssembler,
+) -> None:
+    frame = _make_frame()
+    stage1_json = {
+        "cycle_position": "normal_channel",
+        "direction": "bullish",
+    }
+    user = assembler.build_stage2(frame, stage1_json, [], [])[1]["content"]
+
+    assert "`entry_setup_type=breakout_pullback`、`breakout_retest`、H2/L2" in user
+    assert "breakout_pullback、breakout_retest、H2/L2" in user
+    assert "breakout_pullback/breakout_retest/H2/L2/second_entry" in user
+
+
+def test_stage2_prompt_warns_bullish_entry_near_resistance(
+    assembler: PromptAssembler,
+) -> None:
+    frame = _make_frame()
+    stage1_json = {
+        "cycle_position": "normal_channel",
+        "direction": "bullish",
+        "resistance_levels": ["2606"],
+        "support_levels": [],
+        "climax_risk": "none",
+    }
+    user = assembler.build_stage2(frame, stage1_json, [], [])[1]["content"]
+
+    assert "多头方向正靠近上方阻力 **2606**" in user
+    assert "上方空间受限" in user
+    assert "禁止在阻力前追多" in user
+    assert "等待有效突破后的回测确认" in user
+    assert "只作为做空等待区" not in user
+
+
+@pytest.mark.parametrize("climax_risk", ["warning", "triggered"])
+def test_stage2_prompt_adds_climax_risk_entry_warning(
+    assembler: PromptAssembler,
+    climax_risk: str,
+) -> None:
+    frame = _make_frame()
+    stage1_json = {
+        "cycle_position": "normal_channel",
+        "direction": "bullish",
+        "climax_risk": climax_risk,
+    }
+    user = assembler.build_stage2(frame, stage1_json, [], [])[1]["content"]
+
+    assert f"climax_risk={climax_risk}" in user
+    assert "禁止在高潮末端直接追原方向" in user
+    assert "必须等新的顺势价格行为" in user
+    assert "有效突破后的回测确认" in user
+    assert "明确的 H2/L2/二次入场" in user
+    assert "否则 wait" in user
+
+
+def test_stage2_prompt_omits_dynamic_climax_warning_when_risk_none(
+    assembler: PromptAssembler,
+) -> None:
+    frame = _make_frame()
+    stage1_json = {
+        "cycle_position": "normal_channel",
+        "direction": "bullish",
+        "climax_risk": "none",
+    }
+    user = assembler.build_stage2(frame, stage1_json, [], [])[1]["content"]
+
+    assert "climax_risk=none" not in user
+    assert "禁止在高潮末端直接追原方向" not in user
+
+
 def test_stage2_experience_entries_included(assembler: PromptAssembler):
     """Stage 2 user turn must include experience entries when provided."""
     frame = _make_frame()
@@ -407,8 +509,10 @@ def test_stage2_prompt_conservative_omits_balanced_only_hints(assembler: PromptA
     frame = _make_frame()
     messages = assembler.build_stage2(frame, {}, [], [], decision_stance="conservative")
     user = messages[1]["content"]
-    assert "当前系统默认" in user
+    assert "交易倾向（当前：保守 / conservative）" in user
+    assert "【保守】" in user
     assert "次优但可执行" not in user
+    assert "只是等待区域" in user
 
 
 def test_incremental_stage1_prompt_includes_previous_record_and_new_bars(

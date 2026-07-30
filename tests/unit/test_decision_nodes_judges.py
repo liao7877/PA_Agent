@@ -247,10 +247,10 @@ class MockFeature:
 
 
 class TestSignalBarJudge:
-    def test_91_always_yes(self):
+    def test_91_requires_a_real_closed_bar(self):
         fill = judge_signal_bar_closed(2, None)
         assert fill.node_id == "9.1"
-        assert fill.answer == "是"
+        assert fill.answer == "等待"
         assert fill.bar_range == "K2"
 
     def test_92_long_consistent_yes(self):
@@ -612,6 +612,59 @@ def test_price_action_entry_requires_concrete_entry_bar_for_limit() -> None:
         },
     }
     assert not price_action_entry_confirmed(out)
+
+
+def _pending_breakout_setup(*, quality: str = "strong") -> dict:
+    return {
+        "decision": {
+            "order_type": "突破单",
+            "entry_basis_bar": "K1",
+            "entry_basis_extreme": "high",
+            "entry_rule": "K1高点上方1跳动",
+        },
+        "bar_analysis": {
+            "signal_bar": {"bar": "K1", "quality": quality, "pattern": "H1"},
+            "entry_bar": {
+                "bar": None,
+                "strength": "not_triggered",
+                "freshness": "pending",
+                "follow_through": "pending",
+            },
+            "second_entry": {"is_second_entry": False, "type": "none"},
+        },
+    }
+
+
+def test_strong_or_medium_closed_signal_authorizes_pending_breakout() -> None:
+    from pa_agent.ai.decision_nodes import price_action_setup_confirmed
+
+    assert price_action_setup_confirmed(_pending_breakout_setup(quality="strong"))
+    assert price_action_setup_confirmed(_pending_breakout_setup(quality="medium"))
+
+
+def test_weak_pending_breakout_still_requires_later_confirmation_bar() -> None:
+    from pa_agent.ai.decision_nodes import price_action_setup_confirmed
+
+    out = _pending_breakout_setup(quality="weak")
+    assert not price_action_setup_confirmed(out)
+    out["bar_analysis"]["signal_bar"]["bar"] = "K2"
+    out["bar_analysis"]["entry_bar"] = {
+        "bar": "K1",
+        "strength": "strong",
+        "freshness": "fresh",
+        "follow_through": True,
+    }
+    assert price_action_setup_confirmed(out)
+
+
+def test_pending_limit_requires_confirmed_retest_or_second_entry_structure() -> None:
+    from pa_agent.ai.decision_nodes import price_action_setup_confirmed
+
+    out = _pending_breakout_setup(quality="medium")
+    out["decision"] = {"order_type": "限价单"}
+    assert not price_action_setup_confirmed(out)
+    out["bar_analysis"]["entry_setup_type"] = "breakout_pullback"
+    assert price_action_setup_confirmed(out)
 
 
 def test_spike_does_not_default_to_market_order() -> None:

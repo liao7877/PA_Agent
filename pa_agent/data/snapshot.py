@@ -152,12 +152,18 @@ def build_live_frame(
     This is for UI only. The analysis snapshot must still use
     ``build_analysis_frame`` so AI always sees closed-only candles.
     """
-    has_forming = has_forming_bar_at_head(
-        bars_raw,
-        timeframe or None,
-        symbol=symbol or None,
-        now_ms=now_ms,
+    has_forming = (
+        not bool(bars_raw[0].closed)
+        if bars_raw
+        else False
     )
+    if not has_forming:
+        has_forming = has_forming_bar_at_head(
+            bars_raw,
+            timeframe or None,
+            symbol=symbol or None,
+            now_ms=now_ms,
+        )
     if has_forming:
         if len(bars_raw) < n_closed + 1:
             return None
@@ -168,12 +174,9 @@ def build_live_frame(
         raw = bars_raw[:n_closed]
 
     rebased: list[KlineBar] = []
-    closed_idx = 0
     for i, b in enumerate(raw):
         is_forming = has_forming and i == 0
-        seq = 0 if is_forming else (closed_idx + 1)
-        if not is_forming:
-            closed_idx += 1
+        seq = i + 1
         rebased.append(
             normalize_kline_bar(
                 KlineBar(

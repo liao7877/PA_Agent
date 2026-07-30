@@ -1473,7 +1473,7 @@ def _get_signal_seq(out: dict[str, Any], bars: Any) -> int:
 
 
 def has_background_limit_path(out: dict[str, Any]) -> bool:
-    """True when decision_trace records §9.0P=是 (background-driven limit path)."""
+    """Detect legacy §9.0P traces for compatibility only; never authorizes an order."""
     trace = out.get("decision_trace")
     if not isinstance(trace, list):
         return False
@@ -1491,74 +1491,157 @@ def is_planned_limit_order(out: dict[str, Any]) -> bool:
     return False
 
 
-def price_action_entry_confirmed(out: dict[str, Any]) -> bool:
-    """Return whether a closed price-action signal is sufficient to authorize an order."""
-    from pa_agent.util.price_tick import parse_k_seq
-
-    decision = out.get("decision")
-    bar_analysis = out.get("bar_analysis")
-    if not isinstance(decision, dict):
-        return False
-    if bar_analysis is None:
-        return False
-    if not isinstance(bar_analysis, dict):
-        return False
-    if decision.get("order_type") not in ("限价单", "突破单", "市价单"):
-        return False
-
-    signal_bar = bar_analysis.get("signal_bar")
-    entry_bar = bar_analysis.get("entry_bar")
-    if not isinstance(signal_bar, dict) or not isinstance(entry_bar, dict):
-        return False
-    if parse_k_seq(signal_bar.get("bar")) is None:
-        return False
-
-    quality = str(signal_bar.get("quality", "") or "").strip().lower()
-    if quality in ("invalid", ""):
-        return False
-
-    entry_seq = parse_k_seq(entry_bar.get("bar"))
-    strength = str(entry_bar.get("strength", "") or "").strip().lower()
-    freshness = str(entry_bar.get("freshness", "") or "").strip().lower()
-    if strength == "not_triggered" or freshness in ("pending", "stale", "invalid"):
-        return False
-    follow_through = entry_bar.get("follow_through")
-    confirmed_follow_through = follow_through is True or str(follow_through).strip().lower() in (
+def _entry_follow_through_confirmed(entry_bar: dict[str, Any]) -> bool:
+    value = entry_bar.get("follow_through")
+    return value is True or str(value).strip().lower() in (
         "true",
         "yes",
         "是",
         "confirmed",
     )
 
-    if decision.get("order_type") in ("限价单", "市价单") and entry_seq is None:
+
+def _entry_is_pending(entry_bar: dict[str, Any]) -> bool:
+    strength = str(entry_bar.get("strength", "") or "").strip().lower()
+    freshness = str(entry_bar.get("freshness", "") or "").strip().lower()
+    return (
+        entry_bar.get("bar") is None
+        or strength == "not_triggered"
+        or freshness == "pending"
+    )
+
+
+def _limit_retest_setup_confirmed(
+    decision: dict[str, Any],
+    bar_analysis: dict[str, Any],
+    signal_bar: dict[str, Any],
+    entry_bar: dict[str, Any],
+) -> bool:
+    """Authorize a limit only after an explicit retest/second-entry structure."""
+    from pa_agent.util.price_tick import parse_k_seq
+
+    structured_tags = {
+        str(bar_analysis.get("entry_setup_type", "") or "").strip().lower(),
+        str(signal_bar.get("pattern", "") or "").strip().lower(),
+    }
+    second_entry = bar_analysis.get("second_entry")
+    if isinstance(second_entry, dict) and second_entry.get("is_second_entry") is True:
+        second_type = str(second_entry.get("type", "") or "").strip().lower()
+        if second_type not in ("", "none", "null"):
+            structured_tags.add(second_type)
+
+    allowed = structured_tags & {"breakout_pullback", "breakout_retest", "h2", "l2"}
+    if not allowed:
         return False
-    if decision.get("order_type") == "突破单" and not (
-        decision.get("entry_basis_bar") and decision.get("entry_basis_extreme")
-    ):
+
+    direction = str(decision.get("order_direction", "") or "").strip()
+    directional_counts = allowed & {"h2", "l2"}
+    if directional_counts == {"h2"} and direction != "做多":
+        return False
+    if directional_counts == {"l2"} and direction != "做空":
         return False
 
-    if quality == "weak":
-        return entry_seq is not None and confirmed_follow_through
-    return quality in ("strong", "medium")
+    if _entry_is_pending(entry_bar):
+        return True
+    return parse_k_seq(entry_bar.get("bar")) is not None
 
 
+def price_action_setup_confirmed(out: dict[str, Any]) -> bool:
+    """Whether closed price action authorizes creating an order.
 
+    Setup confirmation is deliberately separate from order triggering. A strong or
+    medium closed signal may authorize a still-pending breakout order; the pending
+    entry_bar then describes execution state, not an unconfirmed setup.
+    """
+    from pa_agent.util.price_tick import parse_k_seq
+
+    decision = out.get("decision")
+    bar_analysis = out.get("bar_analysis")
+    if not isinstance(decision, dict) or not isinstance(bar_analysis, dict):
+        return False
+
+    order_type = decision.get("order_type")
+    if order_type not in ("限价单", "突破单", "市价单"):
+        return False
+
+    signal_bar = bar_analysis.get("signal_bar")
+    entry_bar = bar_analysis.get("entry_bar")
+    if not isinstance(signal_bar, dict) or not isinstance(entry_bar, dict):
+        return False
+    signal_seq = parse_k_seq(signal_bar.get("bar"))
+    if signal_seq is None:
+        return False
+
+    quality = str(signal_bar.get("quality", "") or "").strip().lower()
+    if quality not in ("strong", "medium", "weak"):
+        return False
+
+    freshness = str(entry_bar.get("freshness", "") or "").strip().lower()
+    if freshness in ("stale", "invalid"):
+        return False
+
+    entry_seq = parse_k_seq(entry_bar.get("bar"))
+    if entry_seq is not None:
+        if signal_seq < entry_seq:
+            return False
+        if signal_seq == entry_seq and order_type != "市价单":
+            return False
+
+    follow_through_confirmed = _entry_follow_through_confirmed(entry_bar)
+    later_confirmation = (
+        entry_seq is not None
+        and signal_seq > entry_seq
+        and follow_through_confirmed
+    )
+    if quality == "weak" and not later_confirmation:
+        return False
+
+    if order_type == "突破单":
+        return bool(
+            decision.get("entry_basis_bar")
+            and decision.get("entry_basis_extreme")
+            and decision.get("entry_rule")
+        )
+
+    if order_type == "市价单":
+        return entry_seq is not None and not _entry_is_pending(entry_bar)
+
+    return _limit_retest_setup_confirmed(decision, bar_analysis, signal_bar, entry_bar)
+
+
+def price_action_entry_confirmed(out: dict[str, Any]) -> bool:
+    """Backward-compatible alias for setup authorization.
+
+    Historically this function also required the order to have triggered, which
+    incorrectly deleted valid pending breakout orders.
+    """
+    return price_action_setup_confirmed(out)
 
 
 def judge_signal_bar_closed(sig: int, frame: Any) -> NodeFill:
+    """§9.1: verify that the cited signal bar exists and is closed."""
+    from pa_agent.util.price_tick import bar_by_seq
 
-    """§9.1: signal bar is always closed (all bars in KlineFrame are closed)."""
-
+    bar = bar_by_seq(frame, sig) if frame is not None else None
+    if bar is None:
+        return NodeFill(
+            node_id="9.1",
+            answer="等待",
+            reason=f"K{sig}不在当前KlineFrame中，无法证明信号棒已收盘。",
+            bar_range=f"K{sig}",
+        )
+    if not bool(getattr(bar, "closed", False)):
+        return NodeFill(
+            node_id="9.1",
+            answer="等待",
+            reason=f"K{sig}仍在形成中，禁止作为已确认信号棒下单。",
+            bar_range=f"K{sig}",
+        )
     return NodeFill(
-
         node_id="9.1",
-
         answer="是",
-
-        reason=f"K{sig}为已收盘K线（KlineFrame内所有K线均已收盘），可作为信号棒。",
-
+        reason=f"K{sig}存在且closed=True，可作为已收盘信号棒。",
         bar_range=f"K{sig}",
-
     )
 
 
@@ -1690,7 +1773,7 @@ def judge_signal_bar_length(sig: int, features: dict[int, Any]) -> NodeFill:
 
             f"K{sig} range_atr_ratio={ratio:.3f} > {SIGNAL_BAR_LONG_ATR_RATIO}，"
 
-            "信号棒过长，止损可能超过ATR 2倍，需用资金管理止损或放弃。"
+            "信号棒过长可能使结构止损过大；止损仍须放在真实失效位，若风险不可接受则放弃，禁止把止损压缩到棒内噪音区。"
 
         )
 
@@ -1810,9 +1893,9 @@ _CYCLE_ORDER_METHOD: dict[str, str] = {
 
     "normal_channel": "突破单",
 
-    "broad_channel": "限价单",
+    "broad_channel": "突破单",
 
-    "trading_range": "限价单",
+    "trading_range": "不下单",
 
     "trending_tr": "突破单",
 
@@ -1836,7 +1919,9 @@ def route_order_method(
 
     *,
 
-    entry_confirmed: bool = False,
+    setup_confirmed: bool | None = None,
+
+    entry_confirmed: bool | None = None,
 
 ) -> list[dict[str, Any]]:
 
@@ -1858,7 +1943,11 @@ def route_order_method(
 
         return []
 
-    if not entry_confirmed:
+    # entry_confirmed is retained for callers on the old API; it now means setup authorization.
+    if setup_confirmed is None:
+        setup_confirmed = bool(entry_confirmed)
+
+    if not setup_confirmed:
         decision["order_type"] = "不下单"
         for field in (
             "order_direction",
@@ -1948,6 +2037,20 @@ def route_order_method(
 
 
 
+    def _is_trading_range_middle() -> bool:
+        if cycle != "trading_range":
+            return False
+        bar = stage1.get("bar_analysis")
+        bar = bar if isinstance(bar, dict) else {}
+        position = str(bar.get("tr_position") or stage1.get("tr_position") or "").strip().lower()
+        patterns = stage1.get("detected_patterns")
+        if not isinstance(patterns, list):
+            patterns = []
+        text = " ".join([position, *(str(x).strip().lower() for x in patterns)])
+        return any(token in text for token in ("middle", "center", "中部", "中间", "barbwire"))
+
+    range_middle = _is_trading_range_middle()
+
     candidate = _CYCLE_ORDER_METHOD.get(cycle, "不下单")
 
     model_order_type = str(decision.get("order_type") or "").strip()
@@ -1967,6 +2070,7 @@ def route_order_method(
     if (
         model_order_type == "限价单"
         and cycle != "spike"
+        and not range_middle
         and _trace_answer(decision_trace, "10.3") == "是"
         and _has_trade_prices()
     ):
@@ -1974,12 +2078,14 @@ def route_order_method(
     elif (
         model_order_type == "市价单"
         and cycle != "spike"
+        and not range_middle
         and _trace_answer(decision_trace, "10.3") == "是"
         and _has_trade_prices()
     ):
         candidate = "市价单"
     elif (
         model_order_type == "突破单"
+        and not range_middle
         and (cycle != "spike" or str(stage1.get("spike_stage") or "").strip().lower() in ("ending", "pullback", "channel"))
         and _trace_answer(decision_trace, "10.3") == "是"
         and _has_trade_prices()
@@ -2009,38 +2115,6 @@ def route_order_method(
 
 
 
-    # ── spike_ending / spike_pullback exception ───────────────────────────────
-    # When cycle_position=spike but spike_stage indicates the spike has already
-    # ended (ending/pullback/channel), the default candidate is 市价单 (for active
-    # spike chasing).  However, once the spike exhausts itself the market enters a
-    # consolidation/pullback phase where waiting for a breakout of the signal bar
-    # is the textbook entry (§3.4 SPS / §3.5 path-A).  Forcing 市价单 on a pending
-    # 突破单 is wrong: the entry hasn't triggered yet (entry_bar.strength=not_triggered
-    # / freshness=pending) and the signal_chain validator would reject it.
-    # Preserve the model's 突破单 choice when:
-    #   1. spike_stage is ending / pullback / channel  (spike already exhausted)
-    #   2. model chose 突破单
-    #   3. a valid entry_basis_bar + entry_basis_extreme are present (breakout anchor)
-    if cycle == "spike" and candidate == "市价单":
-
-        spike_stage = str(stage1.get("spike_stage") or "").strip().lower()
-
-        if spike_stage in ("ending", "pullback", "channel") and model_order_type == "突破单":
-
-            has_basis = bool(
-
-                decision.get("entry_basis_bar") and decision.get("entry_basis_extreme")
-
-            )
-
-            if has_basis:
-
-                candidate = "突破单"
-
-        return []
-
-
-
     # Breakout orders require a complete, auditable signal-bar anchor.
     if candidate == "突破单":
         has_basis = bool(
@@ -2065,48 +2139,15 @@ def route_order_method(
 
 
 
-    # Determine which §11 node corresponds to the final method
-
-    # §11 structure:
-
-    # 11.1: 趋势/尖峰 → 市价单 (spike)
-
-    # 11.2: 通道 → 突破单 (channel)
-
-    # 11.3: 区间 → 限价单 (range)
-
-    # 11.4: broad_channel → 限价单 (broad)
-
-    _METHOD_NODE: dict[str, tuple[str, str]] = {
-
-        "spike":         ("11.1", "市价单"),
-
-        "micro_channel": ("11.2", "突破单"),
-
-        "tight_channel": ("11.2", "突破单"),
-
-        "normal_channel":("11.2", "突破单"),
-
-        "broad_channel": ("11.2", "限价单"),
-
-        "trading_range": ("11.3", "限价单"),
-
-        "trending_tr":   ("11.2", "突破单"),
-
-    }
-
-
-
-    cycle_node_info = _METHOD_NODE.get(cycle)
-
-    if not cycle_node_info:
-
-        return []
-
-
-
-    final_node_id, _ = cycle_node_info
-
+    # Select the audit node from the actual method, not from a cycle default.
+    if candidate == "市价单":
+        final_node_id = "11.1"
+    elif candidate == "突破单":
+        final_node_id = "11.2"
+    elif cycle == "trading_range":
+        final_node_id = "11.3"
+    else:
+        final_node_id = "11.4"
 
 
     # Update decision order_type to match candidate
@@ -2127,13 +2168,13 @@ def route_order_method(
 
     _node_reasons: dict[str, str] = {
 
-        "11.1": "趋势/尖峰阶段，价格快速移动，适合市价单立即入场。",
+        "11.1": "强信号已确认且价格未过度延伸，允许市价执行。",
 
-        "11.2": "通道结构，等待突破确认，使用突破单。",
+        "11.2": "顺势信号 setup 已确认，在信号棒极点外等待突破触发。",
 
-        "11.3": "交易区间，在区间边界附近使用限价单。",
+        "11.3": "交易区间仅在边界完成确认后采用回测/二次入场限价。",
 
-        "11.4": "宽通道/特殊情况，使用限价单。",
+        "11.4": "确认后的回测或二次入场结构允许限价执行。",
 
     }
 
@@ -2997,43 +3038,16 @@ class DecisionNodeEngine:
 
 
 
-        # Step 3: OrderMethodRouter → §11 nodes
-
-        # Only inject if order is a trade type (not 不下单)
-
-        current_order_type = decision.get("order_type")
-
-        decision_trace = out["decision_trace"]
-
-        sec11_fills: list[NodeFill] = []
-
-        if current_order_type != "不下单":
-
-            sec11_fills = route_order_method(
-                stage1_json,
-                decision,
-                decision_trace,
-                entry_confirmed=price_action_entry_confirmed(out),
-            )
-
-
-
-        # Convert to dicts
-
+        # Convert §9 program results first.  Order-method routing is downstream of
+        # these deterministic entry gates; a model quality label cannot bypass a
+        # missing/forming or directionally contradictory signal bar.
         node_91 = build_program_trace_node(fill_91)
-
         node_92 = build_program_trace_node(fill_92)
-
         if fill_92.answer == "不适用":
-
             node_92["skipped"] = True
-
         node_93 = build_program_trace_node(fill_93)
-
         node_95 = build_program_trace_node(fill_95)
 
-        # When §9.0=否 (no valid signal bar), mark §9.1-9.5 as skipped so they
-        # don't appear as contradictory program-filled nodes in the trace.
         if not _section9_has_signal:
             _skip_reason = "§9.0=否（无有效信号棒），§9.1-9.5不适用，程序跳过。"
             for _node in (node_91, node_92, node_93, node_95):
@@ -3041,39 +3055,119 @@ class DecisionNodeEngine:
                 _node["answer"] = "不适用"
                 _node["reason"] = _skip_reason
 
-
-
-        sec11_nodes = [build_program_trace_node(f) for f in sec11_fills]
-
-
-
-        program_nodes = [node_91, node_92, node_93, node_95] + sec11_nodes
-
-
-
-        # Step 4: Apply overrides
-
-        node_overrides = out.get("node_overrides")
-
-        final_nodes = apply_overrides(
-
-            program_nodes,
-
-            node_overrides,
-
+        section9_nodes = apply_overrides(
+            [node_91, node_92, node_93, node_95],
+            out.get("node_overrides"),
             out=out,
-
             stage="stage2",
-
         )
-
-
-
-        # Step 5: Merge into decision_trace
-
         out["decision_trace"] = merge_program_nodes(
-
-            out["decision_trace"], final_nodes
-
+            out["decision_trace"], section9_nodes
         )
+
+        section9_answers = {
+            str(node.get("node_id")): str(node.get("answer") or "")
+            for node in section9_nodes
+            if isinstance(node, dict)
+        }
+        setup_authorized = bool(
+            _section9_has_signal
+            and section9_answers.get("9.1") == "是"
+            and section9_answers.get("9.2") == "是"
+            and price_action_setup_confirmed(out)
+        )
+        if setup_authorized:
+            try:
+                from pa_agent.ai.setup_evidence import verify_setup_evidence
+
+                evidence = verify_setup_evidence(
+                    stage1_json=stage1_json,
+                    stage2_json=out,
+                    frame=frame,
+                )
+                out["setup_evidence"] = {
+                    "verified": evidence.verified,
+                    "verification_status": "verified" if evidence.verified else "rejected",
+                    "setup_type": evidence.setup_type,
+                    "reason": evidence.reason,
+                    "signal_seq": evidence.signal_seq,
+                    "confirmation_seq": evidence.confirmation_seq,
+                    "anchor_price": evidence.anchor_price,
+                    "invalidation_price": evidence.invalidation_price,
+                }
+                setup_authorized = evidence.verified
+                if setup_authorized and evidence.invalidation_price is not None:
+                    direction = str(decision.get("order_direction") or "")
+                    signal_bar = str(
+                        (out.get("bar_analysis") or {}).get("signal_bar", {}).get("bar")
+                        if isinstance(out.get("bar_analysis"), dict)
+                        else ""
+                    ) or None
+                    anchor_bar = (
+                        f"K{evidence.confirmation_seq}"
+                        if evidence.confirmation_seq is not None
+                        else signal_bar
+                    )
+                    decision["stop_anchor"] = {
+                        "source": (
+                            "confirmation_bar"
+                            if evidence.confirmation_seq is not None
+                            else "signal_bar"
+                        ),
+                        "bar": anchor_bar,
+                        "extreme": "low" if direction == "做多" else "high",
+                        "anchor_price": evidence.invalidation_price,
+                        "buffer_ticks": 2,
+                        "noise_floor": None,
+                        "verified": True,
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("setup evidence verification failed")
+                out["setup_evidence"] = {
+                    "verified": False,
+                    "setup_type": "technical_error",
+                    "reason": f"程序结构验证异常：{exc}",
+                }
+                setup_authorized = False
+
+        # Pending strong/medium breakout setups may wait for §9.5 execution
+        # follow-through.  Failed follow-through still blocks weak setups in
+        # price_action_setup_confirmed().
+        current_order_type = decision.get("order_type")
+        if not setup_authorized and current_order_type != "不下单":
+            decision["order_type"] = "不下单"
+            for field in (
+                "order_direction",
+                "entry_price",
+                "stop_loss_price",
+                "take_profit_price",
+                "take_profit_price_2",
+                "entry_basis_bar",
+                "entry_basis_extreme",
+                "entry_rule",
+            ):
+                decision[field] = None
+            decision["estimated_win_rate"] = None
+            decision["estimated_win_rate_reasoning"] = None
+
+        sec11_fills: list[NodeFill] = []
+        if decision.get("order_type") != "不下单":
+            sec11_fills = route_order_method(
+                stage1_json,
+                decision,
+                out["decision_trace"],
+                setup_confirmed=setup_authorized,
+            )
+
+        sec11_nodes = [build_program_trace_node(fill) for fill in sec11_fills]
+        if sec11_nodes:
+            final_sec11 = apply_overrides(
+                sec11_nodes,
+                out.get("node_overrides"),
+                out=out,
+                stage="stage2",
+            )
+            out["decision_trace"] = merge_program_nodes(
+                out["decision_trace"], final_sec11
+            )
 

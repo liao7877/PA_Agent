@@ -68,10 +68,34 @@ def enrich_decision_for_chart_overlay(
         previous_record=previous_record,
         cooldown_bars=cooldown_bars,
     )
-    if not ctx.get("has_previous_plan") or ctx.get("invalidated"):
+    if not ctx.get("has_previous_plan"):
         return out
-
     prev = ctx.get("previous_decision") or {}
+    try:
+        stop = float(prev.get("stop_loss_price"))
+        latest = list(getattr(frame, "bars", ()) or ())[0]
+        direction = str(prev.get("order_direction") or "")
+        if "多" in direction and (
+            float(getattr(latest, "low")) <= stop
+            or float(getattr(latest, "close")) <= stop
+        ):
+            return out
+        if "空" in direction and (
+            float(getattr(latest, "high")) >= stop
+            or float(getattr(latest, "close")) >= stop
+        ):
+            return out
+    except (AttributeError, IndexError, TypeError, ValueError):
+        pass
+    invalidation_reason = str(ctx.get("invalidation_reason") or "")
+    provenance_only = any(
+        token in invalidation_reason
+        for token in ("缺少已收盘价格行为", "缺少 signal_bar", "CSV 历史挂单缺少")
+    )
+    # Legacy/unverified pending plans remain visible for audit, but are execution
+    # ineligible elsewhere. Objective price/direction invalidation hides levels.
+    if ctx.get("invalidated") and not provenance_only:
+        return out
     if not has_trade_prices(prev):
         return out
 

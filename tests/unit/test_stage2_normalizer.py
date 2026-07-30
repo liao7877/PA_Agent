@@ -674,12 +674,13 @@ def test_trade_terminal_14_repaired_to_order_node() -> None:
         },
         "bar_analysis": {
             "always_in": "short",
+            "entry_setup_type": "breakout_retest",
             "last_closed_bar": "K1",
             "bar_type": "doji",
             "signal_bar": {
                 "bar": "K2",
                 "quality": "medium",
-                "pattern": "tr_boundary",
+                "pattern": "breakout_retest",
                 "reason": "K2空头信号棒已收盘",
             },
             "entry_bar": {
@@ -744,7 +745,7 @@ def test_trade_terminal_14_repaired_to_order_node() -> None:
     assert isinstance(result, Ok)
 
 
-def test_signal_bar_bumped_when_same_seq_as_entry() -> None:
+def test_signal_bar_not_invented_when_same_seq_as_non_market_entry() -> None:
     obj = {
         "decision": {
             "order_type": "突破单",
@@ -786,7 +787,9 @@ def test_signal_bar_bumped_when_same_seq_as_entry() -> None:
         "terminal": {"node_id": "0", "outcome": "trade", "label": "t"},
     }
     out = normalize_stage2(obj)
-    assert out["bar_analysis"]["signal_bar"]["bar"] == "K2"
+    assert out["bar_analysis"]["signal_bar"]["bar"] == "K1"
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["terminal"]["node_id"] == "9.0"
 
 
 def test_normalize_stage2_without_prediction_noop():
@@ -882,7 +885,7 @@ def test_repair_next_bar_yinxian_singular_probability() -> None:
     assert nb["probabilities"]["bearish"] == 60
 
 
-def test_prediction_guard_forbids_long_when_next_cycle_bearish() -> None:
+def test_next_cycle_bearish_is_advisory_and_does_not_cancel_long() -> None:
     obj = {
         "decision": {
             "order_type": "限价单",
@@ -909,10 +912,11 @@ def test_prediction_guard_forbids_long_when_next_cycle_bearish() -> None:
             "key_signals": [],
         },
         "bar_analysis": {
+            "entry_setup_type": "breakout_retest",
             "signal_bar": {
                 "bar": "K2",
                 "quality": "medium",
-                "pattern": "bull_reversal",
+                "pattern": "breakout_retest",
                 "reason": "K2 多头信号棒已收盘",
             },
             "entry_bar": {
@@ -943,12 +947,12 @@ def test_prediction_guard_forbids_long_when_next_cycle_bearish() -> None:
         },
     }
     out = normalize_stage2(obj)
-    assert out["decision"]["order_type"] == "不下单"
-    assert out["terminal"]["outcome"] == "wait"
-    assert "禁止做多" in (out["decision"].get("reasoning") or "")
+    assert out["decision"]["order_type"] == "限价单"
+    assert out["terminal"]["outcome"] == "trade"
+    assert out["next_cycle_prediction"]["direction"] == "bearish"
 
 
-def test_prediction_guard_forbids_short_when_next_cycle_bullish() -> None:
+def test_next_cycle_bullish_is_advisory_and_does_not_cancel_short() -> None:
     obj = {
         "decision": {
             "order_type": "限价单",
@@ -956,7 +960,7 @@ def test_prediction_guard_forbids_short_when_next_cycle_bullish() -> None:
             "entry_price": 4022.486,
             "take_profit_price": 4015.365,
             "take_profit_price_2": 4009.473,
-            "stop_loss_price": 4034.234,
+            "stop_loss_price": 4028.234,
             "reasoning": "test",
             "diagnosis_confidence": 64,
             "diagnosis_confidence_reasoning": "t",
@@ -975,10 +979,11 @@ def test_prediction_guard_forbids_short_when_next_cycle_bullish() -> None:
             "key_signals": [],
         },
         "bar_analysis": {
+            "entry_setup_type": "breakout_retest",
             "signal_bar": {
                 "bar": "K2",
                 "quality": "medium",
-                "pattern": "bear_reversal",
+                "pattern": "breakout_retest",
                 "reason": "K2 空头信号棒已收盘",
             },
             "entry_bar": {
@@ -1009,9 +1014,9 @@ def test_prediction_guard_forbids_short_when_next_cycle_bullish() -> None:
         },
     }
     out = normalize_stage2(obj)
-    assert out["decision"]["order_type"] == "不下单"
-    assert out["terminal"]["outcome"] == "wait"
-    assert "禁止做空" in (out["decision"].get("reasoning") or "")
+    assert out["decision"]["order_type"] == "限价单"
+    assert out["terminal"]["outcome"] == "trade"
+    assert out["next_cycle_prediction"]["direction"] == "bullish"
 
 
 def test_validator_injects_next_bar_when_feature_disabled() -> None:
@@ -1349,3 +1354,84 @@ def test_coerce_breakout_without_basis_to_wait() -> None:
     assert out["decision"]["order_type"] == "不下单"
     assert out["decision"]["entry_rule"] is None
     assert out["terminal"]["outcome"] == "wait"
+
+
+def _pending_breakout_payload(*, quality: str = "medium", freshness: str = "pending") -> dict:
+    return {
+        "decision": {
+            "order_type": "突破单",
+            "order_direction": "做多",
+            "entry_price": 104.1,
+            "entry_basis_bar": "K1",
+            "entry_basis_extreme": "high",
+            "entry_rule": "K1 high 上方 1 tick",
+            "take_profit_price": 108.0,
+            "take_profit_price_2": 111.0,
+            "stop_loss_price": 101.0,
+            "reasoning": "顺势信号棒收盘后等待突破触发",
+            "diagnosis_confidence": 65,
+            "diagnosis_confidence_reasoning": "t",
+            "trade_confidence": 55,
+            "trade_confidence_reasoning": "t",
+            "estimated_win_rate": 55,
+            "estimated_win_rate_reasoning": "t",
+            "key_factors": [],
+            "watch_points": [],
+            "risk_assessment": "t",
+            "invalidation_condition": "回调结构失效",
+        },
+        "diagnosis_summary": {
+            "cycle_position": "normal_channel",
+            "direction": "bullish",
+            "key_signals": [],
+        },
+        "bar_analysis": {
+            "always_in": "long",
+            "last_closed_bar": "K1",
+            "bar_type": "trend_bull",
+            "signal_bar": {
+                "bar": "K1",
+                "quality": quality,
+                "pattern": "bull_continuation",
+                "reason": "已收盘顺势信号棒",
+            },
+            "entry_bar": {
+                "bar": None,
+                "strength": "not_triggered",
+                "follow_through": "pending",
+                "still_valid": True,
+                "freshness": freshness,
+            },
+            "second_entry": {"is_second_entry": False, "type": "none"},
+        },
+        "decision_trace": [
+            {
+                "node_id": "10.3",
+                "question": "交易者方程是否通过？",
+                "answer": "是",
+                "reason": "t",
+                "bar_range": "K1",
+            }
+        ],
+        "terminal": {"node_id": "11.2", "outcome": "trade", "label": "等待突破"},
+    }
+
+
+def test_normalize_stage2_keeps_strong_and_medium_pending_breakouts() -> None:
+    for quality in ("strong", "medium"):
+        out = normalize_stage2(_pending_breakout_payload(quality=quality))
+        assert out["decision"]["order_type"] == "突破单"
+        assert out["bar_analysis"]["entry_bar"]["bar"] is None
+        assert out["bar_analysis"]["entry_bar"]["freshness"] == "pending"
+
+
+def test_normalize_stage2_rejects_weak_pending_breakout_without_confirmation() -> None:
+    out = normalize_stage2(_pending_breakout_payload(quality="weak"))
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["terminal"]["node_id"] == "9.0"
+
+
+def test_normalize_stage2_does_not_revive_stale_pending_entry() -> None:
+    out = normalize_stage2(_pending_breakout_payload(freshness="stale"))
+    assert out["decision"]["order_type"] == "不下单"
+    assert out["bar_analysis"]["entry_bar"]["freshness"] == "stale"

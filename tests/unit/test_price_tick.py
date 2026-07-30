@@ -75,14 +75,26 @@ def test_stage2_normalizer_passes_breakout_price_check() -> None:
                 "order_direction": "做多",
                 "entry_basis_bar": "K1",
                 "entry_basis_extreme": "high",
+                "entry_rule": "K1高点上方1跳",
                 "entry_price": 104.0,
                 "take_profit_price": 120.0,
+                "take_profit_price_2": 130.0,
                 "stop_loss_price": 99.0,
                 "estimated_win_rate": 55,
             },
         },
         kline_frame=frame,
     )
-    assert obj["decision"]["entry_price"] > 104.0
-    msgs = JsonValidator._check_breakout_price_extreme(obj, frame)
+    # Normalization may fail closed because the minimal payload has no complete
+    # §9 evidence, but it must first make a correctly ticked breakout quote.
+    decision = {
+        "order_type": "突破单",
+        "order_direction": "做多",
+        "entry_basis_bar": "K1",
+        "entry_basis_extreme": "high",
+        "entry_price": 104.0,
+    }
+    assert normalize_breakout_entry_price(decision, kline_frame=frame)
+    assert decision["entry_price"] > 104.0
+    msgs = JsonValidator._check_breakout_price_extreme({"decision": decision}, frame)
     assert msgs == []

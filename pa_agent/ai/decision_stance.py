@@ -51,11 +51,11 @@ def build_decision_stance_guidance(stance: str | None) -> str:
     common_rules = (
         "通用约束（各档都必须遵守，档位不得放宽）：\n"
         "- 先确定 direction / Always In，只评估顺势 setup；支撑、阻力、EMA、通道边界只是等待区域。\n"
-        "- 任何新入场必须有已收盘信号棒；弱信号必须有更晚的已收盘确认棒且 follow_through=true。\n"
+        "- 任何新入场必须有已收盘信号棒；strong/medium 可直接授权 pending 突破单，弱信号才必须有更晚的已收盘确认棒且 follow_through=true。\n"
         "- 突破依据不完整时等待，不得自动转换为限价单；限价单仅用于确认后的回测/二次入场。\n"
         "- 反转必须同时具备 breakout_failure、已收盘反转确认棒和明确的 2.3 方向重判。\n"
         "- 仍必须完整输出 decision_trace，按 §9–§11、§14 走适用节点，不得伪造 trace。\n"
-        "- 节点 10.3 须基于结构 entry/stop/target 做数值判断；止损必须保持在交易假设失效位，RR≥1.0。\n"
+        "- 节点 10.3 须基于结构 entry/stop/target 做数值判断；先定真实失效位止损，再检查 RR≥1.0，禁止用 RR 反推噪音内止损。\n"
         "- **方案连续性**：上一轮计划未失效时，明确 position_action=持有；"
         "新有效订单替换旧计划；仅明确撤销或程序确认失效时取消旧计划。\n"
         "- 完成 10.3 后必须填写 estimated_win_rate 与 reasoning；不下单时 estimated_win_rate=null。\n"
@@ -72,21 +72,21 @@ def build_decision_stance_guidance(stance: str | None) -> str:
     elif normalized == "balanced":
         profile = (
             "【均衡】= 在确认完整的前提下接受次优但可执行的顺势 setup。\n"
-            "- 次优信号仍必须已收盘；弱信号仍必须有确认棒。\n"
+            "- 次优但顺势的 medium 信号已收盘且结构完整时，可直接设置 pending 突破单；weak 仍必须有确认棒。\n"
             "- 10.3 数学期望为正且结构清晰时可执行，须说明主要瑕疵。\n"
             "- trade_confidence 35–49 时仅在确认链完整时允许下单。\n"
         )
     elif normalized == "aggressive":
         profile = (
             "【激进】= 更主动寻找已经确认的顺势机会。\n"
-            "- 可接受较弱但已经由确认棒确认的信号，不得提前到信号出现之前。\n"
+            "- 可主动接受强背景中的 medium 已收盘信号并设置 pending 突破；weak 仍须由更晚确认棒确认，不得提前到信号出现之前。\n"
             "- 10.3 略偏边际但仍为正时可以执行，并明确风险。\n"
             "- trade_confidence 30–44 时仅在确认链和结构止损完整时允许下单。\n"
         )
     else:
         profile = (
             "【极度激进】= 提高机会筛选频率，但缺少确认时仍必须等待。\n"
-            "- 在多空之间优先选择与 direction / Always In 一致的一侧，不得因档位强制猜方向。\n"
+            "- 在多空之间优先选择与 direction / Always In 一致的一侧；可提高 medium 顺势 pending 突破的接受度，但不得因档位强制猜方向或强制下单。\n"
             "- 可接受最低 25–40 的 trade_confidence，但必须有已收盘信号、必要确认、完整结构止损和正期望。\n"
             "- 确认链不完整、突破依据缺失、逆势证据不足或 §14 触犯时，必须不下单。\n"
         )

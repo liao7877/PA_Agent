@@ -191,7 +191,7 @@
 交易含义：
 - 顺势方向优先；**禁止逆势**边界交易
 - 突破信号只跟顺势方向
-- 如果交易，**区间/通道边界**可评估 §9.0P 计划型限价；**中部禁止**先入（与二元决策 §6.3、§9.0P 一致）
+- 区间/通道边界只是观察区；**中部禁止**入场。边界处也必须等待已收盘顺势价格行为确认：strong/medium 可 pending 突破，weak 必须有更晚确认；限价只用于确认后的 breakout pullback/retest、H2/L2 或 second entry。
 
 【状态7：交易区间（Trading Range）】
 
@@ -331,7 +331,7 @@ Brooks 原则：长程背景**不否决**近期 `direction`；冲突时近期为
 
 **阶段二执行门控（硬规则）**：
 - `order_direction` **只顺**阶段一 `direction` 与 §2.4 Always In。
-- `direction=neutral` 时**不能**仅凭长程背景同向就给三价；须 §9.0 合格信号棒，或 §9.0P 且 §2.4 为 AIL/AIS 单侧。
+- `direction=neutral` 时**不能**仅凭长程背景、AIL/AIS 或结构位给三价；必须先有与 §2.4 不冲突的已收盘价格行为信号。
 - 长程与近期同向 → 提高 diagnosis_confidence；冲突 → 近期为主，背景写入 `htf_context` 作风险参考。
 
 三窗口关系解读：

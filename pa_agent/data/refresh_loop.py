@@ -41,15 +41,51 @@ class RefreshLoop(QThread):
         interval_ms: int = 1000,
         cancel_token: "CancelToken | None" = None,
         parent: "QObject | None" = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._source = data_source
         self._n_bars = n_bars
         self._interval_ms = interval_ms
         self._cancel_token = cancel_token
+        self._symbol = (symbol or "").strip()
+        self._timeframe = (timeframe or "").strip()
+        self._connected = bool(getattr(data_source, "_connected", False))
+        self._subscribed = False
         self._consecutive_failures = 0
         self._failure_threshold_s = 5.0
         self._in_flight = False  # guard against overlapping fetches
+
+    def _wait_or_cancel(self, timeout_s: float) -> bool:
+        """Wait up to *timeout_s* and return True when cancellation wins."""
+        token = self._cancel_token
+        if token is None:
+            time.sleep(timeout_s)
+            return False
+        return token.wait(timeout_s)
+
+    def _record_failure(
+        self,
+        exc: BaseException,
+        failure_start: float | None,
+        *,
+        unexpected: bool,
+    ) -> float:
+        self._connected = bool(getattr(self._source, "_connected", False))
+        if not self._connected:
+            self._subscribed = False
+        self._consecutive_failures += 1
+        if failure_start is None:
+            failure_start = time.monotonic()
+        user_msg = str(exc).strip()
+        if user_msg:
+            self.status_changed.emit(
+                f"数据刷新异常：{user_msg}" if unexpected else user_msg
+            )
+        elif time.monotonic() - failure_start >= self._failure_threshold_s:
+            self.status_changed.emit("数据刷新异常" if unexpected else "数据延迟")
+        return failure_start
 
     def run(self) -> None:  # noqa: C901
         """Main loop — runs on the worker thread."""
@@ -64,13 +100,27 @@ class RefreshLoop(QThread):
             # This prevents overlapping WebSocket connections that trigger
             # TradingView rate-limiting (especially in nologin mode).
             if self._in_flight:
-                time.sleep(0.5)
+                if self._wait_or_cancel(0.5):
+                    break
                 continue
 
             t0 = time.monotonic()
             self._in_flight = True
             try:
                 try:
+                    if not self._connected:
+                        connect = getattr(self._source, "connect", None)
+                        if callable(connect):
+                            self.status_changed.emit("连接中")
+                            connect()
+                        self._connected = True
+                        self._subscribed = False
+                    if self._symbol and self._timeframe and not self._subscribed:
+                        subscribe = getattr(self._source, "subscribe", None)
+                        if callable(subscribe):
+                            subscribe(self._symbol, self._timeframe)
+                        self._subscribed = True
+                        self.status_changed.emit("行情已连接")
                     bars = self._source.latest_snapshot(
                         self._n_bars + INDICATOR_WARMUP_BARS + 5
                     )
@@ -84,17 +134,14 @@ class RefreshLoop(QThread):
 
                 except DataSourceTransientError as exc:
                     logger.debug("RefreshLoop transient error: %s", exc)
-                    self._consecutive_failures += 1
-                    if failure_start is None:
-                        failure_start = time.monotonic()
-                    user_msg = str(exc).strip()
-                    if user_msg:
-                        self.status_changed.emit(user_msg)
-                    elapsed = time.monotonic() - failure_start
-                    if elapsed >= self._failure_threshold_s and not user_msg:
-                        self.status_changed.emit("数据延迟")
+                    failure_start = self._record_failure(
+                        exc, failure_start, unexpected=False
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.error("RefreshLoop unexpected error: %s", exc, exc_info=True)
+                    failure_start = self._record_failure(
+                        exc, failure_start, unexpected=True
+                    )
             finally:
                 self._in_flight = False
 
@@ -110,11 +157,14 @@ class RefreshLoop(QThread):
                     backoff_s,
                     self._consecutive_failures,
                 )
-                time.sleep(backoff_s)
+                if self._wait_or_cancel(backoff_s):
+                    logger.debug("RefreshLoop cancelled during backoff")
+                    break
                 continue
 
             elapsed_ms = (time.monotonic() - t0) * 1000
             sleep_ms = max(0.0, self._interval_ms - elapsed_ms)
-            if sleep_ms > 0:
-                time.sleep(sleep_ms / 1000.0)
+            if sleep_ms > 0 and self._wait_or_cancel(sleep_ms / 1000.0):
+                logger.debug("RefreshLoop cancelled during interval wait")
+                break
 

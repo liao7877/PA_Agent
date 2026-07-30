@@ -276,6 +276,25 @@ class DecisionPanel(QWidget):
         self._trade_reasoning_label.setStyleSheet(_REASON_FONT_CSS)
         layout.addWidget(self._trade_reasoning_label)
 
+        self._prediction_group = QFrame()
+        self._prediction_group.setObjectName("predictionGroup")
+        prediction_layout = QVBoxLayout(self._prediction_group)
+        prediction_layout.setContentsMargins(10, 8, 10, 8)
+        prediction_layout.setSpacing(4)
+        prediction_title = QLabel("下根K线辅助预期")
+        prediction_title.setStyleSheet("font-weight: bold; color: #8b949e;")
+        self._prediction_direction_label = QLabel()
+        self._prediction_direction_label.setWordWrap(True)
+        self._prediction_reasoning_edit = QTextEdit()
+        self._prediction_reasoning_edit.setReadOnly(True)
+        self._prediction_reasoning_edit.setMaximumHeight(80)
+        self._prediction_reasoning_edit.setStyleSheet(_REASON_EDIT_CSS)
+        prediction_layout.addWidget(prediction_title)
+        prediction_layout.addWidget(self._prediction_direction_label)
+        prediction_layout.addWidget(self._prediction_reasoning_edit)
+        self._prediction_group.setVisible(False)
+        layout.addWidget(self._prediction_group)
+
         reasoning_title = QLabel("分析理由")
         reasoning_title.setStyleSheet("font-weight: bold; color: #a371f7; margin-top: 6px;")
         layout.addWidget(reasoning_title)
@@ -418,6 +437,38 @@ class DecisionPanel(QWidget):
         self._rr_inline_label.setVisible(False)
         self._win_rate_inline_label.setVisible(False)
 
+    def _apply_prediction(self, prediction: object) -> None:
+        if not isinstance(prediction, dict):
+            self._prediction_group.setVisible(False)
+            self._prediction_direction_label.clear()
+            self._prediction_reasoning_edit.clear()
+            return
+        reasoning = str(prediction.get("reasoning") or "").strip()
+        if bool(prediction.get("unpredictable")):
+            self._prediction_direction_label.setText(_PREDICTION_UNPREDICTABLE_LABEL)
+            self._prediction_direction_label.setStyleSheet(
+                f"font-weight: bold; color: {_PREDICTION_UNPREDICTABLE_COLOR};"
+            )
+        else:
+            probs = prediction.get("probabilities")
+            if not isinstance(probs, dict):
+                self._prediction_group.setVisible(False)
+                return
+            bull = probs.get("bullish", "?")
+            bear = probs.get("bearish", "?")
+            neutral = probs.get("neutral", "?")
+            dominant = _dominant_prediction_direction(probs) or "neutral"
+            color = _PREDICTION_DOMINANT_COLOR.get(dominant, "#8b949e")
+            self._prediction_direction_label.setText(
+                f"阳 {bull}% · 阴 {bear}% · 中 {neutral}%"
+            )
+            self._prediction_direction_label.setStyleSheet(
+                f"font-weight: bold; color: {color};"
+            )
+        self._prediction_reasoning_edit.setPlainText(reasoning)
+        self._prediction_reasoning_edit.setVisible(bool(reasoning))
+        self._prediction_group.setVisible(True)
+
     # ── Public API ────────────────────────────────────────────────────────
 
     def set_decision(
@@ -429,6 +480,15 @@ class DecisionPanel(QWidget):
         decision_stance: str | None = None,
         confidence_threshold: int | None = None,
     ) -> None:
+        # Accept either the nested decision object or the complete Stage-2 payload.
+        if isinstance(decision.get("decision"), dict):
+            stage2 = decision
+            diagnosis_summary = diagnosis_summary or stage2.get("diagnosis_summary")
+            prediction = stage2.get("next_bar_prediction")
+            decision = stage2["decision"]
+        else:
+            prediction = decision.get("next_bar_prediction")
+        self._apply_prediction(prediction)
         self._apply_market_diagnosis(diagnosis_summary, stage1_diagnosis)
 
         order_type = decision.get("order_type", _NO_ORDER)
@@ -572,5 +632,8 @@ class DecisionPanel(QWidget):
         self._trade_prices_row.setVisible(False)
         self._trade_conf_inline_label.setVisible(False)
         self._trade_reasoning_label.setVisible(False)
+        self._prediction_group.setVisible(False)
+        self._prediction_direction_label.clear()
+        self._prediction_reasoning_edit.clear()
 
         self._reasoning_edit.clear()

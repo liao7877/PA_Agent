@@ -1,4 +1,4 @@
-"""Prompt assembler for Stage 1 (diagnosis) and Stage 2 (decision)."""
+﻿"""Prompt assembler for Stage 1 (diagnosis) and Stage 2 (decision)."""
 from __future__ import annotations
 
 import datetime
@@ -152,7 +152,7 @@ _STAGE2_TAIL_REMINDER = (
     "   → 这才可以写 terminal.outcome=reject，node_id=\"10.3\"。\n"
     "3. 你有入场方案且 10.3 通过？→ terminal.outcome=trade，node_id 为最终节点。\n"
     "   **禁止**写 action/execute/entry 等自创词，只能是 wait|reject|trade|proceed。\n"
-    "4. 限价/突破尚未触发？→ entry_bar.freshness=pending（禁止 limit_order_pending 等自创词）。\n"
+    "4. 已确认 setup 的订单尚未触发？→ entry_bar.bar=null、strength=not_triggered、freshness=pending；这表示等待成交，不表示 setup 未确认。\n"
     "5. `terminal` 与 `decision` **同级**（顶层字段），禁止把 terminal 嵌套在 decision 内。\n"
     "6. `next_cycle_prediction` 在 `unpredictable=false` 时 **必须** 含 `probabilities` 对象（各 cycle 概率，和≈100）。\n"
     "禁止在 JSON 前写「好的」「修改完成」等对话前缀；禁止 ```json 围栏。\n"
@@ -195,7 +195,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
       "quality": "strong|medium|weak|invalid（bar=null 时必须填 invalid，禁止填 null）",
       "reason": "信号棒质量判断"
     },
-    "entry_setup_type": "H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|none",
+    "entry_setup_type": "H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|breakout_retest|none",
     "follow_through": "yes|no|pending|failed"
   },
   "bar_by_bar_summary": [
@@ -374,20 +374,22 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
     "last_closed_bar": "K1",
     "bar_type": "【必须与阶段一 bar_analysis.bar_type 完全一致，不得重新推断】trend_bull|trend_bear|doji|inside|outside_bull|outside_bear|flat|other",
     "signal_bar": {
-      "bar": "K2 或 null（计划型挂单尚无已收盘信号棒时为 null）",
+      "bar": "K2（交易单必须是已收盘 K{n}；无信号时填 null 且必须不下单）",
       "quality": "strong|medium|weak|invalid",
-      "pattern": "H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|none",
+      "pattern": "H1|H2|L1|L2|MTR|wedge|tr_boundary|breakout_pullback|breakout_retest|none",
       "reason": "信号棒质量判断"
     },
     "entry_bar": {
+      "bar": "K1 或 null（pending 突破/限价尚未触发时为 null；weak 确认棒必须填更晚已收盘 K{n}）",
       "strength": "strong|weak|not_triggered",
-      "follow_through": true,
+      "follow_through": "pending（仅有真实后续确认棒时才填 true）",
       "still_valid": true,
       "freshness": "fresh|pending|stale|invalid"
     },
+    "entry_setup_type": "breakout_pullback|breakout_retest|H1|H2|L1|L2|MTR|wedge|none",
     "second_entry": {
-      "is_second_entry": true,
-      "type": "H2|L2|MTR|wedge|tr_boundary|trendline|none（is_second_entry=false 时必须填 none，禁止 null）"
+      "is_second_entry": false,
+      "type": "H2|L2|MTR|wedge|tr_boundary|trendline|none（只有逐棒证据成立才可为 true；false 时必须填 none，禁止 null）"
     }
   },
   "decision_trace": [
@@ -475,15 +477,15 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - `decision_trace[10.3].reason` 中的入场/止损/目标数字必须与 `decision` 三价一致（勿用未写入 decision 的中间价）
 - 做多：风险点数 = entry − stop，回报点数 = take_profit_price − entry；做空：风险 = stop − entry，回报 = entry − take_profit_price
 - 盈亏比 = 回报 ÷ 风险（程序与界面只认此公式；reasoning 中写的 RR 必须与三价一致，否则校验失败）
-- **无盈亏比上限（模型侧）**：按结构自由定 entry / TP1 / TP2 / stop；**禁止**为凑 RR 而缩小 TP1 或贴噪音止损。程序会在 RR>1.0 时自动向外扩 stop（保持 TP1/TP2 不变）。
+- **无盈亏比上限（模型侧）**：按结构自由定 entry / TP1 / TP2 / stop；**禁止**为凑 RR 而缩小 TP1、扩大目标或贴噪音止损。程序不会为了美化 RR 自动移动结构止损。
 - **定价顺序（推荐）**：
   1. 定 **entry**（结构位/边界/回撤位或突破极值±跳动）
   2. 定 **take_profit_price（TP1）** 于最近有效结构目标（通道对边、区间对侧、前 swing 等）
   3. 定 **take_profit_price_2（TP2）** 于更远结构目标（Measured Move、通道对边远端、区间翻测等）
-  4. 定 **stop_loss_price** 于结构失效位（信号棒/波段极点外 1 跳等）
-  5. 若按结构 stop 算得 RR = 回报÷风险 **> 1.0**：**保持 TP1/TP2 不变**；程序校验时会自动向外扩 stop（模型也可先自行扩 stop）
-  6. 若结构 stop 已是最宽合理位且 RR 仍 > 1.0：程序会自动扩 stop；只要 §10.3 交易者方程通过即可
-  7. 若结构 stop 导致 RR < 1.0：优先**收紧** stop 至更近的结构失效位，或调整 entry；**禁止**向外扩 stop；仍无法 ≥1.0 → reject
+  4. 定 **stop_loss_price** 于完整交易假设失效位（完整回调/swing/H2-L2/突破回测结构之外，并留出最小跳动）
+  5. 若按结构 stop 算得 RR > 1.0：保持该结构 stop，不因 RR 看起来过高而机械扩大或缩小止损
+  6. ATR / 近期波动只用于检查止损是否小到落在市场噪音内，不能替代价格结构生成止损
+  7. 若真实结构 stop 导致 RR < 1.0：等待更好的 entry、选择更近但仍真实的结构目标，或 reject；禁止把止损硬塞到更近的非失效位
 - **TP1 / TP2 硬规则**：
   - 有下单时 `take_profit_price` 与 `take_profit_price_2` **均必填**；不下单时均为 null
   - 做多：stop < entry < take_profit_price < take_profit_price_2
@@ -500,13 +502,13 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - 若止损只是在 EMA / 支撑 / 阻力外侧很近的位置，且没有越过明确 swing low/high、信号棒极点、通道边界失效位或区间边界失效位，则视为「噪音内止损」；§10.1 或 §10.2 应判「否」。
 - `take_profit_price`（TP1）应放在有结构依据的最近有效目标位，不要为了通过方程而选 K1 内部噪音位
 - `take_profit_price_2`（TP2）应为更远但有结构依据的目标（MM 投影、通道对边远端、区间高度翻测等）；必须满足做多 tp2>tp1、做空 tp2<tp1
-- 若结构止损合理但 RR < 1.0：收紧 stop 或调整 entry；**禁止**向外扩 stop；若仍 < 1.0 或方程不通过 → `order_type=不下单`
+- 若真实结构止损下 RR < 1.0：等待更好的 entry 或 `order_type=不下单`；不得为了通过方程把 stop 收进噪音区。
 - 限价单只有在已收盘信号棒（弱信号还需确认棒）出现后，作为确认后回测/二次入场方式才可执行；宽通道 / 区间边界 setup 本身只允许进入等待评估。
 
 **价格行为确认后入场（所有决策档位均不可放宽）：**
 - 先确定 `direction` / Always In；只做顺势 setup。回撤到支撑、阻力、EMA、通道边界或前高前低本身不是入场理由，只是等待区域。
 - 必须先出现与交易方向一致的**已收盘信号棒**。强/中等信号可据其极点设置突破单；弱信号必须再等一根已收盘确认棒，确认恢复原趋势后才可设置突破单或在确认后的结构回测位设置限价单。
-- 限价单只能用于**确认已经发生之后**的回测/二次入场，不得在回撤尚未结束时提前挂单猜顶摸底；`signal_bar.bar=null`、`entry_bar.pending/not_triggered` 或 `quality=invalid` 时一律 `不下单`。
+- 限价单只能用于**确认已经发生之后**的突破回测/二次入场，不得在回撤尚未结束时提前挂单猜顶摸底。`signal_bar.bar=null` 或 `quality=invalid` 一律不下单；限价单若仍 pending，必须由 `entry_setup_type=breakout_pullback`、`breakout_retest`、H2/L2 或 `second_entry.is_second_entry=true` 证明确认已发生。
 - 突破数据不完整（无法确定 `entry_basis_bar/extreme` 或最小跳动）时一律等待，**不得自动转换为限价单**。
 - 逆势/反转交易必须同时具备：阶段一识别 `breakout_failure`（失败突破）、随后出现明确的已收盘反转确认棒、decision_trace 以 2.3 明确重判方向。缺一项即 `不下单`；不得仅凭支撑/阻力猜底摸顶。
 - 上述规则是硬原则，不受 conservative / balanced / aggressive / extreme_aggressive 档位影响；档位只能调整机会筛选频率和信心阈值，不能取消确认。
@@ -525,8 +527,8 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - **楔形回撤**（与主趋势相反的楔形）→ 突破确认后可评估**顺主趋势**；若同时 `climax_risk` 或末端三推特征，**禁止追单**。
 
 **限价单 K1 新鲜度（仅限确认后的回测入场）**：
-- 限价单必须引用已收盘信号棒；弱信号还必须已有确认棒。entry_bar 不得为 pending/not_triggered/null。
-- 非计划型 / 已触发限价使用完整 K1 high/low 对照；K1 已走过 entry 则 stale，重新评估或 `不下单`。
+- 限价单必须引用已收盘信号棒；弱信号还必须已有更晚确认棒。pending/not_triggered 仅表示限价尚未成交，且必须同时有 breakout_pullback、breakout_retest、H2/L2 或 second_entry 的结构字段证明这是确认后的回测单。
+- 已触发或即将执行的限价使用完整 K1 high/low 对照；K1 已走过 entry 或失效位则 stale，重新评估或 `不下单`。
 - 禁止把未来可能发生的回撤/反弹预先包装成限价订单。
 
 **突破单 entry_price 硬规则（程序会按 K 线表小数位推断最小跳动并校验）：**
@@ -545,7 +547,7 @@ JSON 字符串内不要用英文双引号强调，改用「」或不用引号。
 - **K 线序号约定**：K 数字越大表示越早的已收盘棒（K8 早于 K1）。信号棒比确认/入场棒更早时，signal_bar 的 K 序号大于 entry_bar 的 K 序号（例：K3 信号 → K1 确认）。
 - 强/中等信号棒可在极点外设置突破单；若信号棒 `quality=weak`，必须有更晚的已收盘 `entry_bar.bar`，且 `follow_through=true`，否则等待。
 - 如果信号棒之后已经出现 2–3 根无跟随、反向强 K、或 `entry_bar.freshness=stale|invalid`，不得继续把旧信号作为入场依据。
-- 限价单同样必须先有确认；限价只表示确认后的回测入场方式，不表示可以绕过信号确认。
+- 限价单同样必须先有确认；pending 只表示订单未成交，不得借此绕过信号确认。
 
 **⚠️ watch_points 与 stage1 risk_warning 一致性规则（必须遵守）：**
 - 阶段一 `risk_warning` 是风险警示，**watch_points 中的触发条件不得与其直接矛盾**。
@@ -1609,13 +1611,13 @@ class PromptAssembler:
         continuity_block = render_continuity_prompt_block(continuity_ctx)
         conflict_block = self._render_trend_conflict_guidance(stage1_json)
         transition_block = self._render_transition_guidance(stage1_json)
-        planned_limit_block = self._render_planned_limit_hint(stage1_json, frame)
+        entry_confirmation_block = self._render_price_action_entry_hint(stage1_json, frame)
         stage2_parts = [
             stance_block,
             continuity_block,
             conflict_block,
             transition_block,
-            planned_limit_block,
+            entry_confirmation_block,
             *(
                 self._load(name)
                 for name in stage2_user_task_txt_files(
@@ -1858,8 +1860,8 @@ class PromptAssembler:
             return None
 
     @staticmethod
-    def _render_planned_limit_hint(stage1_json: dict, frame: KlineFrame) -> str:
-        """Contextual hint when channel/range structure favors planned limit orders."""
+    def _render_price_action_entry_hint(stage1_json: dict, frame: KlineFrame) -> str:
+        """Render context for confirmed price-action entries near structural levels."""
         cycle = str(stage1_json.get("cycle_position", "") or "").strip().lower()
         if cycle not in (
             "broad_channel",
@@ -1922,22 +1924,46 @@ class PromptAssembler:
             "- 无合格已收盘信号棒：§9.0=否、order_type=不下单、terminal=9.0/wait。",
             "- 弱信号：必须等待更晚的已收盘确认棒且 follow_through=true。",
             "- 强/中等信号：极点数据完整可设突破单；数据不完整继续等待，不得转限价。",
-            "- 限价单仅用于确认后回测/二次入场；signal_bar.bar 不得为 null，entry_bar 不得 pending。",
+            "- 突破单 setup 确认后可以保持 entry_bar=pending 等待触发；限价单仅用于确认后的 breakout_pullback/breakout_retest/H2/L2/second_entry，不能只凭结构位提前挂单。",
         ]
         if near_support is not None:
-            lines.append(
-                f"- 价格靠近下方支撑 **{support_label}**（约 {near_support:.4f}）→ "
-                "只作为做多等待区；等待多头信号棒收盘，弱信号再等确认棒。"
-            )
+            if direction == "bearish":
+                lines.append(
+                    f"- 空头方向正靠近下方支撑 **{support_label}**（约 {near_support:.4f}）→ "
+                    "下方空间受限，禁止在支撑前追空；等待有效跌破后的回测确认，或新的空头延续 setup。"
+                )
+            else:
+                lines.append(
+                    f"- 价格靠近下方支撑 **{support_label}**（约 {near_support:.4f}）→ "
+                    "只作为做多等待区；等待多头信号棒收盘，弱信号再等确认棒。"
+                )
         if near_resist is not None:
-            lines.append(
-                f"- 价格靠近上方阻力 **{resist_label}**（约 {near_resist:.4f}）→ "
-                "只作为做空等待区；等待空头信号棒收盘，弱信号再等确认棒。"
-            )
+            if direction == "bullish":
+                lines.append(
+                    f"- 多头方向正靠近上方阻力 **{resist_label}**（约 {near_resist:.4f}）→ "
+                    "上方空间受限，禁止在阻力前追多；等待有效突破后的回测确认，或新的多头延续 setup。"
+                )
+            else:
+                lines.append(
+                    f"- 价格靠近上方阻力 **{resist_label}**（约 {near_resist:.4f}）→ "
+                    "只作为做空等待区；等待空头信号棒收盘，弱信号再等确认棒。"
+                )
         if near_support is None and near_resist is None:
             lines.append(
                 "- 未识别到极近的支撑/阻力；继续依据已收盘价格行为等待顺势信号，"
                 "不要自行猜测边界挂单。"
+            )
+        climax_risk = str(stage1_json.get("climax_risk", "none") or "none").strip().lower()
+        transition_risk = str(stage1_json.get("transition_risk", "") or "").strip().lower()
+        if climax_risk in ("warning", "triggered"):
+            lines.append(
+                f"- climax_risk={climax_risk}：禁止在高潮末端直接追原方向；必须等新的顺势价格行为、"
+                "有效突破后的回测确认，或明确的 H2/L2/二次入场，否则 wait。"
+            )
+        if transition_risk == "high":
+            lines.append(
+                "- transition_risk=high：strong/medium 信号也只是候选，不是强制开单；"
+                "若空间不足、紧邻障碍或仍处转换中，允许由完整价格行为背景否决。"
             )
         if direction == "neutral":
             lines.append(

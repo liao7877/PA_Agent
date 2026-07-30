@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+import time
 
 import pytest
 from PyQt6.QtCore import Qt
@@ -196,6 +197,30 @@ def test_activate_instrument_does_not_persist_keep_analysis_as_user_input(qtbot)
     assert window._keep_analysis_checkbox.isChecked()
     assert settings.general.keep_analysis is False
     window._ensure_refresh_loop_running.assert_not_called()
+
+
+def test_start_runtime_defers_connection_to_refresh_thread(monkeypatch) -> None:
+    settings = Settings()
+    settings.instruments.items = [
+        InstrumentSettings(id="gold", symbol="XAUUSDm", timeframe="15m")
+    ]
+    manager = InstrumentRuntimeManager(settings=settings)
+    source = MagicMock()
+    source._connected = False
+    source.latest_snapshot.return_value = []
+    monkeypatch.setattr("pa_agent.data.factory.create_data_source", lambda *args, **kwargs: source)
+
+    started = time.monotonic()
+    manager.start_runtime("gold", n_bars=20, interval_ms=1000)
+    elapsed = time.monotonic() - started
+    runtime = manager.get("gold")
+    assert runtime is not None
+
+    assert elapsed < 0.2
+    assert runtime.refresh_loop is not None
+    assert runtime.refresh_loop.isRunning()
+    manager.stop_all(wait_ms=1000)
+    manager.disconnect_all_sources()
 
 
 def test_stop_all_attempts_every_runtime_when_one_does_not_stop(monkeypatch) -> None:

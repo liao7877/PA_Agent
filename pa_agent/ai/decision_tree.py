@@ -489,10 +489,18 @@ def validate_gate_result_consistency(stage1: dict[str, Any]) -> list[str]:
 
     if gate_result in ("wait", "unknown"):
         last = trace[-1]
-        if isinstance(last, dict) and last.get("answer") not in ("否", "等待"):
-            errors.append(
-                "gate_result wait/unknown should end with answer 否 or 等待 on last gate node"
-            )
+        if isinstance(last, dict):
+            last_answer = last.get("answer")
+            last_node = str(last.get("node_id") or "")
+            if last_answer not in ("否", "等待"):
+                errors.append(
+                    "gate_result wait/unknown should end with answer 否 or 等待 on last gate node"
+                )
+            if last_node not in ("1.2", "1.3"):
+                errors.append(
+                    "gate_result wait/unknown may only terminate at §1.2 unknown "
+                    "or §1.3 extreme chaos; momentum/Always-In nodes must proceed to Stage 2"
+                )
 
     # Check node_id ordering: gate_trace must be in ascending chapter-section order.
     # merge_program_nodes now sorts injected nodes, but validate here to catch any
@@ -620,19 +628,14 @@ def validate_stage2_trace_consistency(stage2: dict[str, Any]) -> list[str]:
         # stop reason than §9.0=否 and takes semantic precedence.
         idx_90 = _index_of(node_ids, "9.0")
         idx_101 = _index_of(node_ids, "10.1")
-        idx_90p = _index_of(node_ids, "9.0P")
         no_entry_plan = False
         if idx_90 >= 0:
             ans_90 = str(trace[idx_90].get("answer", "") or "").strip()
             if ans_90 in ("否", "等待"):
-                if idx_90p >= 0:
-                    ans_90p = str(trace[idx_90p].get("answer", "") or "").strip()
-                    if ans_90p == "是":
-                        no_entry_plan = False
-                    else:
-                        no_entry_plan = True
-                else:
-                    no_entry_plan = True
+                # §9.0P was an old background-limit escape hatch. Structural levels
+                # cannot replace a closed price-action signal, so no valid signal
+                # always means there is no entry plan to reject.
+                no_entry_plan = True
         if not no_entry_plan and idx_101 >= 0:
             ans_101 = str(trace[idx_101].get("answer", "") or "").strip()
             if ans_101 == "否":

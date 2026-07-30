@@ -26,6 +26,19 @@ def notifier():
     return _RecordingNotifier()
 
 
+def _verified_setup(setup_type: str = "breakout_retest") -> dict:
+    return {
+        "verification_status": "verified",
+        "verified": True,
+        "setup_type": setup_type,
+    }
+
+
+def _apply(tracker: PositionTracker, **kwargs):
+    kwargs.setdefault("setup_provenance", _verified_setup())
+    return tracker.apply_decision(**kwargs)
+
+
 def _long_decision():
     return {
         "decision": {
@@ -36,6 +49,48 @@ def _long_decision():
             "stop_loss_price": 95.0,
         }
     }
+
+
+def test_planned_position_expires_before_late_fill(store, notifier, monkeypatch):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    pos = _apply(
+        tracker,
+        symbol="X",
+        timeframe="15m",
+        decision=_long_decision(),
+        current_price=105.0,
+        first_tracked_bar_ts=1_000,
+        setup_provenance=_verified_setup("h2"),
+    )
+    assert pos is not None and pos.expiry_bars == 2
+    monkeypatch.setattr("pa_agent.positions.tracker._now_ms", lambda: pos.expiry_at_ms + 1)
+
+    result = tracker.on_live_price(
+        "X",
+        "15m",
+        high=101.0,
+        low=99.0,
+        current_price=100.0,
+        bar_ts=2_000,
+    )
+
+    assert result is None
+    assert tracker.get_active("X", "15m") is None
+
+
+def test_placement_references_persist(store, notifier):
+    tracker = PositionTracker(store=store, notifier=notifier)
+    pos = _apply(
+        tracker,
+        symbol="X",
+        timeframe="15m",
+        decision=_long_decision(),
+        placement_ref_high=106.0,
+        placement_ref_low=99.0,
+    )
+    assert pos is not None
+    assert pos.placement_ref_high == 106.0
+    assert pos.placement_ref_low == 99.0
 
 
 # ── Store ──────────────────────────────────────────────────────────────────────
@@ -74,7 +129,7 @@ def test_store_close_moves_to_history(store):
 # ── Tracker: open ───────────────────────────────────────────────────────────────
 def test_apply_decision_opens_planned(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    pos = _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     assert pos is not None
     assert pos.status is PositionStatus.PLANNED
     assert pos.entry_price == 100.0
@@ -82,7 +137,7 @@ def test_apply_decision_opens_planned(store, notifier):
 
 def test_apply_decision_no_trade_no_position(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={"decision": {"order_type": "不下单"}},
     )
@@ -91,7 +146,7 @@ def test_apply_decision_no_trade_no_position(store, notifier):
 
 def test_market_order_fills_immediately(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={"decision": {"order_type": "市价单", "order_direction": "做多",
                                "entry_price": 100.0, "take_profit_price": 110.0,
@@ -103,7 +158,7 @@ def test_market_order_fills_immediately(store, notifier):
 # ── Tracker: fill detection ─────────────────────────────────────────────────────
 def test_tick_fills_planned_on_touch(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     # Price has not reached 100 yet
     tracker.on_tick("X", "15m", high=99.0, low=98.0)
     assert tracker.get_active("X", "15m").status is PositionStatus.PLANNED
@@ -116,7 +171,7 @@ def test_tick_fills_planned_on_touch(store, notifier):
 
 def test_long_limit_created_below_entry_waits_for_reset_before_fill(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision=_long_decision(),
@@ -131,7 +186,7 @@ def test_long_limit_created_below_entry_waits_for_reset_before_fill(store, notif
 
 def test_long_limit_does_not_fill_from_pre_arming_bar_range(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision=_long_decision(),
@@ -158,7 +213,7 @@ def test_short_limit_fills_only_after_upward_touch(store, notifier):
             "stop_loss_price": 105.0,
         }
     }
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X", timeframe="15m", decision=decision, current_price=99.0,
         first_tracked_bar_ts=1,
     )
@@ -177,7 +232,7 @@ def test_long_breakout_created_above_entry_waits_for_reset_before_fill(store, no
             "stop_loss_price": 95.0,
         }
     }
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X", timeframe="15m", decision=decision, current_price=101.0,
         first_tracked_bar_ts=1,
     )
@@ -198,7 +253,7 @@ def test_short_breakout_fills_on_downward_cross(store, notifier):
             "stop_loss_price": 105.0,
         }
     }
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X", timeframe="15m", decision=decision, current_price=101.0,
         first_tracked_bar_ts=1,
     )
@@ -208,7 +263,7 @@ def test_short_breakout_fills_on_downward_cross(store, notifier):
 
 def test_tick_exit_take_profit_long(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
     tracker.on_tick("X", "15m", high=111.0, low=108.0)   # touch TP=110
     assert tracker.get_active("X", "15m") is None
@@ -217,7 +272,7 @@ def test_tick_exit_take_profit_long(store, notifier):
 
 def test_tick_exit_stop_loss_long(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
     tracker.on_tick("X", "15m", high=98.0, low=94.0)     # touch SL=95
     assert tracker.get_active("X", "15m") is None
@@ -228,7 +283,7 @@ def test_tick_exit_stop_loss_long(store, notifier):
 def test_planned_fill_tracks_post_fill_range_and_notifies_take_profit(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     bar_ts = 1_700_000_000_000
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision=_long_decision(),
@@ -253,7 +308,7 @@ def test_planned_fill_tracks_post_fill_range_and_notifies_take_profit(store, not
 def test_planned_fill_ignores_prefill_stop_range_on_same_bar(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
     bar_ts = 1_700_000_000_000
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision=_long_decision(),
@@ -277,7 +332,7 @@ def test_market_short_not_stopped_on_entry_bar_same_bar(store, notifier):
     """SCS market short: SL above signal high must not fire on the entry bar itself."""
     tracker = PositionTracker(store=store, notifier=notifier)
     entry_ts = 1_700_000_000_000
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X",
         timeframe="15m",
         fill_bar_ts=entry_ts,
@@ -302,7 +357,7 @@ def test_short_position_stop_and_target(store, notifier):
     short = {"decision": {"order_type": "限价单", "order_direction": "做空",
                           "entry_price": 100.0, "take_profit_price": 90.0,
                           "stop_loss_price": 105.0}}
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=short)
+    _apply(tracker,symbol="X", timeframe="15m", decision=short)
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
     tracker.on_tick("X", "15m", high=89.0, low=88.0)     # touch TP=90 (price below)
     assert tracker.get_active("X", "15m") is None
@@ -310,7 +365,7 @@ def test_short_position_stop_and_target(store, notifier):
 
 def test_apply_decision_does_not_fill_replacement_plan_from_analysis_price(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     replacement = {
         "decision": {
             "order_type": "突破单",
@@ -320,7 +375,7 @@ def test_apply_decision_does_not_fill_replacement_plan_from_analysis_price(store
             "stop_loss_price": 95.0,
         }
     }
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision=replacement,
@@ -335,22 +390,22 @@ def test_apply_decision_does_not_fill_replacement_plan_from_analysis_price(store
 # ── Tracker: management via new decision ────────────────────────────────────────
 def test_filled_position_manage_adjusts_sl(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
     # New decision keeps same direction but moves SL up to 98
     manage = {"decision": {"order_type": "限价单", "order_direction": "做多",
                            "entry_price": 100.0, "take_profit_price": 110.0,
                            "stop_loss_price": 98.0}}
-    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=manage)
+    pos = _apply(tracker,symbol="X", timeframe="15m", decision=manage)
     assert pos.stop_loss_price == 98.0
     assert any(m.event.value == "manage" for m in notifier.messages)
 
 
 def test_filled_position_ai_close(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={
             "decision": {
@@ -370,9 +425,9 @@ def test_filled_position_ai_close(store, notifier):
 
 def test_filled_position_adjust_action_updates_sl_and_notifies(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={
             "decision": {
@@ -395,9 +450,9 @@ def test_filled_position_adjust_action_updates_sl_and_notifies(store, notifier):
 
 def test_filled_position_adjust_action_without_prices_notifies_advisory(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={
             "decision": {
@@ -416,9 +471,9 @@ def test_filled_position_adjust_action_without_prices_notifies_advisory(store, n
 def test_filled_position_no_trade_without_close_phrase_does_not_exit(store, notifier):
     """Bare 不下单 on a filled position must not trigger a false exit notify."""
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)   # fill
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={
             "decision": {
@@ -434,8 +489,8 @@ def test_filled_position_no_trade_without_close_phrase_does_not_exit(store, noti
 
 def test_planned_no_trade_keeps_existing_plan(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
-    pos = tracker.apply_decision(
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={"decision": {"order_type": "不下单", "reasoning": "维持原计划单，继续等待触及入场价。"}},
     )
@@ -447,8 +502,8 @@ def test_planned_no_trade_keeps_existing_plan(store, notifier):
 
 def test_planned_cancelled_by_explicit_cancel_action(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
-    pos = tracker.apply_decision(
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
+    pos = _apply(tracker,
         symbol="X", timeframe="15m",
         decision={"decision": {"order_type": "不下单", "position_action": "撤销"}},
     )
@@ -461,7 +516,7 @@ def test_planned_cancelled_by_explicit_cancel_action(store, notifier):
 
 def test_planned_replaced_by_new_order_notifies_old_order_handling(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     replacement = {
         "decision": {
             "order_type": "突破单",
@@ -471,7 +526,7 @@ def test_planned_replaced_by_new_order_notifies_old_order_handling(store, notifi
             "stop_loss_price": 101.0,
         }
     }
-    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=replacement)
+    pos = _apply(tracker,symbol="X", timeframe="15m", decision=replacement)
     assert pos is not None
     assert pos.order_type == "突破单"
     assert pos.entry_price == 106.0
@@ -484,8 +539,8 @@ def test_planned_replaced_by_new_order_notifies_old_order_handling(store, notifi
 
 def test_planned_program_invalidation_cancels_existing_plan(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
-    pos = tracker.apply_decision(
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
+    pos = _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision={
@@ -502,7 +557,7 @@ def test_planned_program_invalidation_cancels_existing_plan(store, notifier):
 
 def test_replacement_uses_current_record_id(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(
+    _apply(tracker,
         symbol="X", timeframe="15m", decision=_long_decision(), record_id="old-record"
     )
     replacement = {
@@ -514,7 +569,7 @@ def test_replacement_uses_current_record_id(store, notifier):
             "stop_loss_price": 101.0,
         }
     }
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X", timeframe="15m", decision=replacement, record_id="new-record"
     )
     assert pos is not None
@@ -523,7 +578,7 @@ def test_replacement_uses_current_record_id(store, notifier):
 
 def test_market_reversal_uses_live_fill_metadata(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)
     short = {
         "decision": {
@@ -534,7 +589,7 @@ def test_market_reversal_uses_live_fill_metadata(store, notifier):
             "stop_loss_price": 105.0,
         }
     }
-    pos = tracker.apply_decision(
+    pos = _apply(tracker,
         symbol="X",
         timeframe="15m",
         decision=short,
@@ -550,12 +605,12 @@ def test_market_reversal_uses_live_fill_metadata(store, notifier):
 
 def test_reversal_closes_and_opens_opposite(store, notifier):
     tracker = PositionTracker(store=store, notifier=notifier)
-    tracker.apply_decision(symbol="X", timeframe="15m", decision=_long_decision())
+    _apply(tracker,symbol="X", timeframe="15m", decision=_long_decision())
     tracker.on_tick("X", "15m", high=100.0, low=100.0)
     short = {"decision": {"order_type": "限价单", "order_direction": "做空",
                           "entry_price": 105.0, "take_profit_price": 95.0,
                           "stop_loss_price": 110.0}}
-    pos = tracker.apply_decision(symbol="X", timeframe="15m", decision=short)
+    pos = _apply(tracker,symbol="X", timeframe="15m", decision=short)
     assert pos is not None
     assert pos.order_direction == "做空"
     assert pos.status is PositionStatus.PLANNED

@@ -9,6 +9,7 @@ venv/
 build/
 dist/
 .pytest_cache/
+.pytest_tmp/
 .ruff_cache/
 .mypy_cache/
 .hypothesis/
@@ -41,6 +42,7 @@ experience/**/*
 
 # ── Local agent / editor tooling (not part of the app) ────────────────────────
 .workbuddy/
+.claude/worktrees/
 
 # ── OS / editor ───────────────────────────────────────────────────────────────
 Thumbs.db
